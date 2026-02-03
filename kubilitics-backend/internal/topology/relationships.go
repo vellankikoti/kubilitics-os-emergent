@@ -480,7 +480,7 @@ func (ri *RelationshipInferencer) inferRBACRelationships() error {
 		}
 
 		// ClusterRoleBinding -> ServiceAccounts
-		subjects, ok := metadata["subjects"].([]interface{})
+		subjects, ok := crb.Metadata["subjects"].([]interface{})
 		if ok {
 			for _, subj := range subjects {
 				subject, ok := subj.(map[string]interface{})
