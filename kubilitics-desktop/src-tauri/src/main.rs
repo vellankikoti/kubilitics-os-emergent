@@ -17,6 +17,11 @@ fn main() {
             commands::switch_context,
             commands::validate_kubeconfig,
             commands::auto_detect_kubeconfig,
+            commands::browse_for_kubeconfig,
+            commands::save_topology_export,
+            commands::open_in_system_editor,
+            commands::reveal_in_file_manager,
+            commands::get_recent_exports,
             commands::get_app_data_dir,
             commands::select_kubeconfig_file,
         ])
