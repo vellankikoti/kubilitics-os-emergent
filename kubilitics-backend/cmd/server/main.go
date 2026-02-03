@@ -12,40 +12,46 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
+
+	"github.com/kubilitics/kubilitics-backend/internal/api/rest"
+	"github.com/kubilitics/kubilitics-backend/internal/config"
+	"github.com/kubilitics/kubilitics-backend/internal/service"
 )
 
 func main() {
 	log.Println("Kubilitics Backend starting...")
 
-	// TODO: Load configuration
-	port := getEnv("PORT", "8080")
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("Warning: Failed to load config: %v. Using defaults.", err)
+		cfg = &config.Config{
+			Port:           8080,
+			DatabasePath:   "./kubilitics.db",
+			LogLevel:       "info",
+			AllowedOrigins: []string{"*"},
+		}
+	}
 
-	// TODO: Initialize database
-	// TODO: Initialize Kubernetes client
-	// TODO: Initialize services
-	// TODO: Initialize WebSocket hub
+	// Initialize services
+	log.Println("Initializing services...")
+	clusterService := service.NewClusterService()
+	topologyService := service.NewTopologyService(clusterService)
 
 	// Setup HTTP router
 	router := mux.NewRouter()
 
 	// Health check
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy"}`))
-	}).Methods("GET")
-
-	// API routes (placeholder)
-	apiRouter := router.PathPrefix("/api/v1").Subrouter()
-	apiRouter.HandleFunc("/clusters", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"clusters":[]}`))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"healthy","service":"kubilitics-backend"}`))
 	}).Methods("GET")
 
-	// WebSocket routes (placeholder)
-	wsRouter := router.PathPrefix("/ws").Subrouter()
-	wsRouter.HandleFunc("/resources", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("WebSocket endpoint"))
-	}).Methods("GET")
+	// API routes
+	apiRouter := router.PathPrefix("/api/v1").Subrouter()
+	handler := rest.NewHandler(clusterService, topologyService)
+	rest.SetupRoutes(apiRouter, handler)
 
 	// Middleware
 	router.Use(loggingMiddleware)
@@ -53,17 +59,17 @@ func main() {
 
 	// Setup CORS
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   cfg.AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
 	})
-	handler := c.Handler(router)
+	handlerWithCORS := c.Handler(router)
 
 	// Create HTTP server
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", port),
-		Handler:      handler,
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      handlerWithCORS,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -71,7 +77,9 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		log.Printf("Server listening on port %s", port)
+		log.Printf("Server listening on port %d", cfg.Port)
+		log.Printf("API available at http://localhost:%d/api/v1", cfg.Port)
+		log.Printf("Health check at http://localhost:%d/health", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed: %v", err)
 		}
@@ -92,22 +100,26 @@ func main() {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
 
-	log.Println("Server exited")
-}
-
-func getEnv(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
+	log.Println("Server exited gracefully")
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(rw, r)
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rw.statusCode, time.Since(start))
 	})
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
 func recoveryMiddleware(next http.Handler) http.Handler {

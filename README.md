@@ -1,1 +1,377 @@
-# Here are your Instructions
+# Kubilitics - The Kubernetes Operating System
+
+**A production-grade Kubernetes management platform** that makes K8s finally human-friendly.
+
+## 🎯 Project Overview
+
+Kubilitics is delivered as:
+
+1. **Desktop Application** (macOS, Windows, Linux) - Offline-first, local Kubernetes management
+2. **Mobile Application** (iOS, Android) - Remote cluster monitoring and management
+3. **Backend Services** (Go) - Core engine, topology builder, API layer
+
+**NO SaaS. NO Cloud Accounts. NO Authentication.**
+
+This is a native application that connects directly to your Kubernetes clusters.
+
+---
+
+## 📚 Repository Structure
+
+```
+.
+├── kubilitics-backend/         Go backend services
+│   ├── cmd/server/             Main entry point
+│   ├── internal/
+│   │   ├── api/                REST & WebSocket APIs
+│   │   ├── k8s/                Kubernetes client integration
+│   │   ├── topology/           Topology engine
+│   │   ├── service/            Business logic
+│   │   ├── models/             Data models
+│   │   └── config/             Configuration
+│   └── go.mod
+│
+├── kubilitics-desktop/         Tauri desktop application
+│   ├── src/                    React frontend
+│   ├── src-tauri/              Rust backend
+│   │   ├── src/
+│   │   │   ├── main.rs
+│   │   │   ├── commands.rs
+│   │   │   └── sidecar.rs
+│   │   └── tauri.conf.json
+│   └── Cargo.toml
+│
+├── kubilitics-mobile/          Tauri mobile application
+│   ├── src/                    React frontend
+│   ├── src-tauri/              Rust core
+│   │   └── src/lib.rs
+│   ├── gen/
+│   │   ├── android/            Android project
+│   │   └── apple/              iOS project
+│   └── Cargo.toml
+│
+├── tests/                      End-to-end tests
+│   ├── e2e/                    Playwright tests
+│   ├── integration/            Go integration tests
+│   └── fixtures/               Test data
+│
+└── docs/                       Documentation
+    ├── architecture.md
+    ├── api-reference.md
+    └── development.md
+```
+
+---
+
+## ✨ Key Features
+
+### Backend
+
+✅ **Exhaustive Resource Discovery** - Discovers all 50+ K8s resource types + CRDs  
+✅ **Topology Engine** - Builds complete relationship graphs with deterministic layout  
+✅ **Real-Time Updates** - WebSocket streams for live cluster state  
+✅ **REST API** - Full CRUD operations for all resources  
+✅ **Export Service** - WYSIWYG topology export (PNG, PDF, SVG)  
+
+### Desktop
+
+✅ **Offline-First** - Works without internet (for local clusters)  
+✅ **Auto-Discovery** - Automatically detects kubeconfig  
+✅ **Native UI** - Platform-native window chrome  
+✅ **Sidecar Backend** - Go backend runs as child process  
+✅ **Cross-Platform** - macOS, Windows, Linux  
+
+### Mobile
+
+✅ **Remote Management** - Connect to cluster-local backend  
+✅ **Offline Mode** - Caches data for offline viewing  
+✅ **Biometric Auth** - Face ID / Touch ID / Fingerprint  
+✅ **Push Notifications** - Alerts for cluster events  
+✅ **Touch-Optimized** - Mobile-first UI  
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- **Go** 1.24+
+- **Rust** 1.75+
+- **Node.js** 20+
+- **Kubernetes cluster** (kind/k3s/minikube/EKS/GKE/etc.)
+
+### 1. Backend
+
+```bash
+cd kubilitics-backend
+
+# Install dependencies
+go mod download
+
+# Run backend
+go run cmd/server/main.go
+
+# Backend runs on http://localhost:8080
+```
+
+### 2. Desktop
+
+```bash
+cd kubilitics-desktop
+
+# Install dependencies
+npm install
+cargo install tauri-cli --version ^2.0
+
+# Build Go backend
+cd ../kubilitics-backend
+go build -o ../kubilitics-desktop/src-tauri/binaries/kubilitics-backend cmd/server/main.go
+
+# Run desktop app
+cd ../kubilitics-desktop
+cargo tauri dev
+```
+
+### 3. Mobile
+
+```bash
+cd kubilitics-mobile
+
+# Install dependencies
+npm install
+cargo install tauri-cli --version ^2.0
+
+# iOS
+cargo tauri ios init
+cargo tauri ios dev
+
+# Android
+cargo tauri android init
+cargo tauri android dev
+```
+
+---
+
+## 🛠️ Development
+
+### Backend Development
+
+```bash
+# Run tests
+cd kubilitics-backend
+go test ./...
+
+# Run with coverage
+go test -v -race -coverprofile=coverage.out ./...
+
+# Build binary
+go build -o bin/kubilitics-backend cmd/server/main.go
+```
+
+### Desktop Development
+
+```bash
+# Development mode (hot reload)
+cargo tauri dev
+
+# Build for production
+cargo tauri build
+
+# Platform-specific builds
+cargo tauri build --target x86_64-apple-darwin  # macOS Intel
+cargo tauri build --target aarch64-apple-darwin # macOS Apple Silicon
+cargo tauri build --target x86_64-pc-windows-msvc # Windows
+cargo tauri build --target x86_64-unknown-linux-gnu # Linux
+```
+
+### Mobile Development
+
+```bash
+# iOS development
+cargo tauri ios dev
+
+# Android development
+cargo tauri android dev
+
+# Build for release
+cargo tauri ios build --release
+cargo tauri android build --release
+```
+
+---
+
+## 📦 Building & Distribution
+
+### Desktop
+
+**macOS:**
+```bash
+cargo tauri build --target universal-apple-darwin
+# Output: src-tauri/target/release/bundle/dmg/Kubilitics.dmg
+```
+
+**Windows:**
+```bash
+cargo tauri build --target x86_64-pc-windows-msvc
+# Output: src-tauri/target/release/bundle/msi/Kubilitics.msi
+```
+
+**Linux:**
+```bash
+cargo tauri build --target x86_64-unknown-linux-gnu
+# Output: src-tauri/target/release/bundle/deb/kubilitics.deb
+```
+
+### Mobile
+
+**iOS (App Store):**
+```bash
+xcodebuild -workspace gen/apple/Kubilitics.xcworkspace \
+  -scheme Kubilitics \
+  -configuration Release \
+  -archivePath build/Kubilitics.xcarchive \
+  archive
+```
+
+**Android (Play Store):**
+```bash
+cd gen/android
+./gradlew bundleRelease
+# Output: app/build/outputs/bundle/release/app-release.aab
+```
+
+---
+
+## 🧪 Testing
+
+### Unit Tests
+
+```bash
+# Backend
+cd kubilitics-backend
+go test ./...
+
+# Desktop (Rust)
+cd kubilitics-desktop/src-tauri
+cargo test
+```
+
+### Integration Tests
+
+```bash
+# Set up test cluster
+kind create cluster --name kubilitics-test
+
+# Run integration tests
+cd kubilitics-backend
+go test -v ./tests/integration/...
+```
+
+### E2E Tests
+
+```bash
+# Install Playwright
+npm install -D @playwright/test
+npx playwright install
+
+# Run E2E tests
+npx playwright test
+```
+
+---
+
+## 📝 API Documentation
+
+### REST API
+
+Base URL: `http://localhost:8080/api/v1`
+
+#### Clusters
+
+- `GET /clusters` - List all configured clusters
+- `POST /clusters` - Add new cluster
+- `GET /clusters/{id}` - Get cluster details
+- `DELETE /clusters/{id}` - Remove cluster
+- `GET /clusters/{id}/summary` - Get cluster summary
+
+#### Topology
+
+- `GET /clusters/{id}/topology` - Get topology graph
+  - Query params: `?namespace=default`
+- `POST /clusters/{id}/topology/export` - Export topology
+  - Body: `{"format": "png|pdf|svg"}`
+
+#### WebSocket
+
+- `WS /ws/resources` - Real-time resource updates
+- `WS /ws/events` - Kubernetes events stream
+
+---
+
+## 🏛️ Architecture
+
+### Backend Architecture
+
+```
+┌────────────────────────────────────────┐
+│          KUBILITICS BACKEND              │
+├────────────────────────────────────────┤
+│                                          │
+│  API LAYER (REST + WebSocket)           │
+│  ↓                                       │
+│  SERVICE LAYER (Business Logic)         │
+│  ↓                                       │
+│  TOPOLOGY ENGINE (Graph Builder)        │
+│  ↓                                       │
+│  K8S CLIENT (client-go)                 │
+│  ↓                                       │
+│  KUBERNETES CLUSTER                     │
+│                                          │
+└────────────────────────────────────────┘
+```
+
+### Desktop Architecture
+
+```
+┌────────────────────────────────────────┐
+│       KUBILITICS DESKTOP APP           │
+├────────────────────────────────────────┤
+│  REACT FRONTEND (WebView)              │
+│  ↕ IPC                                 │
+│  TAURI CORE (Rust)                     │
+│  │                                      │
+│  ├─ Native APIs (File, Dialog, etc)   │
+│  └─ Sidecar Manager                  │
+│      ↓                                  │
+│  GO BACKEND (Child Process)            │
+│  localhost:8080                        │
+└────────────────────────────────────────┘
+```
+
+---
+
+## 🧑‍💻 Contributing
+
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open Pull Request
+
+---
+
+## 📜 License
+
+Apache 2.0
+
+---
+
+## 📧 Support
+
+For questions and support:
+- GitHub Issues: https://github.com/kubilitics/kubilitics
+- Documentation: https://docs.kubilitics.com
+
+---
+
+**Built with ❤️ by the Kubilitics team**
