@@ -202,7 +202,9 @@ func generateGraphWithOwnerRefs(nodeCount int) *Graph {
 			Type:      "Deployment",
 			Name:      fmt.Sprintf("deployment-%d", i),
 			Namespace: "default",
-			UID:       fmt.Sprintf("deployment-uid-%d", i),
+			Metadata: map[string]interface{}{
+				"uid": fmt.Sprintf("deployment-uid-%d", i),
+			},
 		}
 		graph.AddNode(deployment)
 	}
@@ -214,8 +216,8 @@ func generateGraphWithOwnerRefs(nodeCount int) *Graph {
 			Type:      "ReplicaSet",
 			Name:      fmt.Sprintf("rs-%d", i),
 			Namespace: "default",
-			UID:       fmt.Sprintf("rs-uid-%d", i),
 			Metadata: map[string]interface{}{
+				"uid": fmt.Sprintf("rs-uid-%d", i),
 				"ownerReferences": []interface{}{
 					map[string]interface{}{
 						"uid":  fmt.Sprintf("deployment-uid-%d", i%(nodeCount/3)),
@@ -234,8 +236,8 @@ func generateGraphWithOwnerRefs(nodeCount int) *Graph {
 			Type:      "Pod",
 			Name:      fmt.Sprintf("pod-%d", i),
 			Namespace: "default",
-			UID:       fmt.Sprintf("pod-uid-%d", i),
 			Metadata: map[string]interface{}{
+				"uid": fmt.Sprintf("pod-uid-%d", i),
 				"ownerReferences": []interface{}{
 					map[string]interface{}{
 						"uid":  fmt.Sprintf("rs-uid-%d", i%(nodeCount/3)),
