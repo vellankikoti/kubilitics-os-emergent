@@ -16,7 +16,6 @@ import (
 	"github.com/kubilitics/kubilitics-backend/internal/api/rest"
 	"github.com/kubilitics/kubilitics-backend/internal/api/websocket"
 	"github.com/kubilitics/kubilitics-backend/internal/config"
-	"github.com/kubilitics/kubilitics-backend/internal/k8s"
 	"github.com/kubilitics/kubilitics-backend/internal/repository"
 	"github.com/kubilitics/kubilitics-backend/internal/service"
 )
@@ -65,10 +64,10 @@ func main() {
 	log.Println("⚙️  Initializing services...")
 	clusterService := service.NewClusterService()
 	topologyService := service.NewTopologyService(clusterService)
-	logsService := service.NewLogsService(clusterService)
-	metricsService := service.NewMetricsService(clusterService)
-	eventsService := service.NewEventsService(clusterService)
-	exportService := service.NewExportService(topologyService)
+	_ = service.NewLogsService(clusterService)       // Reserved for future use
+	_ = service.NewMetricsService(clusterService)   // Reserved for future use
+	_ = service.NewEventsService(clusterService)    // Reserved for future use
+	_ = service.NewExportService(topologyService)   // Reserved for future use
 
 	log.Println("✅ Services initialized")
 
