@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/kubilitics/kubilitics-backend/internal/k8s"
 	"github.com/kubilitics/kubilitics-backend/internal/models"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ClusterService manages Kubernetes clusters
