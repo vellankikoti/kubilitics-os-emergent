@@ -13,6 +13,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::read_kubeconfig,
+            commands::get_kubeconfig_info,
+            commands::switch_context,
+            commands::validate_kubeconfig,
+            commands::auto_detect_kubeconfig,
             commands::get_app_data_dir,
             commands::select_kubeconfig_file,
         ])
