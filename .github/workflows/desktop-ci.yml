@@ -1,0 +1,106 @@
+name: Desktop CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'kubilitics-desktop/**'
+      - 'kubilitics-backend/**'
+      - '.github/workflows/desktop-ci.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'kubilitics-desktop/**'
+      - 'kubilitics-backend/**'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+    
+    - name: Install dependencies
+      working-directory: kubilitics-desktop
+      run: npm ci
+    
+    - name: Run tests
+      working-directory: kubilitics-desktop/src-tauri
+      run: cargo test
+  
+  build:
+    name: Build
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: universal-apple-darwin
+            artifact: DMG
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: MSI
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: DEB
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install Tauri CLI
+      run: cargo install tauri-cli --version ^2.0
+    
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+    
+    - name: Install dependencies
+      working-directory: kubilitics-desktop
+      run: npm ci
+    
+    - name: Build Go backend
+      working-directory: kubilitics-backend
+      run: |
+        go build -o ../kubilitics-desktop/src-tauri/binaries/kubilitics-backend cmd/server/main.go
+    
+    - name: Build Tauri app
+      working-directory: kubilitics-desktop
+      run: cargo tauri build
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: kubilitics-desktop-${{ matrix.os }}
+        path: |
+          kubilitics-desktop/src-tauri/target/release/bundle/**/*
