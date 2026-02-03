@@ -313,28 +313,33 @@ Kubilitics/
 ## Phase 2: Desktop Application Integration
 
 ### 2.1 Tauri Desktop - Core Features
-**Status**: 🟡 FOUNDATION COMPLETE  
+**Status**: ✅ CORE FEATURES COMPLETE  
 **Priority**: P0 - CRITICAL
 
-- [ ] **Task 2.1.1**: Enhance sidecar management
+- [x] **Task 2.1.1**: Enhance sidecar management ✅ COMPLETE
   - File: `kubilitics-desktop/src-tauri/src/sidecar.rs`
-  - Auto-restart on crash
-  - Health checks
-  - Port conflict detection
-  - Graceful shutdown
+  - ✅ Auto-restart on crash (max 3 attempts)
+  - ✅ Health checks every 10 seconds
+  - ✅ Port conflict detection
+  - ✅ Graceful shutdown with 2s timeout
+  - ✅ Async backend manager with monitoring
   
-- [ ] **Task 2.1.2**: Implement kubeconfig management
+- [x] **Task 2.1.2**: Implement kubeconfig management ✅ COMPLETE
   - Extend: `kubilitics-desktop/src-tauri/src/commands.rs`
-  - Auto-detect kubeconfig
-  - Parse available contexts
-  - Switch contexts
-  - Validate kubeconfig
+  - ✅ Auto-detect kubeconfig (default + KUBECONFIG env)
+  - ✅ Parse available contexts with cluster/user/namespace
+  - ✅ Switch contexts programmatically
+  - ✅ Validate kubeconfig structure
+  - ✅ Commands: get_kubeconfig_info, switch_context, validate_kubeconfig, auto_detect_kubeconfig
   
-- [ ] **Task 2.1.3**: Add file system operations
+- [x] **Task 2.1.3**: Add file system operations ✅ COMPLETE
   - Extend: `kubilitics-desktop/src-tauri/src/commands.rs`
-  - Browse for kubeconfig
-  - Save topology exports
-  - Open in system editor
+  - ✅ Browse for kubeconfig (dialog integration ready)
+  - ✅ Save topology exports (JSON/SVG/PNG/PDF)
+  - ✅ Open in system editor (cross-platform: Windows/Mac/Linux)
+  - ✅ Reveal in file manager (cross-platform)
+  - ✅ Get recent exports (last 10, sorted by modification time)
+  - ✅ App data directory management
   
 - [ ] **Task 2.1.4**: Implement native menus
   - File: `kubilitics-desktop/src-tauri/src/menu.rs` (new)
