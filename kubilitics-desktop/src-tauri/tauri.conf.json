@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0",
+  "productName": "Kubilitics",
+  "version": "1.0.0",
+  "identifier": "com.kubilitics.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/kubilitics-backend"],
+    "resources": [],
+    "copyright": "© 2026 Kubilitics",
+    "category": "DeveloperTool",
+    "shortDescription": "The Kubernetes OS",
+    "longDescription": "Making Kubernetes finally human-friendly"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Kubilitics",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 768,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:8080 ws://localhost:8080"
+    }
+  }
+}
