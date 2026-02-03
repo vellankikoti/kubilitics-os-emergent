@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kubilitics/kubilitics-backend/internal/models"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // RelationshipInferencer handles all relationship inference logic
