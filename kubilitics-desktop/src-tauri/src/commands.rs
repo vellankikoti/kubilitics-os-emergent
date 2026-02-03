@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use tauri::command;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::process::Command;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KubeconfigContext {
@@ -130,6 +131,106 @@ pub async fn auto_detect_kubeconfig() -> Result<Vec<String>, String> {
 }
 
 #[command]
+pub async fn browse_for_kubeconfig() -> Result<Option<String>, String> {
+    // Will be handled by frontend dialog plugin
+    // This is a placeholder for backend validation
+    Ok(None)
+}
+
+#[command]
+pub async fn save_topology_export(
+    data: Vec<u8>,
+    filename: String,
+    format: String,
+) -> Result<String, String> {
+    let app_data_dir = get_app_data_dir().await?;
+    let exports_dir = PathBuf::from(app_data_dir).join("exports");
+    
+    if !exports_dir.exists() {
+        std::fs::create_dir_all(&exports_dir)
+            .map_err(|e| format!("Failed to create exports directory: {}", e))?;
+    }
+    
+    let file_path = exports_dir.join(filename);
+    std::fs::write(&file_path, data)
+        .map_err(|e| format!("Failed to write export file: {}", e))?;
+    
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[command]
+pub async fn open_in_system_editor(file_path: String) -> Result<(), String> {
+    let path = PathBuf::from(&file_path);
+    
+    if !path.exists() {
+        return Err(format!("File not found: {}", file_path));
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(&["/C", "start", "", &file_path])
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&file_path)
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&file_path)
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+    }
+    
+    Ok(())
+}
+
+#[command]
+pub async fn reveal_in_file_manager(file_path: String) -> Result<(), String> {
+    let path = PathBuf::from(&file_path);
+    
+    if !path.exists() {
+        return Err(format!("File not found: {}", file_path));
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .args(&["/select,", &file_path])
+            .spawn()
+            .map_err(|e| format!("Failed to reveal file: {}", e))?;
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .args(&["-R", &file_path])
+            .spawn()
+            .map_err(|e| format!("Failed to reveal file: {}", e))?;
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(parent) = path.parent() {
+            Command::new("xdg-open")
+                .arg(parent)
+                .spawn()
+                .map_err(|e| format!("Failed to reveal file: {}", e))?;
+        }
+    }
+    
+    Ok(())
+}
+
+#[command]
 pub async fn get_app_data_dir() -> Result<String, String> {
     let data_dir = dirs::data_local_dir()
         .ok_or("Could not find data directory")?;
@@ -142,6 +243,38 @@ pub async fn get_app_data_dir() -> Result<String, String> {
     }
     
     Ok(kubilitics_dir.to_string_lossy().to_string())
+}
+
+#[command]
+pub async fn get_recent_exports() -> Result<Vec<String>, String> {
+    let app_data_dir = get_app_data_dir().await?;
+    let exports_dir = PathBuf::from(app_data_dir).join("exports");
+    
+    if !exports_dir.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let mut exports = Vec::new();
+    
+    for entry in std::fs::read_dir(exports_dir)
+        .map_err(|e| format!("Failed to read exports directory: {}", e))? {
+        if let Ok(entry) = entry {
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_file() {
+                    exports.push(entry.path().to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    
+    // Sort by modification time (most recent first)
+    exports.sort_by(|a, b| {
+        let a_time = std::fs::metadata(a).and_then(|m| m.modified()).ok();
+        let b_time = std::fs::metadata(b).and_then(|m| m.modified()).ok();
+        b_time.cmp(&a_time)
+    });
+    
+    Ok(exports.into_iter().take(10).collect())
 }
 
 #[command]
