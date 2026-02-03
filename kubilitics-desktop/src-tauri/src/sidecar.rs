@@ -82,28 +82,35 @@ impl BackendManager {
             loop {
                 sleep(Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS)).await;
                 
-                if !*is_running.lock().unwrap() {
+                let running = {
+                    let is_running_guard = is_running.lock().unwrap();
+                    *is_running_guard
+                };
+                
+                if !running {
                     continue;
                 }
                 
                 if !Self::check_health(BACKEND_PORT).await {
                     println!("Backend health check failed. Attempting restart...");
                     
-                    let mut count = restart_count.lock().unwrap();
-                    if *count < MAX_RESTART_ATTEMPTS {
-                        *count += 1;
-                        drop(count);
-                        
+                    let count = {
+                        let mut count_guard = restart_count.lock().unwrap();
+                        *count_guard += 1;
+                        *count_guard
+                    };
+                    
+                    if count <= MAX_RESTART_ATTEMPTS {
                         let manager = BackendManager::new(app_handle.clone());
                         if let Err(e) = manager.start_backend_process().await {
                             eprintln!("Failed to restart backend: {}", e);
                         } else {
-                            println!("Backend restarted successfully (attempt {})", 
-                                   *restart_count.lock().unwrap());
+                            println!("Backend restarted successfully (attempt {})", count);
                         }
                     } else {
                         eprintln!("Max restart attempts reached. Backend will not restart.");
-                        *is_running.lock().unwrap() = false;
+                        let mut running_guard = is_running.lock().unwrap();
+                        *running_guard = false;
                     }
                 }
             }
