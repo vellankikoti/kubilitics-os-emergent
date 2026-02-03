@@ -298,14 +298,14 @@ fn get_kubeconfig_path(path: Option<String>) -> Result<PathBuf, String> {
 
 fn parse_contexts(config: &Value) -> Result<Vec<KubeconfigContext>, String> {
     let contexts = config.get("contexts")
-        .and_then(|v| v.as_sequence())
+        .and_then(|v| v.as_array())
         .ok_or("No contexts found in kubeconfig")?;
     
     let mut result = Vec::new();
     
     for ctx in contexts {
         let name = ctx.get("name")
-            .and_then(|v| v.as_str())
+            .and_then(|v: &Value| v.as_str())
             .ok_or("Context missing name")?
             .to_string();
         
@@ -313,17 +313,17 @@ fn parse_contexts(config: &Value) -> Result<Vec<KubeconfigContext>, String> {
             .ok_or("Context missing context field")?;
         
         let cluster = context.get("cluster")
-            .and_then(|v| v.as_str())
+            .and_then(|v: &Value| v.as_str())
             .ok_or("Context missing cluster")?
             .to_string();
         
         let user = context.get("user")
-            .and_then(|v| v.as_str())
+            .and_then(|v: &Value| v.as_str())
             .ok_or("Context missing user")?
             .to_string();
         
         let namespace = context.get("namespace")
-            .and_then(|v| v.as_str())
+            .and_then(|v: &Value| v.as_str())
             .map(String::from);
         
         result.push(KubeconfigContext {

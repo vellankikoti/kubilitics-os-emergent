@@ -127,7 +127,8 @@ impl BackendManager {
         
         // Send graceful shutdown signal to backend
         let url = format!("http://localhost:{}/api/v1/shutdown", BACKEND_PORT);
-        let _ = reqwest::post(&url).await;
+        let client = reqwest::Client::new();
+        let _ = client.post(&url).send().await;
         
         // Wait for graceful shutdown
         sleep(Duration::from_secs(2)).await;
@@ -137,8 +138,8 @@ impl BackendManager {
     }
 }
 
-pub fn start_backend(app_handle: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let manager = BackendManager::new(app_handle);
+pub fn start_backend(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let manager = BackendManager::new(app_handle.clone());
     
     tauri::async_runtime::spawn(async move {
         if let Err(e) = manager.start().await {

@@ -27,7 +27,7 @@ fn main() {
         ])
         .setup(|app| {
             // Start Go backend sidecar
-            sidecar::start_backend(app.handle())?;
+            sidecar::start_backend(&app.handle())?;
             
             Ok(())
         })
