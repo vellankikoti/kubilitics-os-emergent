@@ -141,7 +141,7 @@ pub async fn browse_for_kubeconfig() -> Result<Option<String>, String> {
 pub async fn save_topology_export(
     data: Vec<u8>,
     filename: String,
-    format: String,
+    _format: String,
 ) -> Result<String, String> {
     let app_data_dir = get_app_data_dir().await?;
     let exports_dir = PathBuf::from(app_data_dir).join("exports");

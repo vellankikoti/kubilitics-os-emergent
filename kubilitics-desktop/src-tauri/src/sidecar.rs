@@ -1,6 +1,5 @@
-use tauri::{AppHandle, Manager};
-use tauri_plugin_shell::ShellExt;
-use std::sync::{Arc, Mutex};
+use tauri::{AppHandle};
+use tauri_plugin_shell::ShellExt;use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::sleep;
 
