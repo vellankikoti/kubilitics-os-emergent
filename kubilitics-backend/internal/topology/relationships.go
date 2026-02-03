@@ -187,12 +187,7 @@ func (ri *RelationshipInferencer) inferLabelSelectors() error {
 			continue
 		}
 
-		metadata, ok := hpa.Metadata.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		scaleTargetRef, ok := metadata["scaleTargetRef"].(map[string]interface{})
+		scaleTargetRef, ok := hpa.Metadata["scaleTargetRef"].(map[string]interface{})
 		if !ok {
 			continue
 		}
@@ -411,13 +406,8 @@ func (ri *RelationshipInferencer) inferRBACRelationships() error {
 			continue
 		}
 
-		metadata, ok := rb.Metadata.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
 		// RoleBinding -> Role
-		roleRef, ok := metadata["roleRef"].(map[string]interface{})
+		roleRef, ok := rb.Metadata["roleRef"].(map[string]interface{})
 		if ok {
 			roleName, _ := roleRef["name"].(string)
 			for _, role := range roles {
