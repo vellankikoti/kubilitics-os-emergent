@@ -5,15 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
-	networkingv1 "k8s.io/api/networking/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
-	storagev1 "k8s.io/api/storage/v1"
-	autoscalingv2 "k8s.io/api/autoscaling/v2"
-	policyv1 "k8s.io/api/policy/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 )
@@ -95,8 +86,11 @@ func (im *InformerManager) Start(ctx context.Context) error {
 	im.factory.Start(im.stopCh)
 
 	// Wait for cache sync
-	if !cache.WaitForCacheSync(im.stopCh, im.factory.WaitForCacheSync(ctx.Done())...) {
-		return fmt.Errorf("failed to sync informer caches")
+	synced := im.factory.WaitForCacheSync(im.stopCh)
+	for resource, ok := range synced {
+		if !ok {
+			return fmt.Errorf("failed to sync cache for resource: %v", resource)
+		}
 	}
 
 	return nil
