@@ -464,13 +464,8 @@ func (ri *RelationshipInferencer) inferRBACRelationships() error {
 			continue
 		}
 
-		metadata, ok := crb.Metadata.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
 		// ClusterRoleBinding -> ClusterRole
-		roleRef, ok := metadata["roleRef"].(map[string]interface{})
+		roleRef, ok := crb.Metadata["roleRef"].(map[string]interface{})
 		if ok {
 			roleName, _ := roleRef["name"].(string)
 			for _, role := range clusterRoles {
@@ -532,12 +527,7 @@ func (ri *RelationshipInferencer) inferNetworkRelationships() error {
 			continue
 		}
 
-		metadata, ok := ingress.Metadata.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		spec, ok := metadata["spec"].(map[string]interface{})
+		spec, ok := ingress.Metadata["spec"].(map[string]interface{})
 		if !ok {
 			continue
 		}
