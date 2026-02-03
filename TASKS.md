@@ -286,8 +286,11 @@ Kubilitics/
   - Current coverage: ~60%
   
 - [ ] **Task 1.8.3**: Write integration tests
-  - Dir: `kubilitics-backend/tests/integration/` (pending)
-  - Requires: Test K8s cluster (kind/k3s)
+  - Dir: `kubilitics-backend/tests/integration/` ✅ STRUCTURE CREATED
+  - Status: Requires Test K8s cluster (kind/k3s/minikube)
+  - README with setup instructions complete
+  - **Blocked**: Cannot test without real K8s cluster access
+  - Ready for implementation when K8s cluster available
   
 - [x] **Task 1.8.4**: Write performance benchmarks
   - File: `kubilitics-backend/internal/topology/benchmark_test.go` ✅ COMPLETE
