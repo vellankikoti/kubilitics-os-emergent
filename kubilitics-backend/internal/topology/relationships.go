@@ -88,12 +88,7 @@ func (ri *RelationshipInferencer) inferOwnerReferences() error {
 			continue
 		}
 
-		metadata, ok := node.Metadata.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		ownerRefs, ok := metadata["ownerReferences"].([]interface{})
+		ownerRefs, ok := node.Metadata["ownerReferences"].([]interface{})
 		if !ok {
 			continue
 		}
