@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/kubilitics/kubilitics-backend/internal/k8s"
 	corev1 "k8s.io/api/core/v1"
 )
 

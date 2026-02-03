@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
+	_ "github.com/gorilla/websocket"
 	"github.com/kubilitics/kubilitics-backend/internal/models"
 )
 
