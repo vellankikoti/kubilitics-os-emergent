@@ -183,7 +183,7 @@ func TestValidateOrphanEdge(t *testing.T) {
 	// Should fail validation
 	err := graph.Validate()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "orphan")
+	assert.Contains(t, err.Error(), "non-existent")
 }
 
 func TestGetOutgoingEdges(t *testing.T) {
