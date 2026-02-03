@@ -31,7 +31,8 @@ func (e *Engine) BuildGraph(ctx context.Context, filters models.TopologyFilters)
 	}
 
 	// Phase 2: Infer relationships
-	if err := e.inferRelationships(ctx, graph); err != nil {
+	inferencer := NewRelationshipInferencer(e, graph)
+	if err := inferencer.InferAllRelationships(ctx); err != nil {
 		return nil, fmt.Errorf("relationship inference failed: %w", err)
 	}
 
