@@ -73,6 +73,20 @@ agenthub/agents/youtube/db
 *.deb
 *.dylib
 
+# Go binaries
+kubilitics-backend/cmd/server/kubilitics-server
+**/kubilitics-server
+
+# Rust / Tauri build artifacts
+**/target/
+kubilitics-desktop/**/target/
+
+# Desktop app bundled binaries
+kubilitics-desktop/**/binaries/
+
+# Bun binary lockfile (optional; remove if you want to commit it)
+*.lockb
+
 # Build caches
 .cache/
 

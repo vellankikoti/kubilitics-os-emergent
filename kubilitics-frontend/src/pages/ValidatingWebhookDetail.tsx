@@ -1,0 +1,182 @@
+import { useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Webhook, Clock, Shield, Download, Trash2, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import {
+  ResourceHeader, ResourceStatusCards, ResourceTabs,
+  YamlViewer, EventsSection, ActionsSection,
+  type ResourceStatus, type EventInfo,
+} from '@/components/resources';
+
+const mockWebhook = {
+  name: 'gatekeeper-validating-webhook',
+  status: 'Active' as ResourceStatus,
+  age: '60d',
+  webhooks: [
+    {
+      name: 'validation.gatekeeper.sh',
+      failurePolicy: 'Ignore',
+      matchPolicy: 'Exact',
+      sideEffects: 'None',
+      timeoutSeconds: 3,
+      admissionReviewVersions: ['v1', 'v1beta1'],
+      rules: [
+        { apiGroups: ['*'], apiVersions: ['*'], operations: ['CREATE', 'UPDATE'], resources: ['*'] },
+      ],
+      clientConfig: {
+        service: { name: 'gatekeeper-webhook-service', namespace: 'gatekeeper-system', port: 443 },
+      },
+      namespaceSelector: {
+        matchExpressions: [{ key: 'admission.gatekeeper.sh/ignore', operator: 'DoesNotExist' }],
+      },
+    },
+  ],
+};
+
+const mockEvents: EventInfo[] = [];
+
+const yaml = `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: gatekeeper-validating-webhook
+webhooks:
+- name: validation.gatekeeper.sh
+  failurePolicy: Ignore
+  matchPolicy: Exact
+  sideEffects: None
+  timeoutSeconds: 3
+  admissionReviewVersions:
+  - v1
+  - v1beta1
+  rules:
+  - apiGroups: ["*"]
+    apiVersions: ["*"]
+    operations: ["CREATE", "UPDATE"]
+    resources: ["*"]
+  clientConfig:
+    service:
+      name: gatekeeper-webhook-service
+      namespace: gatekeeper-system
+      port: 443
+  namespaceSelector:
+    matchExpressions:
+    - key: admission.gatekeeper.sh/ignore
+      operator: DoesNotExist`;
+
+export default function ValidatingWebhookDetail() {
+  const { name } = useParams();
+  const [activeTab, setActiveTab] = useState('overview');
+  const wh = mockWebhook;
+
+  const statusCards = [
+    { label: 'Webhooks', value: wh.webhooks.length, icon: Webhook, iconColor: 'primary' as const },
+    { label: 'Failure Policy', value: wh.webhooks[0]?.failurePolicy || '-', icon: AlertTriangle, iconColor: 'warning' as const },
+    { label: 'Side Effects', value: wh.webhooks[0]?.sideEffects || '-', icon: CheckCircle, iconColor: 'success' as const },
+    { label: 'Age', value: wh.age, icon: Clock, iconColor: 'muted' as const },
+  ];
+
+  const tabs = [
+    {
+      id: 'overview',
+      label: 'Overview',
+      content: (
+        <div className="space-y-6">
+          {wh.webhooks.map((webhook, idx) => (
+            <Card key={idx}>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Shield className="h-4 w-4" />
+                  {webhook.name}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <p className="text-muted-foreground mb-1">Failure Policy</p>
+                    <Badge variant={webhook.failurePolicy === 'Fail' ? 'destructive' : 'secondary'}>
+                      {webhook.failurePolicy}
+                    </Badge>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground mb-1">Match Policy</p>
+                    <Badge variant="outline">{webhook.matchPolicy}</Badge>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground mb-1">Side Effects</p>
+                    <Badge variant="outline">{webhook.sideEffects}</Badge>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground mb-1">Timeout</p>
+                    <p>{webhook.timeoutSeconds}s</p>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground mb-2">Rules</p>
+                  <div className="space-y-2">
+                    {webhook.rules.map((rule, ruleIdx) => (
+                      <div key={ruleIdx} className="p-3 rounded-lg bg-muted/50 text-sm font-mono">
+                        <p>Groups: {rule.apiGroups.join(', ')}</p>
+                        <p>Versions: {rule.apiVersions.join(', ')}</p>
+                        <p>Operations: {rule.operations.join(', ')}</p>
+                        <p>Resources: {rule.resources.join(', ')}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {webhook.namespaceSelector && (
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">Namespace Selector</p>
+                    <div className="p-3 rounded-lg bg-muted/50 text-sm font-mono">
+                      {webhook.namespaceSelector.matchExpressions?.map((expr, i) => (
+                        <p key={i}>{expr.key} {expr.operator}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <p className="text-sm text-muted-foreground mb-2">Client Config</p>
+                  <div className="p-3 rounded-lg bg-muted/50 text-sm">
+                    <p>Service: {webhook.clientConfig.service.namespace}/{webhook.clientConfig.service.name}:{webhook.clientConfig.service.port}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ),
+    },
+    { id: 'events', label: 'Events', content: <EventsSection events={mockEvents} /> },
+    { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={wh.name} /> },
+    {
+      id: 'actions',
+      label: 'Actions',
+      content: (
+        <ActionsSection actions={[
+          { icon: Download, label: 'Download YAML', description: 'Export Webhook configuration' },
+          { icon: Trash2, label: 'Delete Webhook', description: 'Remove this webhook configuration', variant: 'destructive' },
+        ]} />
+      ),
+    },
+  ];
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+      <ResourceHeader
+        resourceType="ValidatingWebhookConfiguration"
+        resourceIcon={Webhook}
+        name={wh.name}
+        status={wh.status}
+        backLink="/validatingwebhooks"
+        backLabel="Validating Webhooks"
+        metadata={<span className="flex items-center gap-1.5 ml-2"><Clock className="h-3.5 w-3.5" />Created {wh.age}</span>}
+        actions={[
+          { label: 'Delete', icon: Trash2, variant: 'destructive' },
+        ]}
+      />
+      <ResourceStatusCards cards={statusCards} />
+      <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
+    </motion.div>
+  );
+}
