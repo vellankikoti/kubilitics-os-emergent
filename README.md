@@ -41,6 +41,15 @@ This is a native application that connects directly to your Kubernetes clusters.
 │   │   └── tauri.conf.json
 │   └── Cargo.toml
 │
+├── kubilitics-frontend/        Web app (React + TypeScript + Vite)
+│   ├── src/                    App source, pages, components, stores
+│   ├── public/
+│   └── package.json
+│
+├── kubilitics-website/         Marketing/landing site (Vite + React/TS)
+│   ├── src/                    Pages, components, assets
+│   └── package.json
+│
 ├── kubilitics-mobile/          Tauri mobile application
 │   ├── src/                    React frontend
 │   ├── src-tauri/              Rust core
@@ -50,15 +59,20 @@ This is a native application that connects directly to your Kubernetes clusters.
 │   │   └── apple/              iOS project
 │   └── Cargo.toml
 │
+├── project-docs/               Implementation guides & architecture docs
+│   ├── IMPLEMENTATION-GUIDE.md
+│   ├── backend-part-*.md
+│   ├── frontend-part-*.md
+│   └── tauri-*-implementation.md
+│
 ├── tests/                      End-to-end tests
 │   ├── e2e/                    Playwright tests
 │   ├── integration/            Go integration tests
 │   └── fixtures/               Test data
 │
-└── docs/                       Documentation
-    ├── architecture.md
-    ├── api-reference.md
-    └── development.md
+└── docs/                       Project documentation
+    ├── ARCHITECTURE.md
+    └── PHASE1_COMPLETION_REPORT.md
 ```
 
 ---
@@ -148,6 +162,24 @@ cargo tauri ios dev
 # Android
 cargo tauri android init
 cargo tauri android dev
+```
+
+### 4. Web app (kubilitics-frontend)
+
+```bash
+cd kubilitics-frontend
+npm install
+npm run dev
+# App runs on http://localhost:5173 (or next available port)
+```
+
+### 5. Website (kubilitics-website)
+
+```bash
+cd kubilitics-website
+npm install
+npm run dev
+# Landing site runs on http://localhost:5173 (or next available port)
 ```
 
 ---
