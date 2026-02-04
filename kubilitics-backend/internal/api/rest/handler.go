@@ -36,6 +36,22 @@ func SetupRoutes(router *mux.Router, h *Handler) {
 	router.HandleFunc("/clusters/{id}/topology", h.GetTopology).Methods("GET")
 	router.HandleFunc("/clusters/{id}/topology/export", h.ExportTopology).Methods("POST")
 
+	// Resource routes
+	router.HandleFunc("/clusters/{id}/resources/{kind}", h.ListResources).Methods("GET")
+	router.HandleFunc("/clusters/{id}/resources/{kind}/{namespace}/{name}", h.GetResource).Methods("GET")
+	router.HandleFunc("/clusters/{id}/resources/{kind}/{namespace}/{name}", h.DeleteResource).Methods("DELETE")
+	router.HandleFunc("/clusters/{id}/apply", h.ApplyManifest).Methods("POST")
+
+	// Logs routes
+	router.HandleFunc("/clusters/{id}/logs/{namespace}/{pod}", h.GetPodLogs).Methods("GET")
+
+	// Metrics routes
+	router.HandleFunc("/clusters/{id}/metrics", h.GetClusterMetrics).Methods("GET")
+	router.HandleFunc("/clusters/{id}/metrics/{namespace}/{pod}", h.GetPodMetrics).Methods("GET")
+
+	// Events routes
+	router.HandleFunc("/clusters/{id}/events", h.GetEvents).Methods("GET")
+
 	// Health check
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
