@@ -219,6 +219,13 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 		mux.HandleFunc("/api/v1/analytics/trends", s.handleAnalyticsTrends)
 		mux.HandleFunc("/api/v1/analytics/recommendations", s.handleAnalyticsRecommendations)
 	}
+
+	// WebSocket endpoint for AI chat
+	mux.HandleFunc("/ws/chat", s.handleWebSocket)
+
+	// Conversation endpoints
+	mux.HandleFunc("/api/v1/conversations", s.handleConversationsList)
+	mux.HandleFunc("/api/v1/conversations/", s.handleConversationGet)
 }
 
 // handleHealth handles health check requests
@@ -284,101 +291,4 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(info))
 }
 
-// handleLLMComplete handles LLM completion requests
-func (s *Server) handleLLMComplete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// TODO: Parse request body, call LLM adapter, return response
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"not_implemented","message":"LLM completion endpoint coming in Phase 2"}`))
-}
-
-// handleLLMStream handles LLM streaming requests
-func (s *Server) handleLLMStream(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// TODO: Parse request body, call LLM adapter streaming, stream response
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"not_implemented","message":"LLM streaming endpoint coming in Phase 2"}`))
-}
-
-// handleSafetyEvaluate handles safety evaluation requests
-func (s *Server) handleSafetyEvaluate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// TODO: Parse action, evaluate with safety engine, return result
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"not_implemented","message":"Safety evaluation endpoint coming in Phase 2"}`))
-}
-
-// handleSafetyRules handles safety rules requests
-func (s *Server) handleSafetyRules(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// TODO: Get immutable rules from safety engine
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"not_implemented","message":"Safety rules endpoint coming in Phase 2"}`))
-}
-
-// handleSafetyPolicies handles safety policies requests
-func (s *Server) handleSafetyPolicies(w http.ResponseWriter, r *http.Request) {
-	// TODO: CRUD operations for safety policies
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"not_implemented","message":"Safety policies endpoint coming in Phase 2"}`))
-}
-
-// handleAnalyticsAnomalies handles anomaly detection requests
-func (s *Server) handleAnalyticsAnomalies(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// TODO: Parse time-series data, detect anomalies, return results
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"not_implemented","message":"Anomaly detection endpoint coming in Phase 2"}`))
-}
-
-// handleAnalyticsTrends handles trend analysis requests
-func (s *Server) handleAnalyticsTrends(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// TODO: Parse time-series data, analyze trend, return results
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"not_implemented","message":"Trend analysis endpoint coming in Phase 2"}`))
-}
-
-// handleAnalyticsRecommendations handles recommendation requests
-func (s *Server) handleAnalyticsRecommendations(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// TODO: Parse time-series data, generate recommendations, return results
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"not_implemented","message":"Recommendations endpoint coming in Phase 2"}`))
-}
+// API endpoint handlers are implemented in handlers.go and websocket.go
