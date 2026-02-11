@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/anthropic"
+	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/custom"
 	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/ollama"
 	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/openai"
 	"github.com/kubilitics/kubilitics-ai/internal/llm/types"
@@ -122,12 +123,13 @@ func NewLLMAdapter(cfg *Config) (LLMAdapter, error) {
 		}
 
 	case ProviderCustom:
-		return nil, fmt.Errorf("Custom provider not yet implemented")
-		// TODO: Implement Custom provider
-		// if cfg.BaseURL == "" {
-		// 	return nil, fmt.Errorf("custom provider requires base URL")
-		// }
-		// client, err = custom.NewCustomClient(cfg.BaseURL, cfg.APIKey, cfg.Model)
+		if cfg.BaseURL == "" {
+			return nil, fmt.Errorf("custom provider requires base URL")
+		}
+		client, err = custom.NewCustomClient(cfg.BaseURL, cfg.APIKey, cfg.Model)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Custom client: %w", err)
+		}
 
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
@@ -151,6 +153,8 @@ func (a *llmAdapterImpl) Complete(ctx context.Context, messages []types.Message,
 		return client.Complete(ctx, messages, tools)
 	case *ollama.OllamaClientImpl:
 		return client.Complete(ctx, messages, tools)
+	case *custom.CustomClientImpl:
+		return client.Complete(ctx, messages, tools)
 	default:
 		return "", nil, fmt.Errorf("unknown client type")
 	}
@@ -168,6 +172,8 @@ func (a *llmAdapterImpl) CompleteStream(ctx context.Context, messages []types.Me
 		return client.CompleteStream(ctx, messages, tools)
 	case *ollama.OllamaClientImpl:
 		return client.CompleteStream(ctx, messages, tools)
+	case *custom.CustomClientImpl:
+		return client.CompleteStream(ctx, messages, tools)
 	default:
 		return nil, nil, fmt.Errorf("unknown client type")
 	}
@@ -183,6 +189,8 @@ func (a *llmAdapterImpl) CountTokens(ctx context.Context, messages []types.Messa
 	case *openai.OpenAIClientImpl:
 		return client.CountTokens(ctx, messages, tools)
 	case *ollama.OllamaClientImpl:
+		return client.CountTokens(ctx, messages, tools)
+	case *custom.CustomClientImpl:
 		return client.CountTokens(ctx, messages, tools)
 	default:
 		return 0, fmt.Errorf("unknown client type")
@@ -205,6 +213,8 @@ func (a *llmAdapterImpl) GetCapabilities(ctx context.Context) (interface{}, erro
 		caps, err = client.GetCapabilities(ctx)
 	case *ollama.OllamaClientImpl:
 		caps, err = client.GetCapabilities(ctx)
+	case *custom.CustomClientImpl:
+		caps, err = client.GetCapabilities(ctx)
 	default:
 		return nil, fmt.Errorf("unknown client type")
 	}
@@ -225,6 +235,8 @@ func (a *llmAdapterImpl) NormalizeToolCall(ctx context.Context, toolCall interfa
 	case *openai.OpenAIClientImpl:
 		return client.NormalizeToolCall(ctx, toolCall)
 	case *ollama.OllamaClientImpl:
+		return client.NormalizeToolCall(ctx, toolCall)
+	case *custom.CustomClientImpl:
 		return client.NormalizeToolCall(ctx, toolCall)
 	default:
 		return nil, fmt.Errorf("unknown client type")

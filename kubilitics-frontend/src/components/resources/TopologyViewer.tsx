@@ -1332,33 +1332,33 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
         </div>
       )}
 
-      {/* Canvas */}
-      <div
-        ref={canvasWrapperRef}
-        className={cn(
-          'relative',
-          variant === 'card'
-            ? 'flex-1 min-h-0 flex items-center justify-center bg-transparent'
-            : 'flex-1 min-h-0 min-w-0 overflow-auto bg-gradient-to-b from-background to-muted/20 scrollbar-thin scrollbar-thumb-border/60'
-        )}
-      >
-        {variant !== 'card' && (
-          <Badge
-            variant="secondary"
-            className="absolute top-4 right-4 z-10 font-medium text-xs"
-          >
-            {nodes.length} Resources
-          </Badge>
-        )}
-
-        {/* SVG with zoom - wrapper has scaled dimensions for proper scrolling */}
+      {/* Canvas - absolute positioning gives scroll container definite size for overflow to work */}
+      <div className="relative flex-1 min-h-0">
         <div
-          style={{
-            width: variant === 'card' ? '100%' : `${(canvasWidth * zoom) / 100}px`,
-            height: variant === 'card' ? '100%' : `${(viewBoxHeight * zoom) / 100}px`,
-            position: 'relative',
-          }}
+          ref={canvasWrapperRef}
+          className={cn(
+            variant === 'card'
+              ? 'absolute inset-0 flex items-center justify-center bg-transparent'
+              : 'absolute inset-0 overflow-auto bg-gradient-to-b from-background to-muted/20 scrollbar-thin scrollbar-thumb-border/60'
+          )}
         >
+          {variant !== 'card' && (
+            <Badge
+              variant="secondary"
+              className="absolute top-4 right-4 z-10 font-medium text-xs"
+            >
+              {nodes.length} Resources
+            </Badge>
+          )}
+
+          {/* SVG with zoom - wrapper has scaled dimensions for proper scrolling */}
+          <div
+            style={{
+              width: variant === 'card' ? '100%' : `${(canvasWidth * zoom) / 100}px`,
+              height: variant === 'card' ? '100%' : `${(viewBoxHeight * zoom) / 100}px`,
+              position: 'relative',
+            }}
+          >
         <svg
           ref={svgRef}
           viewBox={`0 0 ${canvasWidth} ${viewBoxHeight}`}
@@ -1614,7 +1614,8 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
               </motion.g>
             );
           })}
-        </svg>
+          </svg>
+          </div>
         </div>
       </div>
     </div>
