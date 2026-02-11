@@ -32,8 +32,8 @@ var modelCosts = map[string]struct {
 	"claude-3-haiku-20240307":    {0.00025, 0.00125},
 }
 
-// anthropicClientImpl implements the Anthropic provider
-type anthropicClientImpl struct {
+// AnthropicClientImpl implements the Anthropic provider (exported for adapter)
+type AnthropicClientImpl struct {
 	apiKey          string
 	model           string
 	maxTokens       int
@@ -103,7 +103,7 @@ type Capabilities struct {
 }
 
 // NewAnthropicClient creates a new Anthropic client
-func NewAnthropicClient(apiKey string, model string) (*anthropicClientImpl, error) {
+func NewAnthropicClient(apiKey string, model string) (*AnthropicClientImpl, error) {
 	if apiKey == "" {
 		// Try environment variable
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
@@ -131,7 +131,7 @@ func NewAnthropicClient(apiKey string, model string) (*anthropicClientImpl, erro
 		baseURL = DefaultBaseURL
 	}
 
-	return &anthropicClientImpl{
+	return &AnthropicClientImpl{
 		apiKey:    apiKey,
 		model:     model,
 		maxTokens: maxTokens,
@@ -143,7 +143,7 @@ func NewAnthropicClient(apiKey string, model string) (*anthropicClientImpl, erro
 }
 
 // Complete implements non-streaming completion
-func (c *anthropicClientImpl) Complete(ctx context.Context, messages []interface{}, tools []interface{}) (string, []interface{}, error) {
+func (c *AnthropicClientImpl) Complete(ctx context.Context, messages []interface{}, tools []interface{}) (string, []interface{}, error) {
 	// Convert generic messages to Anthropic format
 	anthMessages, err := c.convertMessages(messages)
 	if err != nil {
@@ -190,7 +190,7 @@ func (c *anthropicClientImpl) Complete(ctx context.Context, messages []interface
 }
 
 // CompleteStream implements streaming completion
-func (c *anthropicClientImpl) CompleteStream(ctx context.Context, messages []interface{}, tools []interface{}) (chan string, chan interface{}, error) {
+func (c *AnthropicClientImpl) CompleteStream(ctx context.Context, messages []interface{}, tools []interface{}) (chan string, chan interface{}, error) {
 	textChan := make(chan string, 100)
 	toolChan := make(chan interface{}, 10)
 
@@ -225,7 +225,7 @@ func (c *anthropicClientImpl) CompleteStream(ctx context.Context, messages []int
 }
 
 // CountTokens estimates token count
-func (c *anthropicClientImpl) CountTokens(ctx context.Context, messages []interface{}, tools []interface{}) (int, error) {
+func (c *AnthropicClientImpl) CountTokens(ctx context.Context, messages []interface{}, tools []interface{}) (int, error) {
 	// Anthropic doesn't have a separate token counting API
 	// We approximate based on character count
 	// Real implementation would use tiktoken or similar
@@ -252,7 +252,7 @@ func (c *anthropicClientImpl) CountTokens(ctx context.Context, messages []interf
 }
 
 // GetCapabilities returns model capabilities
-func (c *anthropicClientImpl) GetCapabilities(ctx context.Context) (interface{}, error) {
+func (c *AnthropicClientImpl) GetCapabilities(ctx context.Context) (interface{}, error) {
 	costs, ok := modelCosts[c.model]
 	if !ok {
 		// Default to Sonnet costs
@@ -272,7 +272,7 @@ func (c *anthropicClientImpl) GetCapabilities(ctx context.Context) (interface{},
 }
 
 // ValidateToolCall validates a tool call
-func (c *anthropicClientImpl) ValidateToolCall(ctx context.Context, toolName string, args interface{}) error {
+func (c *AnthropicClientImpl) ValidateToolCall(ctx context.Context, toolName string, args interface{}) error {
 	if toolName == "" {
 		return fmt.Errorf("tool name is required")
 	}
@@ -281,7 +281,7 @@ func (c *anthropicClientImpl) ValidateToolCall(ctx context.Context, toolName str
 }
 
 // NormalizeToolCall converts Anthropic format to standard format
-func (c *anthropicClientImpl) NormalizeToolCall(ctx context.Context, toolCall interface{}) (map[string]interface{}, error) {
+func (c *AnthropicClientImpl) NormalizeToolCall(ctx context.Context, toolCall interface{}) (map[string]interface{}, error) {
 	tcMap, ok := toolCall.(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("tool call must be a map")
@@ -299,7 +299,7 @@ func (c *anthropicClientImpl) NormalizeToolCall(ctx context.Context, toolCall in
 }
 
 // convertMessages converts generic messages to Anthropic format
-func (c *anthropicClientImpl) convertMessages(messages []interface{}) ([]Message, error) {
+func (c *AnthropicClientImpl) convertMessages(messages []interface{}) ([]Message, error) {
 	result := make([]Message, 0, len(messages))
 
 	for _, msg := range messages {
@@ -337,7 +337,7 @@ func (c *anthropicClientImpl) convertMessages(messages []interface{}) ([]Message
 }
 
 // convertTools converts generic tools to Anthropic format
-func (c *anthropicClientImpl) convertTools(tools []interface{}) ([]Tool, error) {
+func (c *AnthropicClientImpl) convertTools(tools []interface{}) ([]Tool, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
@@ -369,7 +369,7 @@ func (c *anthropicClientImpl) convertTools(tools []interface{}) ([]Tool, error) 
 }
 
 // makeRequest makes an HTTP request to Anthropic API
-func (c *anthropicClientImpl) makeRequest(ctx context.Context, req Request) (*Response, error) {
+func (c *AnthropicClientImpl) makeRequest(ctx context.Context, req Request) (*Response, error) {
 	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
