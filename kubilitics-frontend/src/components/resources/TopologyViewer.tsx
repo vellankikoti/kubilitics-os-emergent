@@ -90,6 +90,8 @@ export interface TopologyViewerProps {
   layoutOptions?: LayoutOptions;
   /** Hide JSON/CSV/PNG in toolbar; parent shows a single consolidated export row */
   hideBuiltInExport?: boolean;
+  /** When true, topology expands to full content size and page scrolls (like NodeDetail). When false, scroll happens inside the card. */
+  scrollWithPage?: boolean;
   /** Expanded resources (namespaces, deployments, replicasets, nodes) - controls visibility of child resources */
   expandedResources?: Set<string>;
   /** Callback when resource expansion state changes */
@@ -882,10 +884,10 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>(function TopologyViewer(
-  { nodes, edges, onNodeClick, className, variant = 'default', layoutOptions, hideBuiltInExport = false, expandedResources: externalExpandedResources, onToggleExpansion },
+  { nodes, edges, onNodeClick, className, variant = 'default', layoutOptions, hideBuiltInExport = false, scrollWithPage = false, expandedResources: externalExpandedResources, onToggleExpansion },
   ref
 ) {
-  const [zoom, setZoom] = useState(60);
+  const [zoom, setZoom] = useState(() => (scrollWithPage ? 100 : 60));
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -1086,11 +1088,14 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
       return { ...dynamic, ...layoutOptions };
     }
     const base = { ...DEFAULT_LAYOUT, ...layoutOptions };
+    if (scrollWithPage) {
+      return { ...base, canvasWidth: layoutOptions?.canvasWidth ?? 1400 };
+    }
     if (containerWidth != null && containerWidth > 0) {
       return { ...base, canvasWidth: Math.max(400, containerWidth - 32) };
     }
     return base;
-  }, [variant, level1Count, layoutOptions, containerWidth]);
+  }, [variant, level1Count, layoutOptions, containerWidth, scrollWithPage]);
   const positions = useMemo(
     () => calculateCleanLayout(visibleNodes, visibleEdges, effectiveLayout),
     [visibleNodes, visibleEdges, effectiveLayout]
@@ -1203,6 +1208,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
 
   useEffect(() => {
     if (variant !== 'default' || !canvasSize || nodes.length === 0 || hasSetInitialZoomRef.current) return;
+    if (scrollWithPage) return; // No fit-to-screen when page scrolls - use 100% zoom
     const padding = 48;
     // Calculate zoom to fit content, but don't zoom out too much (min 40%)
     const scaleX = (canvasSize.width - padding) / canvasWidth;
@@ -1213,7 +1219,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
     const fitZoom = Math.round(Math.max(40, Math.min(100, scale * 100)));
     setZoom(fitZoom);
     hasSetInitialZoomRef.current = true;
-  }, [variant, canvasSize, canvasWidth, viewBoxHeight, nodes.length]);
+  }, [variant, canvasSize, canvasWidth, viewBoxHeight, nodes.length, scrollWithPage]);
 
   return (
     <div
@@ -1221,7 +1227,9 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
       className={cn(
         variant === 'card' 
           ? 'overflow-hidden flex flex-col min-h-0' 
-          : 'overflow-hidden rounded-xl border border-border bg-card flex flex-col min-h-0', 
+          : scrollWithPage
+            ? 'rounded-xl border border-border bg-card'
+            : 'overflow-hidden rounded-xl border border-border bg-card flex flex-col min-h-0', 
         className
       )}
     >
@@ -1332,14 +1340,18 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
         </div>
       )}
 
-      {/* Canvas - absolute positioning gives scroll container definite size for overflow to work */}
-      <div className="relative flex-1 min-h-0">
+      {/* Canvas - scrollWithPage: block layout, content at full size, page scrolls. Otherwise: scroll within card. */}
+      <div className={cn(
+        scrollWithPage ? '' : 'relative flex-1 min-h-0'
+      )}>
         <div
           ref={canvasWrapperRef}
           className={cn(
             variant === 'card'
               ? 'absolute inset-0 flex items-center justify-center bg-transparent'
-              : 'absolute inset-0 overflow-auto bg-gradient-to-b from-background to-muted/20 scrollbar-thin scrollbar-thumb-border/60'
+              : scrollWithPage
+                ? 'relative bg-gradient-to-b from-background to-muted/20 min-w-0'
+                : 'absolute inset-0 overflow-auto bg-gradient-to-b from-background to-muted/20 scrollbar-thin scrollbar-thumb-border/60'
           )}
         >
           {variant !== 'card' && (
@@ -1351,7 +1363,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
             </Badge>
           )}
 
-          {/* SVG with zoom - wrapper has scaled dimensions for proper scrolling */}
+          {/* SVG with zoom - wrapper has scaled dimensions; when scrollWithPage, content at full size */}
           <div
             style={{
               width: variant === 'card' ? '100%' : `${(canvasWidth * zoom) / 100}px`,

@@ -1,11 +1,9 @@
 /**
  * Topology Toolbar Component
- * View toggles, namespace selector, search, export, and layout controls
+ * View toggles, namespace selector, node selector, search, export, and layout controls
  */
-import { type FC, useState } from 'react';
+import { type FC } from 'react';
 import { 
-  Layers, 
-  Network, 
   Search, 
   Download, 
   RefreshCw,
@@ -15,7 +13,6 @@ import {
   FileText,
   ArrowDown,
   ArrowRight,
-  Check,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,11 +34,12 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
 interface TopologyToolbarProps {
-  viewMode: 'cluster' | 'namespace';
-  onViewModeChange: (mode: 'cluster' | 'namespace') => void;
   selectedNamespace: string;
   namespaces: string[];
   onNamespaceChange: (ns: string) => void;
+  selectedNode: string;
+  nodes: string[];
+  onNodeChange: (node: string) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onSearchSubmit?: (query: string) => void;
@@ -52,11 +50,12 @@ interface TopologyToolbarProps {
 }
 
 export const TopologyToolbar: FC<TopologyToolbarProps> = ({
-  viewMode,
-  onViewModeChange,
   selectedNamespace,
   namespaces,
   onNamespaceChange,
+  selectedNode,
+  nodes,
+  onNodeChange,
   searchQuery,
   onSearchChange,
   onSearchSubmit,
@@ -66,32 +65,10 @@ export const TopologyToolbar: FC<TopologyToolbarProps> = ({
   className,
 }) => {
   return (
-    <div className={cn('flex flex-wrap items-center gap-3', className)}>
-      {/* View Mode Toggle */}
-      <div className="flex items-center rounded-lg border border-border bg-card p-1">
-        <Button
-          variant={viewMode === 'cluster' ? 'default' : 'ghost'}
-          size="sm"
-          onClick={() => onViewModeChange('cluster')}
-          className="gap-1.5 h-8"
-        >
-          <Network className="h-4 w-4" />
-          Cluster
-        </Button>
-        <Button
-          variant={viewMode === 'namespace' ? 'default' : 'ghost'}
-          size="sm"
-          onClick={() => onViewModeChange('namespace')}
-          className="gap-1.5 h-8"
-        >
-          <Layers className="h-4 w-4" />
-          Namespace
-        </Button>
-      </div>
-
-      {/* Namespace Selector */}
+    <div className={cn('flex flex-wrap items-center gap-3 w-full', className)}>
+      {/* Namespace Selector - click to open, select to filter */}
       <Select value={selectedNamespace} onValueChange={onNamespaceChange}>
-        <SelectTrigger className="w-[180px] h-9">
+        <SelectTrigger className="w-[160px] h-9 shrink-0">
           <SelectValue placeholder="Select namespace" />
         </SelectTrigger>
         <SelectContent>
@@ -105,8 +82,24 @@ export const TopologyToolbar: FC<TopologyToolbarProps> = ({
         </SelectContent>
       </Select>
 
-      {/* Search */}
-      <div className="relative flex-1 max-w-xs">
+      {/* Node Selector */}
+      <Select value={selectedNode || '__all__'} onValueChange={(v) => onNodeChange(v === '__all__' ? '' : v)}>
+        <SelectTrigger className="w-[160px] h-9 shrink-0">
+          <SelectValue placeholder="Select node" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__all__">All Nodes</SelectItem>
+          <DropdownMenuSeparator />
+          {nodes.map((node) => (
+            <SelectItem key={node} value={node}>
+              {node}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {/* Search - flex-1 to take remaining space */}
+      <div className="relative flex-1 min-w-[140px]">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
           type="search"
@@ -118,14 +111,14 @@ export const TopologyToolbar: FC<TopologyToolbarProps> = ({
               onSearchSubmit(searchQuery);
             }
           }}
-          className="pl-9 h-9"
+          className="pl-9 h-9 w-full"
         />
       </div>
 
       {/* Export */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm" className="gap-1.5 h-9">
+          <Button variant="outline" size="sm" className="gap-1.5 h-9 shrink-0">
             <Download className="h-4 w-4" />
             Export
             <ChevronDown className="h-3 w-3 ml-0.5" />
@@ -151,7 +144,7 @@ export const TopologyToolbar: FC<TopologyToolbarProps> = ({
       <Button
         variant="outline"
         size="icon"
-        className="h-9 w-9"
+        className="h-9 w-9 shrink-0"
         onClick={onRefresh}
         disabled={isRefreshing}
       >

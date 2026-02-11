@@ -275,9 +275,13 @@ export function filterTopologyData(
         return node.name === options.namespace;
       }
       
-      // Include cluster-scoped resources (nodes, storageclasses, pvs, ingressclasses)
-      // These don't have a namespace but are cluster-scoped
-      if (!node.namespace && ['node', 'storageclass', 'pv', 'ingressclass'].includes(node.type)) {
+      // Exclude cluster-scoped Node resources in namespace view - they create edge clutter
+      // (edges from pods to nodes span across the graph). Only include namespace-scoped resources.
+      if (node.type === 'node') {
+        return false;
+      }
+      // Include cluster-scoped PVs/StorageClasses only if referenced by namespace PVCs (handled by edges)
+      if (!node.namespace && ['storageclass', 'pv', 'ingressclass'].includes(node.type)) {
         return true;
       }
       

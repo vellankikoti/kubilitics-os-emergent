@@ -42,6 +42,8 @@ export interface ClusterTopologyViewerProps {
   showInsights?: boolean;
   /** Layout mode */
   layoutMode?: 'hierarchical' | 'force-directed' | 'namespace-grouped';
+  /** When true, topology expands to full size and page scrolls (like NodeDetail topology) */
+  scrollWithPage?: boolean;
 }
 
 export const ClusterTopologyViewer = forwardRef<ClusterTopologyViewerRef, ClusterTopologyViewerProps>(
@@ -59,6 +61,7 @@ export const ClusterTopologyViewer = forwardRef<ClusterTopologyViewerRef, Cluste
       showMetrics = true,
       showInsights = true,
       layoutMode = 'hierarchical',
+      scrollWithPage = false,
     },
     ref
   ) => {
@@ -136,7 +139,7 @@ export const ClusterTopologyViewer = forwardRef<ClusterTopologyViewerRef, Cluste
     }, [filteredNodes, filteredEdges, layoutMode]);
 
     return (
-      <div className={cn('relative h-full w-full flex flex-col min-h-0', className)}>
+      <div className={cn(scrollWithPage ? 'relative w-full' : 'relative h-full w-full flex flex-col min-h-0', className)}>
         {/* Insights Panel - Draggable, positioned top-right by default */}
         {showInsights && (
           <div className="absolute top-4 right-4 z-10">
@@ -157,8 +160,9 @@ export const ClusterTopologyViewer = forwardRef<ClusterTopologyViewerRef, Cluste
             ...layoutConfig.options,
             customLayout: layoutConfig.customLayout,
           }}
-          className="flex-1 min-h-0 w-full"
+          className={scrollWithPage ? 'w-full' : 'flex-1 min-h-0 w-full'}
           hideBuiltInExport={false}
+          scrollWithPage={scrollWithPage}
         />
 
         {/* Selected Node Info */}

@@ -15,12 +15,15 @@ import { useClusterStore } from '@/stores/clusterStore';
 import { useBackendConfigStore } from '@/stores/backendConfigStore';
 import { useTopologyFromBackend } from '@/hooks/useTopologyFromBackend';
 import { useClusterTopologyGraph } from '@/hooks/useClusterTopologyGraph';
+import { useNodeTopology } from '@/hooks/useNodeTopology';
+import { useK8sResourceList } from '@/hooks/useKubernetes';
 import {
   TopologyFilters,
   TopologyToolbar,
   resourceTypes,
 } from '@/features/topology';
 import { ClusterTopologyViewer, type ClusterTopologyViewerRef } from '@/components/topology/ClusterTopologyViewer';
+import { TopologyViewer } from '@/components/resources';
 import { ClusterInsightsPanel } from '@/components/topology/ClusterInsightsPanel';
 import { ResourceDetailPanel } from '@/components/topology/ResourceDetailPanel';
 import { BlastRadiusVisualization } from '@/components/topology/BlastRadiusVisualization';
@@ -151,19 +154,19 @@ export default function Topology() {
   const [showBlastRadius, setShowBlastRadius] = useState(false);
 
   // View state - MUST be declared before useMemo/useEffect that use them
-  const [viewMode, setViewMode] = useState<'cluster' | 'namespace'>('cluster');
   const [selectedNamespace, setSelectedNamespace] = useState('all');
+  const [selectedNodeFilter, setSelectedNodeFilter] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [useDemoGraph, setUseDemoGraph] = useState(false);
 
-  // Determine namespace filter based on view mode
+  // Namespace filter: when user selects a namespace from dropdown, filter immediately (no view mode coupling)
   const namespaceFilter = useMemo(() => {
-    if (viewMode === 'namespace' && selectedNamespace && selectedNamespace !== 'all') {
+    if (selectedNamespace && selectedNamespace !== 'all') {
       return selectedNamespace;
     }
     return undefined;
-  }, [viewMode, selectedNamespace]);
+  }, [selectedNamespace]);
 
   // Backend topology (when available)
   const topologyFromBackend = useTopologyFromBackend(
@@ -173,6 +176,16 @@ export default function Topology() {
 
   // Frontend-built topology (fallback when backend unavailable)
   const frontendTopology = useClusterTopologyGraph(namespaceFilter);
+
+  // Nodes list for node filter dropdown
+  const { data: nodesList } = useK8sResourceList('nodes', undefined, { enabled: !!activeCluster });
+  const availableNodes = useMemo(() => {
+    const items = nodesList?.items ?? [];
+    return items.map((n: any) => n.metadata?.name).filter(Boolean) as string[];
+  }, [nodesList]);
+
+  // Node-specific topology (when node filter is selected)
+  const nodeTopology = useNodeTopology(selectedNodeFilter || undefined);
 
   // Filter state
   const [selectedResources, setSelectedResources] = useState<Set<KubernetesKind>>(
@@ -261,35 +274,12 @@ export default function Topology() {
     refetchInterval: 30_000,
   });
 
+  // Namespaces from API - available immediately (like nodes), no topology dependency
+  const { data: namespacesList } = useK8sResourceList('namespaces', undefined, { enabled: !!activeCluster });
   const availableNamespaces = useMemo(() => {
-    const nsSet = new Set<string>();
-    // Get namespaces from backend topology
-    if (topologyFromBackend.data?.nodes) {
-      topologyFromBackend.data.nodes.forEach((n) => {
-        if (n.namespace) nsSet.add(n.namespace);
-      });
-    }
-    // Get namespaces from frontend topology
-    frontendTopology.nodes.forEach((n) => {
-      if (n.namespace) nsSet.add(n.namespace);
-    });
-    // Get namespaces from current graph
-    graph.nodes.forEach((n) => {
-      if (n.namespace) nsSet.add(n.namespace);
-    });
-    return Array.from(nsSet).sort();
-  }, [graph.nodes, topologyFromBackend.data, frontendTopology.nodes]);
-
-  // Update namespace when view mode changes
-  useEffect(() => {
-    if (viewMode === 'cluster' && selectedNamespace !== 'all') {
-      setSelectedNamespace('all');
-    } else if (viewMode === 'namespace' && selectedNamespace === 'all' && availableNamespaces.length > 0) {
-      // Auto-select first namespace when switching to namespace mode
-      setSelectedNamespace(availableNamespaces[0]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode]); // Only react to viewMode changes
+    const items = namespacesList?.items ?? [];
+    return items.map((n: any) => n.metadata?.name).filter(Boolean) as string[];
+  }, [namespacesList]);
 
   const handleResourceToggle = useCallback((kind: KubernetesKind) => {
     setSelectedResources(prev => {
@@ -486,7 +476,7 @@ export default function Topology() {
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="flex flex-col h-[calc(100vh-4rem)] gap-4"
+      className="flex flex-col gap-4"
     >
       {/* Header */}
       <div className="flex items-center gap-3 flex-shrink-0">
@@ -496,20 +486,21 @@ export default function Topology() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Cluster Topology</h1>
           <p className="text-sm text-muted-foreground">
-            {viewMode === 'cluster' 
+            {selectedNamespace === 'all' 
               ? `Complete cluster view • ${activeCluster?.name || 'docker-desktop'}`
-              : `Namespace: ${selectedNamespace === 'all' ? 'All Namespaces' : selectedNamespace} • ${activeCluster?.name || 'docker-desktop'}`}
+              : `Namespace: ${selectedNamespace} • ${activeCluster?.name || 'docker-desktop'}`}
           </p>
         </div>
       </div>
 
       {/* Toolbar */}
       <TopologyToolbar
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
         selectedNamespace={selectedNamespace}
         namespaces={availableNamespaces}
         onNamespaceChange={setSelectedNamespace}
+        selectedNode={selectedNodeFilter}
+        nodes={availableNodes}
+        onNodeChange={setSelectedNodeFilter}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onSearchSubmit={handleSearchSubmit}
@@ -534,8 +525,9 @@ export default function Topology() {
       />
 
       {/* Topology loading / error */}
-      {(isBackendConfigured && clusterId ? topologyFromBackend.isLoading : frontendTopology.isLoading) && 
-       !graph.nodes.length && (
+      {(selectedNodeFilter
+        ? nodeTopology.isLoading && !nodeTopology.nodes.length
+        : (isBackendConfigured && clusterId ? topologyFromBackend.isLoading : frontendTopology.isLoading) && !graph.nodes.length) && (
         <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
           <Loader2 className="h-6 w-6 animate-spin" />
           <span>Building topology…</span>
@@ -598,8 +590,8 @@ export default function Topology() {
       )}
 
       {/* Empty state when no topology data available */}
-      {activeCluster && graph.nodes.length === 0 && !frontendTopology.isLoading && !topologyFromBackend.isLoading && (
-        <div className="flex-1 flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed bg-muted/30 p-8 text-center">
+      {activeCluster && !selectedNode && graph.nodes.length === 0 && !frontendTopology.isLoading && !topologyFromBackend.isLoading && (
+        <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed bg-muted/30 p-8 text-center min-h-[200px]">
           <Network className="h-12 w-12 text-muted-foreground" />
           <p className="text-muted-foreground">
             {selectedResources.size === 0 
@@ -614,44 +606,68 @@ export default function Topology() {
         </div>
       )}
 
-      {/* Canvas Container — show when we have cluster connection and topology data */}
-      {activeCluster && graph.nodes.length > 0 && (
-        <div className="flex-1 relative min-h-0 overflow-hidden">
-          {(isBackendConfigured && clusterId ? topologyFromBackend.isLoading : frontendTopology.isLoading) && 
-           !graph.nodes.length ? null : (
-            <>
-              {isNamespaceOnlyFilter ? (
-                // Namespace-grouped view when only namespace filter is selected
-                // Show all resources grouped by namespace (bypass resource filtering)
-                <NamespaceGroupedTopology
-                  nodes={transformedNodes}
-                  edges={transformedEdges}
-                  onNodeClick={(node) => {
-                    handleNodeClick(node);
-                    setSelectedNodeForDetail(node);
-                  }}
-                  className="h-full"
-                />
-              ) : (
-                // Standard hierarchical view
-                <ClusterTopologyViewer
-                  ref={topologyViewerRef}
-                  graph={graph}
-                  selectedResources={selectedResourcesSet}
-                  selectedHealth={selectedHealthSet}
-                  selectedRelationships={new Set(Array.from(selectedRelationships).map(r => r.toString()))}
-                  searchQuery={searchQuery}
-                  namespace={namespaceFilter} // Pass namespace filter
-                  onNodeClick={handleNodeClick}
-                  onNodeDoubleClick={handleNodeDoubleClick}
-                  showMetrics={true}
-                  showInsights={true}
-                  layoutMode="hierarchical" // Always use hierarchical for cluster-centric layout
-                  className="h-full"
-                />
-              )}
-            </>
-          )}
+      {/* Empty state when node selected but no pods on that node */}
+      {activeCluster && selectedNodeFilter && !nodeTopology.isLoading && nodeTopology.nodes.length === 0 && (
+        <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed bg-muted/30 p-8 text-center min-h-[200px]">
+          <Network className="h-12 w-12 text-muted-foreground" />
+          <p className="text-muted-foreground">No pods running on node {selectedNodeFilter}.</p>
+        </div>
+      )}
+
+      {/* Canvas Container — flows with content, page scrolls (like NodeDetail topology) */}
+      {activeCluster && (graph.nodes.length > 0 || (selectedNodeFilter && nodeTopology.nodes.length > 0)) && (
+        <div className="min-h-[60vh] w-full">
+          {(selectedNodeFilter
+            ? // Node-specific topology (same as NodeDetail tab)
+              nodeTopology.nodes.length > 0 && (
+                <div className="w-full min-h-[60vh]">
+                  <TopologyViewer
+                    nodes={nodeTopology.nodes}
+                    edges={nodeTopology.edges}
+                    onNodeClick={(node) => {
+                      handleNodeClick(node);
+                      setSelectedNodeForDetail(node);
+                    }}
+                    scrollWithPage={true}
+                    className="w-full rounded-xl border border-border bg-card"
+                  />
+                </div>
+              )
+            : (isBackendConfigured && clusterId ? topologyFromBackend.isLoading : frontendTopology.isLoading) && !graph.nodes.length
+              ? null
+              : (() => {
+                  if (isNamespaceOnlyFilter) {
+                    return (
+                      <NamespaceGroupedTopology
+                        nodes={transformedNodes}
+                        edges={transformedEdges}
+                        onNodeClick={(node) => {
+                          handleNodeClick(node);
+                          setSelectedNodeForDetail(node);
+                        }}
+                        className="w-full min-h-[600px]"
+                      />
+                    );
+                  }
+                  return (
+                    <ClusterTopologyViewer
+                      ref={topologyViewerRef}
+                      graph={graph}
+                      selectedResources={selectedResourcesSet}
+                      selectedHealth={selectedHealthSet}
+                      selectedRelationships={new Set(Array.from(selectedRelationships).map(r => r.toString()))}
+                      searchQuery={searchQuery}
+                      namespace={namespaceFilter}
+                      onNodeClick={handleNodeClick}
+                      onNodeDoubleClick={handleNodeDoubleClick}
+                      showMetrics={true}
+                      showInsights={true}
+                      layoutMode="hierarchical"
+                      scrollWithPage={true}
+                      className="w-full"
+                    />
+                  );
+                })())}
           {/* Large-graph notice */}
           {graph.nodes.length > 1000 && (
             <div className="absolute top-4 left-4 max-w-sm rounded-lg border border-border bg-card/95 backdrop-blur-sm px-3 py-2 text-xs text-muted-foreground shadow z-30">
