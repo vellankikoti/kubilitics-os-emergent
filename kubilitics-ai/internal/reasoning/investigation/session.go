@@ -174,8 +174,4 @@ type InvestigationSession interface {
 	ListInvestigations(ctx context.Context, filter interface{}) ([]Investigation, error)
 }
 
-// NewInvestigationSession creates a new investigation session manager.
-func NewInvestigationSession() InvestigationSession {
-	// Inject Audit Logger, Backend Proxy, World Model
-	return nil
-}
+// NewInvestigationSession is now implemented in session_impl.go
