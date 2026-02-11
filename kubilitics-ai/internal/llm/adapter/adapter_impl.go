@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/anthropic"
+	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/ollama"
 	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/openai"
 	"github.com/kubilitics/kubilitics-ai/internal/llm/types"
 )
@@ -112,12 +113,13 @@ func NewLLMAdapter(cfg *Config) (LLMAdapter, error) {
 		}
 
 	case ProviderOllama:
-		return nil, fmt.Errorf("Ollama provider not yet implemented")
-		// TODO: Implement Ollama provider
-		// if cfg.BaseURL == "" {
-		// 	cfg.BaseURL = "http://localhost:11434"
-		// }
-		// client, err = ollama.NewOllamaClient(cfg.BaseURL, cfg.Model)
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = "http://localhost:11434"
+		}
+		client, err = ollama.NewOllamaClient(cfg.BaseURL, cfg.Model)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Ollama client: %w", err)
+		}
 
 	case ProviderCustom:
 		return nil, fmt.Errorf("Custom provider not yet implemented")
@@ -147,6 +149,8 @@ func (a *llmAdapterImpl) Complete(ctx context.Context, messages []types.Message,
 		return "", nil, fmt.Errorf("Anthropic provider not yet updated to new types")
 	case *openai.OpenAIClientImpl:
 		return client.Complete(ctx, messages, tools)
+	case *ollama.OllamaClientImpl:
+		return client.Complete(ctx, messages, tools)
 	default:
 		return "", nil, fmt.Errorf("unknown client type")
 	}
@@ -162,6 +166,8 @@ func (a *llmAdapterImpl) CompleteStream(ctx context.Context, messages []types.Me
 		return nil, nil, fmt.Errorf("Anthropic provider not yet updated to new types")
 	case *openai.OpenAIClientImpl:
 		return client.CompleteStream(ctx, messages, tools)
+	case *ollama.OllamaClientImpl:
+		return client.CompleteStream(ctx, messages, tools)
 	default:
 		return nil, nil, fmt.Errorf("unknown client type")
 	}
@@ -175,6 +181,8 @@ func (a *llmAdapterImpl) CountTokens(ctx context.Context, messages []types.Messa
 		_ = tools
 		return 0, fmt.Errorf("Anthropic provider not yet updated to new types")
 	case *openai.OpenAIClientImpl:
+		return client.CountTokens(ctx, messages, tools)
+	case *ollama.OllamaClientImpl:
 		return client.CountTokens(ctx, messages, tools)
 	default:
 		return 0, fmt.Errorf("unknown client type")
@@ -195,6 +203,8 @@ func (a *llmAdapterImpl) GetCapabilities(ctx context.Context) (interface{}, erro
 		return nil, fmt.Errorf("Anthropic provider not yet updated")
 	case *openai.OpenAIClientImpl:
 		caps, err = client.GetCapabilities(ctx)
+	case *ollama.OllamaClientImpl:
+		caps, err = client.GetCapabilities(ctx)
 	default:
 		return nil, fmt.Errorf("unknown client type")
 	}
@@ -213,6 +223,8 @@ func (a *llmAdapterImpl) NormalizeToolCall(ctx context.Context, toolCall interfa
 	case *anthropic.AnthropicClientImpl:
 		return nil, fmt.Errorf("Anthropic provider not yet updated")
 	case *openai.OpenAIClientImpl:
+		return client.NormalizeToolCall(ctx, toolCall)
+	case *ollama.OllamaClientImpl:
 		return client.NormalizeToolCall(ctx, toolCall)
 	default:
 		return nil, fmt.Errorf("unknown client type")

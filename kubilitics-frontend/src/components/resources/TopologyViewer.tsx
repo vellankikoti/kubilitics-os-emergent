@@ -1221,7 +1221,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
       className={cn(
         variant === 'card' 
           ? 'overflow-hidden flex flex-col min-h-0' 
-          : 'rounded-xl border border-border bg-card flex flex-col min-h-0', 
+          : 'overflow-hidden rounded-xl border border-border bg-card flex flex-col min-h-0', 
         className
       )}
     >
@@ -1339,7 +1339,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
           'relative',
           variant === 'card'
             ? 'flex-1 min-h-0 flex items-center justify-center bg-transparent'
-            : 'flex-1 min-h-0 overflow-auto bg-gradient-to-b from-background to-muted/20'
+            : 'flex-1 min-h-0 min-w-0 overflow-auto bg-gradient-to-b from-background to-muted/20 scrollbar-thin scrollbar-thumb-border/60'
         )}
       >
         {variant !== 'card' && (

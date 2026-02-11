@@ -616,7 +616,7 @@ export default function Topology() {
 
       {/* Canvas Container — show when we have cluster connection and topology data */}
       {activeCluster && graph.nodes.length > 0 && (
-        <div className="flex-1 relative min-h-0">
+        <div className="flex-1 relative min-h-0 overflow-hidden">
           {(isBackendConfigured && clusterId ? topologyFromBackend.isLoading : frontendTopology.isLoading) && 
            !graph.nodes.length ? null : (
             <>

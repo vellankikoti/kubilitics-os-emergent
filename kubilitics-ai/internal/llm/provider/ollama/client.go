@@ -1,6 +1,16 @@
 package ollama
 
-import "context"
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/kubilitics/kubilitics-ai/internal/llm/types"
+)
 
 // Package ollama provides Ollama provider implementation for LLM adapter.
 //
@@ -49,81 +59,440 @@ import "context"
 //   - Reasoning Engine: Calls Complete/CompleteStream
 //   - MCP Server: Receives tool calls from LLM (if supported by model)
 
-// OllamaClient implements the LLM adapter interface for Ollama.
-type OllamaClient struct {
-	// baseURL is the URL to the Ollama instance
-	baseURL string
+const (
+	DefaultBaseURL   = "http://localhost:11434"
+	DefaultModel     = "llama3"
+	DefaultMaxTokens = 4096
+	DefaultTimeout   = 180 * time.Second // Longer for local inference
+)
 
-	// model is the Ollama model name
-	model string
+// Ollama API structures
+type ollamaMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
 
-	// temperature is the sampling temperature
-	temperature float32
+type ollamaTool struct {
+	Type     string                    `json:"type"`
+	Function ollamaFunctionDefinition `json:"function"`
+}
 
-	// maxTokens is the maximum tokens in response
-	maxTokens int
+type ollamaFunctionDefinition struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Parameters  map[string]interface{} `json:"parameters"`
+}
 
-	// supportsToolCalling indicates if model supports function calling
-	supportsToolCalling bool
+type ollamaToolCall struct {
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type ollamaChatRequest struct {
+	Model    string          `json:"model"`
+	Messages []ollamaMessage `json:"messages"`
+	Tools    []ollamaTool    `json:"tools,omitempty"`
+	Stream   bool            `json:"stream,omitempty"`
+	Options  map[string]interface{} `json:"options,omitempty"`
+}
+
+type ollamaChatResponse struct {
+	Model     string        `json:"model"`
+	CreatedAt string        `json:"created_at"`
+	Message   struct {
+		Role       string           `json:"role"`
+		Content    string           `json:"content"`
+		ToolCalls  []ollamaToolCall `json:"tool_calls,omitempty"`
+	} `json:"message"`
+	Done bool `json:"done"`
+}
+
+type ollamaStreamChunk struct {
+	Model     string `json:"model"`
+	CreatedAt string `json:"created_at"`
+	Message   struct {
+		Role      string           `json:"role,omitempty"`
+		Content   string           `json:"content,omitempty"`
+		ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	} `json:"message"`
+	Done bool `json:"done"`
+}
+
+// OllamaClientImpl implements the LLM adapter interface for Ollama.
+type OllamaClientImpl struct {
+	baseURL    string
+	model      string
+	maxTokens  int
+	httpClient *http.Client
 }
 
 // NewOllamaClient creates a new Ollama client with configuration.
-func NewOllamaClient() *OllamaClient {
-	// Load configuration from env vars and files
-	// Verify Ollama instance is reachable
-	// Probe model to determine capabilities
-	// Create HTTP client for Ollama API
+func NewOllamaClient(baseURL, model string) (*OllamaClientImpl, error) {
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
+	}
+
+	if model == "" {
+		model = DefaultModel
+	}
+
+	client := &OllamaClientImpl{
+		baseURL:   baseURL,
+		model:     model,
+		maxTokens: DefaultMaxTokens,
+		httpClient: &http.Client{
+			Timeout: DefaultTimeout,
+		},
+	}
+
+	// Test connection to Ollama
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.testConnection(ctx); err != nil {
+		return nil, fmt.Errorf("failed to connect to Ollama at %s: %w", baseURL, err)
+	}
+
+	return client, nil
+}
+
+// testConnection verifies Ollama is reachable
+func (c *OllamaClientImpl) testConnection(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/tags", nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
 	return nil
 }
 
 // Complete implements LLMAdapter.Complete for Ollama API.
-func (c *OllamaClient) Complete(ctx context.Context, messages []interface{}, tools []interface{}) (string, []interface{}, error) {
-	// Build Ollama chat request
-	// If model doesn't support tool calling, return tools unsupported error
-	// Call Ollama API
-	// Parse response (text + optional tool calls)
-	// No token tracking (zero cost)
-	return "", nil, nil
+func (c *OllamaClientImpl) Complete(
+	ctx context.Context,
+	messages []types.Message,
+	tools []types.Tool,
+) (string, []interface{}, error) {
+	// Convert messages to Ollama format
+	ollamaMessages := make([]ollamaMessage, len(messages))
+	for i, msg := range messages {
+		ollamaMessages[i] = ollamaMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+	}
+
+	// Convert tools to Ollama format
+	var ollamaTools []ollamaTool
+	if len(tools) > 0 {
+		ollamaTools = make([]ollamaTool, len(tools))
+		for i, tool := range tools {
+			ollamaTools[i] = ollamaTool{
+				Type: "function",
+				Function: ollamaFunctionDefinition{
+					Name:        tool.Name,
+					Description: tool.Description,
+					Parameters:  tool.Parameters,
+				},
+			}
+		}
+	}
+
+	// Build request
+	request := ollamaChatRequest{
+		Model:    c.model,
+		Messages: ollamaMessages,
+		Tools:    ollamaTools,
+		Options: map[string]interface{}{
+			"num_predict": c.maxTokens,
+		},
+	}
+
+	// Make HTTP request
+	response, err := c.makeRequest(ctx, "/api/chat", request)
+	if err != nil {
+		return "", nil, fmt.Errorf("Ollama API request failed: %w", err)
+	}
+
+	// Parse response
+	var chatResponse ollamaChatResponse
+	if err := json.Unmarshal(response, &chatResponse); err != nil {
+		return "", nil, fmt.Errorf("failed to parse Ollama response: %w", err)
+	}
+
+	content := chatResponse.Message.Content
+
+	// Extract tool calls if present
+	var toolCalls []interface{}
+	if len(chatResponse.Message.ToolCalls) > 0 {
+		toolCalls = make([]interface{}, len(chatResponse.Message.ToolCalls))
+		for i, tc := range chatResponse.Message.ToolCalls {
+			// Parse arguments JSON
+			var args map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				return "", nil, fmt.Errorf("failed to parse tool call arguments: %w", err)
+			}
+
+			toolCalls[i] = map[string]interface{}{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      tc.Function.Name,
+					"arguments": args,
+				},
+			}
+		}
+	}
+
+	return content, toolCalls, nil
 }
 
 // CompleteStream implements LLMAdapter.CompleteStream for Ollama API.
-func (c *OllamaClient) CompleteStream(ctx context.Context, messages []interface{}, tools []interface{}) (chan string, chan interface{}, error) {
-	// Build Ollama chat request with stream=true
-	// Set up streaming response parsing
-	// Return channels for tokens and tool calls
-	// Handle backpressure and context cancellation
-	return nil, nil, nil
+func (c *OllamaClientImpl) CompleteStream(
+	ctx context.Context,
+	messages []types.Message,
+	tools []types.Tool,
+) (chan string, chan interface{}, error) {
+	// Convert messages
+	ollamaMessages := make([]ollamaMessage, len(messages))
+	for i, msg := range messages {
+		ollamaMessages[i] = ollamaMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+	}
+
+	// Convert tools
+	var ollamaTools []ollamaTool
+	if len(tools) > 0 {
+		ollamaTools = make([]ollamaTool, len(tools))
+		for i, tool := range tools {
+			ollamaTools[i] = ollamaTool{
+				Type: "function",
+				Function: ollamaFunctionDefinition{
+					Name:        tool.Name,
+					Description: tool.Description,
+					Parameters:  tool.Parameters,
+				},
+			}
+		}
+	}
+
+	// Build request with stream=true
+	request := ollamaChatRequest{
+		Model:    c.model,
+		Messages: ollamaMessages,
+		Tools:    ollamaTools,
+		Stream:   true,
+		Options: map[string]interface{}{
+			"num_predict": c.maxTokens,
+		},
+	}
+
+	// Create channels
+	textChan := make(chan string, 10)
+	toolChan := make(chan interface{}, 10)
+
+	// Start streaming in goroutine
+	go func() {
+		defer close(textChan)
+		defer close(toolChan)
+
+		if err := c.streamRequest(ctx, "/api/chat", request, textChan, toolChan); err != nil {
+			textChan <- fmt.Sprintf("ERROR: %v", err)
+		}
+	}()
+
+	return textChan, toolChan, nil
 }
 
 // CountTokens approximates token count using char-to-token ratio.
-func (c *OllamaClient) CountTokens(ctx context.Context, messages []interface{}, tools []interface{}) (int, error) {
-	// Calculate approximate tokens: content_length / 4
-	// Add overhead for tool definitions
-	// Return estimated count
-	return 0, nil
+func (c *OllamaClientImpl) CountTokens(
+	ctx context.Context,
+	messages []types.Message,
+	tools []types.Tool,
+) (int, error) {
+	// Simple estimation: ~4 characters per token
+	totalChars := 0
+	for _, msg := range messages {
+		totalChars += len(msg.Content)
+	}
+
+	// Add tool definitions size
+	if len(tools) > 0 {
+		toolsJSON, _ := json.Marshal(tools)
+		totalChars += len(toolsJSON)
+	}
+
+	estimatedTokens := totalChars / 4
+	return estimatedTokens, nil
 }
 
 // GetCapabilities returns Ollama model capabilities.
-func (c *OllamaClient) GetCapabilities(ctx context.Context) (interface{}, error) {
-	// Return capabilities map
-	// streaming: true
-	// function_calling: depends on model (probe during init)
-	// max_tokens: from model config
-	// cost_per_1k_input: 0 (runs locally)
-	// cost_per_1k_output: 0 (runs locally)
-	return nil, nil
-}
-
-// ValidateToolCall validates tool call against schema.
-func (c *OllamaClient) ValidateToolCall(ctx context.Context, toolName string, args interface{}) error {
-	// Validate tool_name matches registered tools
-	// Validate arguments against schema
-	return nil
+func (c *OllamaClientImpl) GetCapabilities(ctx context.Context) (interface{}, error) {
+	return map[string]interface{}{
+		"provider":           "ollama",
+		"model":              c.model,
+		"supports_streaming": true,
+		"supports_tools":     true, // Most modern models support this
+		"max_tokens":         c.maxTokens,
+		"context_window":     getContextWindow(c.model),
+		"cost_per_1k_input":  0.0, // Free - runs locally
+		"cost_per_1k_output": 0.0, // Free - runs locally
+	}, nil
 }
 
 // NormalizeToolCall converts Ollama tool call format to standard format.
-func (c *OllamaClient) NormalizeToolCall(ctx context.Context, toolCall interface{}) (map[string]interface{}, error) {
-	// Extract tool information from Ollama response
-	// Convert to standard format
-	return nil, nil
+func (c *OllamaClientImpl) NormalizeToolCall(ctx context.Context, toolCall interface{}) (map[string]interface{}, error) {
+	tcMap, ok := toolCall.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid tool call format")
+	}
+
+	return map[string]interface{}{
+		"type":     tcMap["type"],
+		"function": tcMap["function"],
+	}, nil
+}
+
+// makeRequest makes an HTTP request to Ollama API
+func (c *OllamaClientImpl) makeRequest(ctx context.Context, endpoint string, payload interface{}) ([]byte, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := c.baseURL + endpoint
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Ollama API error (status %d): %s", resp.StatusCode, string(responseBody))
+	}
+
+	return responseBody, nil
+}
+
+// streamRequest makes a streaming HTTP request to Ollama API
+func (c *OllamaClientImpl) streamRequest(
+	ctx context.Context,
+	endpoint string,
+	payload interface{},
+	textChan chan string,
+	toolChan chan interface{},
+) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := c.baseURL + endpoint
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Ollama API error (status %d): %s", resp.StatusCode, string(responseBody))
+	}
+
+	// Read newline-delimited JSON stream
+	decoder := json.NewDecoder(resp.Body)
+
+	for {
+		var chunk ollamaStreamChunk
+		if err := decoder.Decode(&chunk); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("failed to decode stream: %w", err)
+		}
+
+		if chunk.Message.Content != "" {
+			textChan <- chunk.Message.Content
+		}
+
+		if len(chunk.Message.ToolCalls) > 0 {
+			for _, tc := range chunk.Message.ToolCalls {
+				var args map[string]interface{}
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+
+				toolChan <- map[string]interface{}{
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      tc.Function.Name,
+						"arguments": args,
+					},
+				}
+			}
+		}
+
+		if chunk.Done {
+			break
+		}
+	}
+
+	return nil
+}
+
+// getContextWindow returns the context window size for a given model
+func getContextWindow(model string) int {
+	// Common Ollama models and their context windows
+	switch {
+	case contains(model, "llama3"):
+		return 8192
+	case contains(model, "llama2"):
+		return 4096
+	case contains(model, "mistral"):
+		return 8192
+	case contains(model, "mixtral"):
+		return 32768
+	case contains(model, "codellama"):
+		return 16384
+	case contains(model, "neural-chat"):
+		return 4096
+	case contains(model, "dolphin"):
+		return 16384
+	default:
+		return 4096 // Conservative default
+	}
+}
+
+// contains checks if a string contains a substring
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && s[:len(substr)] == substr || len(s) > len(substr) && s[len(s)-len(substr):] == substr)
 }
