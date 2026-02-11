@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useState, useCallback, useMemo } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Container,
@@ -15,17 +15,31 @@ import {
   Activity,
   Scale,
   History,
+  Loader2,
+  Info,
+  Layers,
+  FileText,
+  Terminal,
+  Box,
+  LayoutDashboard,
+  CalendarClock,
+  BarChart2,
+  FileCode,
+  GitCompare,
+  Network,
+  Settings,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import {
-  ResourceHeader,
-  ResourceStatusCards,
-  ResourceTabs,
+  ResourceDetailLayout,
+  SectionCard,
   TopologyViewer,
   ContainersSection,
   YamlViewer,
@@ -36,6 +50,8 @@ import {
   MetricsDashboard,
   NodeDetailPopup,
   ScaleDialog,
+  LogViewer,
+  TerminalViewer,
   RolloutActionsDialog,
   DeleteConfirmDialog,
   type TopologyNode,
@@ -45,9 +61,17 @@ import {
   type YamlVersion,
   type ResourceDetail,
 } from '@/components/resources';
-import { useResourceDetail, useK8sEvents } from '@/hooks/useK8sResourceDetail';
-import { useDeleteK8sResource, useUpdateK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
+import { useDeleteK8sResource, useUpdateK8sResource, usePatchK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
+import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { useBackendConfigStore } from '@/stores/backendConfigStore';
+import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
+import { useClusterStore } from '@/stores/clusterStore';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { useActiveClusterId } from '@/hooks/useActiveClusterId';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getDeploymentRolloutHistory, postDeploymentRollback, BackendApiError } from '@/services/backendApiClient';
+import { getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 
 interface DeploymentResource extends KubernetesResource {
   spec?: {
@@ -79,79 +103,16 @@ interface DeploymentResource extends KubernetesResource {
   };
 }
 
-const mockDeploymentResource: DeploymentResource = {
-  apiVersion: 'apps/v1',
-  kind: 'Deployment',
-  metadata: {
-    name: 'nginx-deployment',
-    namespace: 'production',
-    uid: 'abc-123-def-456',
-    creationTimestamp: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-    labels: { app: 'nginx', environment: 'production', version: 'v1.0.0' },
-    annotations: { 'deployment.kubernetes.io/revision': '3' },
-  },
-  spec: {
-    replicas: 3,
-    strategy: { type: 'RollingUpdate', rollingUpdate: { maxSurge: '25%', maxUnavailable: '25%' } },
-    selector: { matchLabels: { app: 'nginx' } },
-    template: {
-      spec: {
-        containers: [{
-          name: 'nginx',
-          image: 'nginx:1.25.3',
-          ports: [{ containerPort: 80, protocol: 'TCP', name: 'http' }],
-          resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '200m', memory: '256Mi' } },
-        }],
-      },
-    },
-    minReadySeconds: 10,
-    revisionHistoryLimit: 10,
-    progressDeadlineSeconds: 600,
-  },
-  status: {
-    replicas: 3,
-    readyReplicas: 3,
-    updatedReplicas: 3,
-    availableReplicas: 3,
-    observedGeneration: 5,
-    conditions: [
-      { type: 'Available', status: 'True', lastTransitionTime: new Date().toISOString(), reason: 'MinimumReplicasAvailable' },
-      { type: 'Progressing', status: 'True', lastTransitionTime: new Date().toISOString(), reason: 'NewReplicaSetAvailable' },
-    ],
-  },
-};
-
-const topologyNodes: TopologyNode[] = [
-  { id: 'deployment', type: 'deployment', name: 'nginx-deployment', namespace: 'production', status: 'healthy', isCurrent: true },
-  { id: 'replicaset-1', type: 'replicaset', name: 'nginx-deployment-7fb96c846b', namespace: 'production', status: 'healthy' },
-  { id: 'replicaset-2', type: 'replicaset', name: 'nginx-deployment-6d4b75cb6d', namespace: 'production', status: 'healthy' },
-  { id: 'pod-1', type: 'pod', name: 'nginx-deployment-7fb96c846b-abc12', namespace: 'production', status: 'healthy', traffic: 75 },
-  { id: 'pod-2', type: 'pod', name: 'nginx-deployment-7fb96c846b-def34', namespace: 'production', status: 'healthy', traffic: 60 },
-  { id: 'pod-3', type: 'pod', name: 'nginx-deployment-7fb96c846b-ghi56', namespace: 'production', status: 'healthy', traffic: 55 },
-  { id: 'service', type: 'service', name: 'nginx-svc', namespace: 'production', status: 'healthy', traffic: 85 },
-  { id: 'hpa', type: 'hpa', name: 'nginx-hpa', namespace: 'production', status: 'healthy' },
-];
-
-const topologyEdges: TopologyEdge[] = [
-  { from: 'deployment', to: 'replicaset-1', label: 'Current' },
-  { from: 'deployment', to: 'replicaset-2', label: 'Previous' },
-  { from: 'replicaset-1', to: 'pod-1', label: 'Manages', traffic: 75 },
-  { from: 'replicaset-1', to: 'pod-2', label: 'Manages', traffic: 60 },
-  { from: 'replicaset-1', to: 'pod-3', label: 'Manages', traffic: 55 },
-  { from: 'service', to: 'pod-1', label: 'Routes to', traffic: 40 },
-  { from: 'service', to: 'pod-2', label: 'Routes to', traffic: 35 },
-  { from: 'service', to: 'pod-3', label: 'Routes to', traffic: 30 },
-  { from: 'hpa', to: 'deployment', label: 'Scales' },
-];
-
-const mockEvents = [
-  { type: 'Normal' as const, reason: 'ScalingReplicaSet', message: 'Scaled up replica set nginx-deployment-7fb96c846b to 3', time: '5m ago' },
-  { type: 'Normal' as const, reason: 'ScalingReplicaSet', message: 'Scaled down replica set nginx-deployment-6d4b75cb6d to 0', time: '5m ago' },
-  { type: 'Normal' as const, reason: 'DeploymentRollback', message: 'Rolled back deployment to revision 2', time: '1h ago' },
-];
-
 export default function DeploymentDetail() {
   const { namespace, name } = useParams();
+  const { activeCluster } = useClusterStore();
+  const clusterId = useActiveClusterId();
+  const breadcrumbSegments = useDetailBreadcrumbs(
+    'Deployment',
+    name ?? undefined,
+    namespace ?? undefined,
+    activeCluster?.name
+  );
   const navigate = useNavigate();
   
   const [activeTab, setActiveTab] = useState('overview');
@@ -159,17 +120,48 @@ export default function DeploymentDetail() {
   const [showScaleDialog, setShowScaleDialog] = useState(false);
   const [showRolloutDialog, setShowRolloutDialog] = useState(false);
   const [selectedNode, setSelectedNode] = useState<ResourceDetail | null>(null);
-  
-  const { config } = useKubernetesConfigStore();
-  const { resource: deployment, isLoading, age, yaml, isConnected, refetch } = useResourceDetail<DeploymentResource>(
+  const [selectedLogPod, setSelectedLogPod] = useState<string>('');
+  const [selectedLogContainer, setSelectedLogContainer] = useState<string>('');
+  const [selectedTerminalPod, setSelectedTerminalPod] = useState<string>('');
+  const [selectedTerminalContainer, setSelectedTerminalContainer] = useState<string>('');
+
+  const { isConnected } = useConnectionStatus();
+  const { resource: deployment, isLoading, error, age, yaml, refetch } = useResourceDetail<DeploymentResource>(
     'deployments',
     name,
     namespace,
-    mockDeploymentResource
+    {} as DeploymentResource
   );
-  const { events } = useK8sEvents(namespace);
+  const resourceEvents = useResourceEvents('Deployment', namespace ?? undefined, name ?? undefined);
+  const displayEvents = resourceEvents.events;
+  const backendBaseUrl = getEffectiveBackendBaseUrl(useBackendConfigStore((s) => s.backendBaseUrl));
+  const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
+  const queryClient = useQueryClient();
+  const rolloutHistoryQuery = useQuery({
+    queryKey: ['backend', 'deployment-rollout-history', clusterId, namespace, name],
+    queryFn: () => getDeploymentRolloutHistory(backendBaseUrl!, clusterId!, namespace!, name!),
+    enabled: !!(isBackendConfigured() && clusterId && namespace && name),
+    staleTime: 10_000,
+    refetchOnWindowFocus: true,
+  });
+  const rolloutRevisions = rolloutHistoryQuery.data?.revisions ?? [];
   const deleteDeployment = useDeleteK8sResource('deployments');
   const updateDeployment = useUpdateK8sResource('deployments');
+  const patchDeployment = usePatchK8sResource('deployments');
+
+  const useBackendTopology = isBackendConfigured() && !!clusterId;
+  const resourceTopology = useResourceTopology('deployments', namespace ?? undefined, name ?? undefined);
+  const topologyNodesFromBackend = useMemo(
+    () =>
+      resourceTopology.nodes.map((n) => ({
+        ...n,
+        isCurrent: n.type === 'deployment' && n.name === name && n.namespace === namespace,
+      })),
+    [resourceTopology.nodes, name, namespace]
+  );
+  const topologyEdgesFromBackend = resourceTopology.edges;
+  const topologyLoading = useBackendTopology ? resourceTopology.isLoading : false;
+  const topologyError = resourceTopology.error;
 
   const status: ResourceStatus = deployment.status?.readyReplicas === deployment.spec?.replicas ? 'Running' : 
     deployment.status?.readyReplicas ? 'Pending' : 'Failed';
@@ -188,8 +180,18 @@ export default function DeploymentDetail() {
     state: 'running',
     ports: c.ports || [],
     resources: c.resources || {},
-    currentUsage: { cpu: Math.floor(Math.random() * 40) + 10, memory: Math.floor(Math.random() * 50) + 20 },
   }));
+
+  const { data: podsList } = useK8sResourceList<KubernetesResource & { metadata?: { name?: string; labels?: Record<string, string> }; status?: { phase?: string }; spec?: { nodeName?: string } }>(
+    'pods',
+    namespace ?? undefined,
+    { enabled: !!namespace && !!deployment?.spec?.selector?.matchLabels }
+  );
+  const matchLabels = deployment.spec?.selector?.matchLabels ?? {};
+  const deploymentPods = (podsList?.items ?? []).filter((pod) => {
+    const labels = pod.metadata?.labels ?? {};
+    return Object.entries(matchLabels).every(([k, v]) => labels[k] === v);
+  });
 
   const handleNodeClick = useCallback((node: TopologyNode) => {
     const resourceDetail: ResourceDetail = {
@@ -219,36 +221,109 @@ export default function DeploymentDetail() {
   }, [yaml]);
 
   const handleScale = useCallback(async (replicas: number) => {
-    if (isConnected) {
-      toast.success(`Scaled ${name} to ${replicas} replicas`);
-    } else {
-      toast.success(`Scaled ${name} to ${replicas} replicas (demo mode)`);
+    if (!isConnected) {
+      toast.error('Connect cluster to scale deployment');
+      return;
     }
-    refetch();
-  }, [isConnected, name, refetch]);
+    if (!name || !namespace) return;
+    if (!isBackendConfigured()) {
+      toast.error('Connect to Kubilitics backend in Settings to scale, restart, or rollback.');
+      return;
+    }
+    if (!clusterId) {
+      toast.error('Select a cluster from the cluster list to perform this action.');
+      return;
+    }
+    try {
+      await patchDeployment.mutateAsync({ name, namespace, patch: { spec: { replicas } } });
+      toast.success(`Scaled ${name} to ${replicas} replicas`);
+      refetch();
+      if (clusterId && namespace && name) {
+        queryClient.invalidateQueries({ queryKey: ['backend', 'deployment-rollout-history', clusterId, namespace, name] });
+      }
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to scale');
+      throw err;
+    }
+  }, [isConnected, name, namespace, clusterId, patchDeployment, refetch, queryClient]);
 
   const handleRestart = useCallback(async () => {
-    toast.success(`Rollout restart initiated for ${name} ${isConnected ? '' : '(demo mode)'}`);
-    refetch();
-  }, [isConnected, name, refetch]);
+    if (!isConnected) {
+      toast.error('Connect cluster to restart deployment');
+      return;
+    }
+    if (!name || !namespace) return;
+    if (!isBackendConfigured()) {
+      toast.error('Connect to Kubilitics backend in Settings to scale, restart, or rollback.');
+      return;
+    }
+    if (!clusterId) {
+      toast.error('Select a cluster from the cluster list to perform this action.');
+      return;
+    }
+    try {
+      const patch = {
+        spec: {
+          template: {
+            metadata: {
+              annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() },
+            },
+          },
+        },
+      };
+      await patchDeployment.mutateAsync({ name, namespace, patch });
+      toast.success(`Rollout restart initiated for ${name}`);
+      refetch();
+      if (clusterId && namespace && name) {
+        queryClient.invalidateQueries({ queryKey: ['backend', 'deployment-rollout-history', clusterId, namespace, name] });
+      }
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to restart');
+      throw err;
+    }
+  }, [isConnected, name, namespace, clusterId, patchDeployment, refetch, queryClient]);
 
   const handleRollback = useCallback(async (revision: number) => {
-    toast.success(`Rolling back ${name} to revision ${revision} ${isConnected ? '' : '(demo mode)'}`);
-    refetch();
-  }, [isConnected, name, refetch]);
+    if (!isConnected) {
+      toast.error('Connect cluster to rollback deployment');
+      return;
+    }
+    if (!name || !namespace) return;
+    if (!isBackendConfigured()) {
+      toast.error('Connect to Kubilitics backend in Settings to scale, restart, or rollback.');
+      return;
+    }
+    if (!clusterId) {
+      toast.error('Select a cluster from the cluster list to perform this action.');
+      return;
+    }
+    const backendBase = getEffectiveBackendBaseUrl(useBackendConfigStore.getState().backendBaseUrl);
+    try {
+      await postDeploymentRollback(backendBase, clusterId, namespace, name, { revision });
+      toast.success(`Rolled back ${name} to revision ${revision}`);
+      refetch();
+      if (clusterId && namespace && name) {
+        queryClient.invalidateQueries({ queryKey: ['backend', 'deployment-rollout-history', clusterId, namespace, name] });
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(message ?? 'Failed to rollback');
+      throw err;
+    }
+  }, [isConnected, name, namespace, clusterId, refetch, queryClient]);
 
   const handleSaveYaml = useCallback(async (newYaml: string) => {
-    if (isConnected && name && namespace) {
-      try {
-        await updateDeployment.mutateAsync({ name, yaml: newYaml, namespace });
-        toast.success('Deployment updated successfully');
-        refetch();
-      } catch (error: any) {
-        toast.error(`Failed to update: ${error.message}`);
-        throw error;
-      }
-    } else {
-      toast.success('Deployment updated (demo mode)');
+    if (!isConnected || !name || !namespace) {
+      toast.error('Connect cluster to update deployment');
+      throw new Error('Not connected');
+    }
+    try {
+      await updateDeployment.mutateAsync({ name, yaml: newYaml, namespace });
+      toast.success('Deployment updated successfully');
+      refetch();
+    } catch (error: any) {
+      toast.error(`Failed to update: ${error.message}`);
+      throw error;
     }
   }, [isConnected, name, namespace, updateDeployment, refetch]);
 
@@ -264,34 +339,55 @@ export default function DeploymentDetail() {
     );
   }
 
+  if (!deployment?.metadata?.name) {
+    return (
+      <div className="space-y-4 p-6">
+        <Breadcrumbs segments={breadcrumbSegments} className="mb-2" />
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-muted-foreground">Deployment not found.</p>
+            {error && <p className="text-sm text-destructive mt-2">{String(error)}</p>}
+            <Button variant="outline" className="mt-4" onClick={() => navigate('/deployments')}>
+              Back to Deployments
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const revisionLabel = deployment.metadata?.annotations?.['deployment.kubernetes.io/revision'] ?? 'current';
+  const strategyLabel = deployment.spec?.strategy?.type === 'Recreate'
+    ? 'Recreate'
+    : `RollingUpdate (${deployment.spec?.strategy?.rollingUpdate?.maxSurge ?? '25%'} / ${deployment.spec?.strategy?.rollingUpdate?.maxUnavailable ?? '25%'})`;
   const statusCards = [
     { label: 'Ready', value: `${ready}/${desired}`, icon: Server, iconColor: ready === desired ? 'success' as const : 'warning' as const },
-    { label: 'Updated', value: updated, icon: RefreshCw, iconColor: 'info' as const },
+    { label: 'Up-to-Date', value: updated, icon: RefreshCw, iconColor: 'info' as const },
     { label: 'Available', value: available, icon: CheckCircle2, iconColor: 'success' as const },
+    { label: 'Revision', value: revisionLabel, icon: History, iconColor: 'primary' as const },
+    { label: 'Strategy', value: strategyLabel, icon: Layers, iconColor: 'primary' as const },
     { label: 'Age', value: age, icon: Clock, iconColor: 'primary' as const },
   ];
-
   const yamlVersions: YamlVersion[] = [
-    { id: 'current', label: 'Current (Revision 3)', yaml, timestamp: 'now' },
-    { id: 'previous', label: 'Previous (Revision 2)', yaml: yaml.replace('replicas: 3', 'replicas: 2'), timestamp: '1 hour ago' },
-    { id: 'initial', label: 'Initial (Revision 1)', yaml: yaml.replace('replicas: 3', 'replicas: 1'), timestamp: '30 days ago' },
+    { id: 'current', label: `Current (Revision ${revisionLabel})`, yaml, timestamp: 'now' },
   ];
 
-  const displayEvents = isConnected && events.length > 0 ? events : mockEvents;
+  const firstPodName = deploymentPods[0]?.metadata?.name ?? '';
+  const logPod = selectedLogPod || firstPodName;
+  const terminalPod = selectedTerminalPod || firstPodName;
+  const logPodContainers = (deploymentPods.find((p) => p.metadata?.name === logPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
+  const terminalPodContainers = (deploymentPods.find((p) => p.metadata?.name === terminalPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
 
   const tabs = [
     {
       id: 'overview',
       label: 'Overview',
+      icon: LayoutDashboard,
       content: (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Deployment Information</CardTitle>
-                <CardDescription>Configuration and status details</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <SectionCard icon={Info} title="Deployment Information" tooltip={<p className="text-xs text-muted-foreground">Configuration and status details</p>}>
+              <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
                     <p className="text-muted-foreground mb-1">Strategy</p>
@@ -322,15 +418,11 @@ export default function DeploymentDetail() {
                     </>
                   )}
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </SectionCard>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Replica Status</CardTitle>
-                <CardDescription>Current replica distribution</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <SectionCard icon={Layers} title="Replica Status" tooltip={<p className="text-xs text-muted-foreground">Current replica distribution</p>}>
+              <div className="space-y-4">
                 <div className="space-y-3">
                   <div className="flex justify-between items-center">
                     <span className="text-sm">Ready</span>
@@ -354,15 +446,11 @@ export default function DeploymentDetail() {
                     </div>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </SectionCard>
           </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Conditions</CardTitle>
-            </CardHeader>
-            <CardContent>
+          <SectionCard icon={Activity} title="Conditions" tooltip={<p className="text-xs text-muted-foreground">Deployment condition status</p>}>
               <div className="space-y-3">
                 {conditions.map((condition) => {
                   const isTrue = condition.status === 'True';
@@ -386,8 +474,7 @@ export default function DeploymentDetail() {
                   );
                 })}
               </div>
-            </CardContent>
-          </Card>
+          </SectionCard>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <MetadataCard title="Labels" items={deployment.metadata?.labels || {}} variant="badges" />
@@ -397,45 +484,349 @@ export default function DeploymentDetail() {
       ),
     },
     {
+      id: 'rollout-history',
+      label: 'Rollout History',
+      content: (
+        <SectionCard icon={History} title="Rollout History" tooltip={<p className="text-xs text-muted-foreground">Revisions and rollback</p>}>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <p className="text-sm text-muted-foreground">Revisions for this deployment. Roll back to a previous revision or trigger a restart.</p>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => rolloutHistoryQuery.refetch()} disabled={rolloutHistoryQuery.isLoading} className="gap-2">
+                  <RefreshCw className={rolloutHistoryQuery.isFetching ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
+                  Refresh
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setShowRolloutDialog(true)} className="gap-2">
+                  <RotateCcw className="h-4 w-4" />
+                  Restart / Rollback
+                </Button>
+              </div>
+            </div>
+            {rolloutHistoryQuery.isLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading revision history…
+              </div>
+            ) : rolloutHistoryQuery.isError ? (
+              <div className="space-y-2">
+                <p className="text-sm text-destructive">
+                  {rolloutHistoryQuery.error instanceof Error
+                    ? rolloutHistoryQuery.error.message
+                    : 'Failed to load rollout history.'}
+                </p>
+                {rolloutHistoryQuery.error instanceof BackendApiError && rolloutHistoryQuery.error.status === 404 && (
+                  <p className="text-xs text-muted-foreground">
+                    Your cluster is connected (the metrics and resources above come from it). Rollout History is loaded from the Kubilitics backend. Ensure the backend is running and has this cluster added via Settings → Connect, then select this cluster from the header dropdown.
+                  </p>
+                )}
+                <Button variant="outline" size="sm" onClick={() => rolloutHistoryQuery.refetch()} className="mt-2">
+                  Try again
+                </Button>
+              </div>
+            ) : !isBackendConfigured() || !clusterId ? (
+              <p className="text-sm text-muted-foreground">Rollout History is provided by the Kubilitics backend. Configure the backend (Settings → Connect) and select this cluster to view revisions and rollback.</p>
+            ) : rolloutRevisions.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No revision history yet, or no ReplicaSets owned by this deployment.</p>
+            ) : (
+              <div className="rounded-lg border overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="text-left p-3 font-medium">Revision</th>
+                      <th className="text-left p-3 font-medium">Created</th>
+                      <th className="text-left p-3 font-medium">Change cause</th>
+                      <th className="text-left p-3 font-medium">Ready / Desired</th>
+                      <th className="text-left p-3 font-medium">ReplicaSet</th>
+                      <th className="text-right p-3 font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...rolloutRevisions].reverse().map((rev) => {
+                      const isCurrent = String(rev.revision) === revisionLabel;
+                      return (
+                        <tr key={rev.revision} className="border-t">
+                          <td className="p-3 font-mono">
+                            {rev.revision}
+                            {isCurrent && (
+                              <Badge variant="secondary" className="ml-2 text-xs">current</Badge>
+                            )}
+                          </td>
+                          <td className="p-3 text-muted-foreground">
+                            {rev.creationTimestamp ? new Date(rev.creationTimestamp).toLocaleString() : '—'}
+                          </td>
+                          <td className="p-3 text-muted-foreground">{rev.changeCause || '—'}</td>
+                          <td className="p-3 font-mono">{rev.ready} / {rev.desired}</td>
+                          <td className="p-3 font-mono text-xs truncate max-w-[120px]" title={rev.name}>{rev.name}</td>
+                          <td className="p-3 text-right">
+                            {!isCurrent && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleRollback(rev.revision)}
+                              >
+                                Rollback
+                              </Button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'scaling',
+      label: 'Scaling',
+      icon: Scale,
+      content: (
+        <SectionCard icon={Scale} title="Scaling" tooltip={<p className="text-xs text-muted-foreground">Replica count and scale control</p>}>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Card>
+                <CardContent className="pt-4">
+                  <p className="text-sm font-medium text-foreground">Desired</p>
+                  <p className="text-2xl font-semibold">{desired}</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-4">
+                  <p className="text-sm font-medium text-foreground">Ready</p>
+                  <p className="text-2xl font-semibold">{ready}</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-4">
+                  <p className="text-sm font-medium text-foreground">Available</p>
+                  <p className="text-2xl font-semibold">{available}</p>
+                </CardContent>
+              </Card>
+            </div>
+            <Button variant="outline" onClick={() => setShowScaleDialog(true)} className="gap-2">
+              <Scale className="h-4 w-4" />
+              Change replica count
+            </Button>
+          </div>
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'pods',
+      label: 'Pods',
+      icon: Box,
+      badge: deploymentPods.length.toString(),
+      content: (
+        <SectionCard icon={Box} title="Pods" tooltip={<p className="text-xs text-muted-foreground">Pods managed by this deployment</p>}>
+          {deploymentPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods match this deployment&apos;s selector yet.</p>
+          ) : (
+            <div className="rounded-lg border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="text-left p-3 font-medium">Name</th>
+                    <th className="text-left p-3 font-medium">Status</th>
+                    <th className="text-left p-3 font-medium">Node</th>
+                    <th className="text-left p-3 font-medium">Age</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deploymentPods.map((pod) => {
+                    const podName = pod.metadata?.name ?? '';
+                    const podNs = pod.metadata?.namespace ?? namespace ?? '';
+                    const phase = (pod.status as { phase?: string } | undefined)?.phase ?? '-';
+                    const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
+                    const created = pod.metadata?.creationTimestamp ? calculateAge(pod.metadata.creationTimestamp) : '-';
+                    return (
+                      <tr key={podName} className="border-t">
+                        <td className="p-3">
+                          <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">
+                            {podName}
+                          </Link>
+                        </td>
+                        <td className="p-3">{phase}</td>
+                        <td className="p-3 font-mono text-xs">{nodeName}</td>
+                        <td className="p-3">{created}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
       id: 'containers',
       label: 'Containers',
+      icon: Layers,
       badge: containers.length.toString(),
       content: <ContainersSection containers={containers} />,
     },
     {
+      id: 'logs',
+      label: 'Logs',
+      icon: FileText,
+      content: (
+        <SectionCard icon={FileText} title="Logs" tooltip={<p className="text-xs text-muted-foreground">Stream logs from deployment pods</p>}>
+          {deploymentPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods available. Select a deployment with running pods to view logs.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="space-y-2">
+                  <Label>Pod</Label>
+                  <Select value={logPod} onValueChange={setSelectedLogPod}>
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select pod" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {deploymentPods.map((p) => (
+                        <SelectItem key={p.metadata?.name} value={p.metadata?.name ?? ''}>
+                          {p.metadata?.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Container</Label>
+                  <Select value={selectedLogContainer || logPodContainers[0]} onValueChange={setSelectedLogContainer}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Select container" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {logPodContainers.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <LogViewer
+                podName={logPod}
+                namespace={namespace ?? undefined}
+                containerName={selectedLogContainer || logPodContainers[0]}
+                containers={logPodContainers}
+                onContainerChange={setSelectedLogContainer}
+              />
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'terminal',
+      label: 'Terminal',
+      icon: Terminal,
+      content: (
+        <SectionCard icon={Terminal} title="Terminal" tooltip={<p className="text-xs text-muted-foreground">Exec into deployment pods</p>}>
+          {deploymentPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods available. Select a deployment with running pods to open a terminal.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="space-y-2">
+                  <Label>Pod</Label>
+                  <Select value={terminalPod} onValueChange={setSelectedTerminalPod}>
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select pod" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {deploymentPods.map((p) => (
+                        <SelectItem key={p.metadata?.name} value={p.metadata?.name ?? ''}>
+                          {p.metadata?.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Container</Label>
+                  <Select value={selectedTerminalContainer || terminalPodContainers[0]} onValueChange={setSelectedTerminalContainer}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Select container" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {terminalPodContainers.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <TerminalViewer
+                podName={terminalPod}
+                namespace={namespace ?? undefined}
+                containerName={selectedTerminalContainer || terminalPodContainers[0]}
+                containers={terminalPodContainers}
+                onContainerChange={setSelectedTerminalContainer}
+              />
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
       id: 'events',
       label: 'Events',
+      icon: CalendarClock,
       badge: displayEvents.length.toString(),
       content: <EventsSection events={displayEvents} />,
     },
     {
       id: 'metrics',
       label: 'Metrics',
-      content: <MetricsDashboard resourceType="pod" resourceName={name} namespace={namespace} />,
+      icon: BarChart2,
+      content: <MetricsDashboard resourceType="deployment" resourceName={name} namespace={namespace} clusterId={clusterId} />,
     },
     {
       id: 'yaml',
       label: 'YAML',
+      icon: FileCode,
       content: <YamlViewer yaml={yaml} resourceName={deployment.metadata?.name || ''} editable onSave={handleSaveYaml} />,
     },
     {
       id: 'compare',
       label: 'Compare',
+      icon: GitCompare,
       content: <YamlCompareViewer versions={yamlVersions} resourceName={deployment.metadata?.name || ''} />,
     },
     {
       id: 'topology',
       label: 'Topology',
+      icon: Network,
       content: (
         <>
-          <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
-          <NodeDetailPopup resource={selectedNode} onClose={() => setSelectedNode(null)} />
+          {topologyLoading ? (
+            <div className="flex items-center justify-center min-h-[400px]">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : topologyError ? (
+            <div className="flex items-center justify-center min-h-[400px] text-muted-foreground text-sm">
+              Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}
+            </div>
+          ) : (
+            <TopologyViewer nodes={topologyNodesFromBackend} edges={topologyEdgesFromBackend} onNodeClick={handleNodeClick} />
+          )}
+          <NodeDetailPopup
+            resource={selectedNode}
+            onClose={() => setSelectedNode(null)}
+            sourceResourceType="Deployment"
+            sourceResourceName={deployment?.metadata?.name ?? name ?? ''}
+          />
         </>
       ),
     },
     {
       id: 'actions',
       label: 'Actions',
+      icon: Settings,
       content: (
         <ActionsSection actions={[
           { icon: Scale, label: 'Scale Deployment', description: 'Adjust the number of replicas', onClick: () => setShowScaleDialog(true) },
@@ -449,8 +840,8 @@ export default function DeploymentDetail() {
   ];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <ResourceHeader
+    <>
+      <ResourceDetailLayout
         resourceType="Deployment"
         resourceIcon={Container}
         name={deployment.metadata?.name || ''}
@@ -458,7 +849,7 @@ export default function DeploymentDetail() {
         status={status}
         backLink="/deployments"
         backLabel="Deployments"
-        metadata={
+        headerMetadata={
           <span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
             Created {age}
@@ -469,14 +860,20 @@ export default function DeploymentDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => refetch() },
+          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
           { label: 'Scale', icon: Scale, variant: 'outline', onClick: () => setShowScaleDialog(true) },
           { label: 'Restart', icon: RotateCcw, variant: 'outline', onClick: () => setShowRolloutDialog(true) },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}
-      />
-      <ResourceStatusCards cards={statusCards} />
-      <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
+        statusCards={statusCards}
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+      >
+        {breadcrumbSegments.length > 0 && (
+          <Breadcrumbs segments={breadcrumbSegments} className="mb-2" />
+        )}
+      </ResourceDetailLayout>
 
       <ScaleDialog
         open={showScaleDialog}
@@ -494,6 +891,7 @@ export default function DeploymentDetail() {
         resourceType="Deployment"
         resourceName={deployment.metadata?.name || ''}
         namespace={deployment.metadata?.namespace}
+        revisions={[]}
         onRestart={handleRestart}
         onRollback={handleRollback}
       />
@@ -505,16 +903,16 @@ export default function DeploymentDetail() {
         resourceName={deployment.metadata?.name || ''}
         namespace={deployment.metadata?.namespace}
         onConfirm={async () => {
-          if (isConnected && name && namespace) {
-            await deleteDeployment.mutateAsync({ name, namespace });
-            navigate('/deployments');
-          } else {
-            toast.success(`Deployment ${name} deleted (demo mode)`);
-            navigate('/deployments');
+          if (!isConnected || !name || !namespace) {
+            toast.error('Connect cluster to delete deployment');
+            return;
           }
+          await deleteDeployment.mutateAsync({ name, namespace });
+          toast.success(`Deployment ${name} deleted`);
+          navigate('/deployments');
         }}
         requireNameConfirmation
       />
-    </motion.div>
+    </>
   );
 }

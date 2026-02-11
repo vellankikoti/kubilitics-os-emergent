@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Kill anything on backend/frontend ports, build backend, then start backend + frontend.
+# Backend is always rebuilt so the running process includes latest Go code (e.g. topology for Jobs/CronJobs).
+set -e
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+BACKEND_PORT=8080
+FRONTEND_PORT=5173
+
+kill_port() {
+  local port=$1
+  local pids
+  pids=$(lsof -ti:$port 2>/dev/null) || true
+  if [ -n "$pids" ]; then
+    echo "Port $port -> killing $pids"
+    echo "$pids" | xargs kill -9 2>/dev/null || true
+  fi
+  return 0
+}
+
+echo "Stopping existing processes on $BACKEND_PORT and $FRONTEND_PORT..."
+for port in $BACKEND_PORT $FRONTEND_PORT; do kill_port $port; done
+sleep 5
+for port in $BACKEND_PORT $FRONTEND_PORT; do kill_port $port; done
+sleep 2
+kill_port $BACKEND_PORT || true
+sleep 1
+
+echo "Building backend (kubilitics-backend/bin/kubilitics-backend)..."
+make -C "$ROOT" backend || { echo "Backend build failed."; exit 1; }
+
+BACKEND_BIN="$ROOT/kubilitics-backend/bin/kubilitics-backend"
+if [ ! -x "$BACKEND_BIN" ]; then
+  echo "Backend binary missing after build. Run: make backend"
+  exit 1
+fi
+
+echo "Starting backend on :$BACKEND_PORT..."
+(cd kubilitics-backend && ./bin/kubilitics-backend) &
+BACKEND_PID=$!
+trap "kill $BACKEND_PID 2>/dev/null || true" EXIT
+
+sleep 4
+kill_port $FRONTEND_PORT || true
+sleep 2
+echo "Starting frontend on :$FRONTEND_PORT..."
+cd kubilitics-frontend && npm run dev

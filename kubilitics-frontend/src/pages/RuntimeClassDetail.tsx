@@ -1,14 +1,22 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { FolderCog, Clock, Cpu, Download, Trash2, Settings, Package, Box } from 'lucide-react';
+import { FolderCog, Clock, Cpu, Download, Trash2, Settings, Package, Box, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import {
-  ResourceHeader, ResourceStatusCards, ResourceTabs, TopologyViewer,
-  YamlViewer, YamlCompareViewer, EventsSection, ActionsSection,
-  type TopologyNode, type TopologyEdge, type ResourceStatus, type EventInfo, type YamlVersion,
+  ResourceDetailLayout,
+  TopologyViewer,
+  YamlViewer,
+  YamlCompareViewer,
+  EventsSection,
+  ActionsSection,
+  DeleteConfirmDialog,
+  type TopologyNode,
+  type TopologyEdge,
+  type ResourceStatus,
+  type EventInfo,
+  type YamlVersion,
 } from '@/components/resources';
 
 const mockRuntimeClass = {
@@ -72,7 +80,18 @@ export default function RuntimeClassDetail() {
   const { name } = useParams();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const rc = mockRuntimeClass;
+
+  const handleDownloadYaml = useCallback(() => {
+    const blob = new Blob([yaml], { type: 'application/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${rc.name || 'runtimeclass'}.yaml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [rc.name]);
 
   // Mock YAML versions for comparison
   const yamlVersions: YamlVersion[] = [
@@ -226,29 +245,44 @@ export default function RuntimeClassDetail() {
       label: 'Actions',
       content: (
         <ActionsSection actions={[
-          { icon: Download, label: 'Download YAML', description: 'Export RuntimeClass definition' },
-          { icon: Trash2, label: 'Delete RuntimeClass', description: 'Remove this runtime class', variant: 'destructive' },
+          { icon: Download, label: 'Download YAML', description: 'Export RuntimeClass definition', onClick: handleDownloadYaml },
+          { icon: Trash2, label: 'Delete RuntimeClass', description: 'Remove this runtime class', variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]} />
       ),
     },
   ];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <ResourceHeader
+    <>
+      <ResourceDetailLayout
         resourceType="RuntimeClass"
         resourceIcon={FolderCog}
         name={rc.name}
         status="Healthy"
         backLink="/runtimeclasses"
         backLabel="Runtime Classes"
-        metadata={<span className="flex items-center gap-1.5 ml-2"><Clock className="h-3.5 w-3.5" />Created {rc.age}</span>}
+        headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {rc.age}</span>}
         actions={[
-          { label: 'Delete', icon: Trash2, variant: 'destructive' },
+          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => {} },
+          { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
+          { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}
+        statusCards={statusCards}
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
       />
-      <ResourceStatusCards cards={statusCards} />
-      <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
-    </motion.div>
+      <DeleteConfirmDialog
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        resourceType="RuntimeClass"
+        resourceName={rc.name}
+        onConfirm={() => {
+          toast.success(`RuntimeClass ${rc.name} deleted (demo mode)`);
+          navigate('/runtimeclasses');
+        }}
+        requireNameConfirmation
+      />
+    </>
   );
 }

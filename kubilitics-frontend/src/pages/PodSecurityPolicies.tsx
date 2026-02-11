@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Shield } from 'lucide-react';
 import { ResourceList, type Column } from '@/components/resources';
-import { useK8sResourceList, calculateAge } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { usePaginatedResourceList, calculateAge } from '@/hooks/useKubernetes';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { ResourceCreator } from '@/components/editor';
 import { toast } from 'sonner';
 
@@ -44,19 +44,19 @@ spec:
     - 'secret'`;
 
 export default function PodSecurityPolicies() {
-  const { config } = useKubernetesConfigStore();
-  const { data, isLoading, refetch } = useK8sResourceList('podsecuritypolicies');
+  const { isConnected } = useConnectionStatus();
+  const { data, isLoading, refetch, pagination } = usePaginatedResourceList('podsecuritypolicies');
   const [showCreator, setShowCreator] = useState(false);
 
-  const items: PodSecurityPolicy[] = config.isConnected && data?.items
-    ? data.items.map((item: any) => ({
+  const items: PodSecurityPolicy[] = isConnected && data
+    ? (data?.items ?? []).map((item: any) => ({
         id: item.metadata.uid,
         name: item.metadata.name,
         privileged: String(item.spec?.privileged || false),
         volumes: item.spec?.volumes?.join(', ') || '-',
         age: calculateAge(item.metadata.creationTimestamp),
       }))
-    : mockData;
+    : [];
 
   const handleCreate = (yaml: string) => {
     toast.success('PodSecurityPolicy created (demo mode)');
@@ -87,6 +87,7 @@ export default function PodSecurityPolicies() {
       isLoading={isLoading}
       onRefresh={() => refetch()}
       onCreate={() => setShowCreator(true)}
+      pagination={pagination}
     />
   );
 }

@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { FileCode } from 'lucide-react';
 import { ResourceList, type Column } from '@/components/resources';
-import { useK8sResourceList, calculateAge } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { usePaginatedResourceList, calculateAge } from '@/hooks/useKubernetes';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { ResourceCreator } from '@/components/editor';
 import { toast } from 'sonner';
 
@@ -53,12 +53,12 @@ spec:
     shortNames: []`;
 
 export default function CustomResourceDefinitions() {
-  const { config } = useKubernetesConfigStore();
-  const { data, isLoading, refetch } = useK8sResourceList('customresourcedefinitions');
+  const { isConnected } = useConnectionStatus();
+  const { data, isLoading, refetch, pagination } = usePaginatedResourceList('customresourcedefinitions');
   const [showCreator, setShowCreator] = useState(false);
 
-  const items: CRD[] = config.isConnected && data?.items
-    ? data.items.map((item: any) => {
+  const items: CRD[] = isConnected && data
+    ? (data?.items ?? []).map((item: any) => {
         const storedVersion = item.spec?.versions?.find((v: any) => v.storage) || item.spec?.versions?.[0];
         return {
           id: item.metadata.uid,
@@ -69,7 +69,7 @@ export default function CustomResourceDefinitions() {
           age: calculateAge(item.metadata.creationTimestamp),
         };
       })
-    : mockData;
+    : [];
 
   const handleCreate = (yaml: string) => {
     toast.success('CustomResourceDefinition created (demo mode)');
@@ -102,6 +102,7 @@ export default function CustomResourceDefinitions() {
       isLoading={isLoading}
       onRefresh={() => refetch()}
       onCreate={() => setShowCreator(true)}
+      pagination={pagination}
     />
   );
 }

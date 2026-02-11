@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Webhook } from 'lucide-react';
 import { ResourceList, type Column } from '@/components/resources';
-import { useK8sResourceList, calculateAge } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { usePaginatedResourceList, calculateAge } from '@/hooks/useKubernetes';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { ResourceCreator } from '@/components/editor';
 import { toast } from 'sonner';
 
@@ -47,19 +47,19 @@ webhooks:
     failurePolicy: Fail`;
 
 export default function MutatingWebhooks() {
-  const { config } = useKubernetesConfigStore();
-  const { data, isLoading, refetch } = useK8sResourceList('mutatingwebhookconfigurations');
+  const { isConnected } = useConnectionStatus();
+  const { data, isLoading, refetch, pagination } = usePaginatedResourceList('mutatingwebhookconfigurations');
   const [showCreator, setShowCreator] = useState(false);
 
-  const items: MutatingWebhook[] = config.isConnected && data?.items
-    ? data.items.map((item: any) => ({
+  const items: MutatingWebhook[] = isConnected && data
+    ? (data?.items ?? []).map((item: any) => ({
         id: item.metadata.uid,
         name: item.metadata.name,
         webhooks: String(item.webhooks?.length || 0),
         failurePolicy: item.webhooks?.[0]?.failurePolicy || '-',
         age: calculateAge(item.metadata.creationTimestamp),
       }))
-    : mockData;
+    : [];
 
   const handleCreate = (yaml: string) => {
     toast.success('MutatingWebhookConfiguration created (demo mode)');
@@ -90,6 +90,7 @@ export default function MutatingWebhooks() {
       isLoading={isLoading}
       onRefresh={() => refetch()}
       onCreate={() => setShowCreator(true)}
+      pagination={pagination}
     />
   );
 }

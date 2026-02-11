@@ -1,15 +1,23 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { FileCode, Clock, Layers, Download, Trash2, Package, Code, List, ExternalLink } from 'lucide-react';
+import { FileCode, Clock, Layers, Download, Trash2, Package, Code, List, ExternalLink, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
-  ResourceHeader, ResourceStatusCards, ResourceTabs, TopologyViewer,
-  YamlViewer, YamlCompareViewer, EventsSection, ActionsSection,
-  type TopologyNode, type TopologyEdge, type ResourceStatus, type EventInfo, type YamlVersion,
+  ResourceDetailLayout,
+  TopologyViewer,
+  YamlViewer,
+  YamlCompareViewer,
+  EventsSection,
+  ActionsSection,
+  DeleteConfirmDialog,
+  type TopologyNode,
+  type TopologyEdge,
+  type ResourceStatus,
+  type EventInfo,
+  type YamlVersion,
 } from '@/components/resources';
 
 const mockCRD = {
@@ -117,7 +125,18 @@ export default function CustomResourceDefinitionDetail() {
   const { name } = useParams();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const crd = mockCRD;
+
+  const handleDownloadYaml = useCallback(() => {
+    const blob = new Blob([yaml], { type: 'application/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${crd.name || 'crd'}.yaml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [crd.name]);
 
   // Mock YAML versions for comparison
   const yamlVersions: YamlVersion[] = [
@@ -341,29 +360,44 @@ export default function CustomResourceDefinitionDetail() {
       label: 'Actions',
       content: (
         <ActionsSection actions={[
-          { icon: Download, label: 'Download YAML', description: 'Export CRD definition' },
-          { icon: Trash2, label: 'Delete CRD', description: 'Remove this custom resource definition', variant: 'destructive' },
+          { icon: Download, label: 'Download YAML', description: 'Export CRD definition', onClick: handleDownloadYaml },
+          { icon: Trash2, label: 'Delete CRD', description: 'Remove this custom resource definition', variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]} />
       ),
     },
   ];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <ResourceHeader
+    <>
+      <ResourceDetailLayout
         resourceType="CustomResourceDefinition"
         resourceIcon={FileCode}
         name={crd.name}
         status="Healthy"
         backLink="/customresourcedefinitions"
         backLabel="Custom Resource Definitions"
-        metadata={<span className="flex items-center gap-1.5 ml-2"><Clock className="h-3.5 w-3.5" />Created {crd.age}</span>}
+        headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {crd.age}</span>}
         actions={[
-          { label: 'Delete', icon: Trash2, variant: 'destructive' },
+          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => {} },
+          { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
+          { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}
+        statusCards={statusCards}
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
       />
-      <ResourceStatusCards cards={statusCards} />
-      <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
-    </motion.div>
+      <DeleteConfirmDialog
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        resourceType="CustomResourceDefinition"
+        resourceName={crd.name}
+        onConfirm={() => {
+          toast.success(`CRD ${crd.name} deleted (demo mode)`);
+          navigate('/customresourcedefinitions');
+        }}
+        requireNameConfirmation
+      />
+    </>
   );
 }

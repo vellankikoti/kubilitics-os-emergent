@@ -67,6 +67,10 @@ func GetGVRForType(resourceType string) (schema.GroupVersionResource, error) {
 		"persistentvolumeclaims": {Group: "", Version: "v1", Resource: "persistentvolumeclaims"},
 		"serviceaccounts":        {Group: "", Version: "v1", Resource: "serviceaccounts"},
 		"endpoints":              {Group: "", Version: "v1", Resource: "endpoints"},
+		"events":                 {Group: "", Version: "v1", Resource: "events"},
+		"resourcequotas":         {Group: "", Version: "v1", Resource: "resourcequotas"},
+		"limitranges":            {Group: "", Version: "v1", Resource: "limitranges"},
+		"replicationcontrollers": {Group: "", Version: "v1", Resource: "replicationcontrollers"},
 	}
 
 	// Apps resources
@@ -90,12 +94,60 @@ func GetGVRForType(resourceType string) (schema.GroupVersionResource, error) {
 		"ingressclasses":   {Group: "networking.k8s.io", Version: "v1", Resource: "ingressclasses"},
 	}
 
+	// Discovery resources (EndpointSlices)
+	discoveryResources := map[string]schema.GroupVersionResource{
+		"endpointslices": {Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
+	}
+
 	// RBAC resources
 	rbacResources := map[string]schema.GroupVersionResource{
 		"roles":               {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"},
 		"rolebindings":        {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"},
 		"clusterroles":        {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
 		"clusterrolebindings": {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
+	}
+
+	// Storage resources
+	storageResources := map[string]schema.GroupVersionResource{
+		"storageclasses":     {Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"},
+		"volumeattachments":  {Group: "storage.k8s.io", Version: "v1", Resource: "volumeattachments"},
+	}
+
+	// Autoscaling resources
+	autoscalingResources := map[string]schema.GroupVersionResource{
+		"horizontalpodautoscalers": {Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"},
+		"verticalpodautoscalers":   {Group: "autoscaling.k8s.io", Version: "v1", Resource: "verticalpodautoscalers"},
+	}
+
+	// Policy resources
+	policyResources := map[string]schema.GroupVersionResource{
+		"poddisruptionbudgets": {Group: "policy", Version: "v1", Resource: "poddisruptionbudgets"},
+	}
+
+	// Scheduling resources
+	schedulingResources := map[string]schema.GroupVersionResource{
+		"priorityclasses": {Group: "scheduling.k8s.io", Version: "v1", Resource: "priorityclasses"},
+	}
+
+	// Coordination resources
+	coordinationResources := map[string]schema.GroupVersionResource{
+		"leases": {Group: "coordination.k8s.io", Version: "v1", Resource: "leases"},
+	}
+
+	// API registration
+	apiregistrationResources := map[string]schema.GroupVersionResource{
+		"apiservices": {Group: "apiregistration.k8s.io", Version: "v1", Resource: "apiservices"},
+	}
+
+	// Custom resources
+	apiextensionsResources := map[string]schema.GroupVersionResource{
+		"customresourcedefinitions": {Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"},
+	}
+
+	// Admission control
+	admissionResources := map[string]schema.GroupVersionResource{
+		"mutatingwebhookconfigurations":   {Group: "admissionregistration.k8s.io", Version: "v1", Resource: "mutatingwebhookconfigurations"},
+		"validatingwebhookconfigurations": {Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingwebhookconfigurations"},
 	}
 
 	// Check all maps
@@ -111,7 +163,34 @@ func GetGVRForType(resourceType string) (schema.GroupVersionResource, error) {
 	if gvr, ok := networkResources[resourceType]; ok {
 		return gvr, nil
 	}
+	if gvr, ok := discoveryResources[resourceType]; ok {
+		return gvr, nil
+	}
 	if gvr, ok := rbacResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := storageResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := autoscalingResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := policyResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := schedulingResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := coordinationResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := apiregistrationResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := apiextensionsResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := admissionResources[resourceType]; ok {
 		return gvr, nil
 	}
 

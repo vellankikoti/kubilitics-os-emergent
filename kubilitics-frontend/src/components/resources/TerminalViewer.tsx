@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
 import { motion } from 'framer-motion';
-import { Terminal, X, Maximize2, Minimize2, Copy, Trash2 } from 'lucide-react';
+import { Terminal, X, Maximize2, Minimize2, Copy, Trash2, Loader2, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -11,7 +11,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { useClusterStore } from '@/stores/clusterStore';
+import { getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
+import { useBackendConfigStore } from '@/stores/backendConfigStore';
+import { getPodExecWebSocketUrl } from '@/services/backendApiClient';
 import { toast } from 'sonner';
 
 export interface TerminalLine {
@@ -91,6 +95,14 @@ Swap:             0           0           0`,
   'uname -a': 'Linux nginx-deployment-7fb96c846b-abc12 5.15.0-91-generic #101-Ubuntu SMP x86_64 GNU/Linux',
 };
 
+function base64Encode(str: string): string {
+  return btoa(str);
+}
+
+function base64Decode(b64: string): string {
+  return atob(b64);
+}
+
 export function TerminalViewer({
   podName,
   namespace,
@@ -99,32 +111,118 @@ export function TerminalViewer({
   onContainerChange,
   className,
 }: TerminalViewerProps) {
-  const { config } = useKubernetesConfigStore();
-  const isConnected = config.isConnected;
-  
+  const { isConnected } = useConnectionStatus();
+  const activeCluster = useClusterStore((s) => s.activeCluster);
+  const storedUrl = useBackendConfigStore((s) => s.backendBaseUrl);
+  const backendBaseUrl = getEffectiveBackendBaseUrl(storedUrl);
+  const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
+  const clusterId = activeCluster?.id;
+
   const [lines, setLines] = useState<TerminalLine[]>([]);
   const [currentInput, setCurrentInput] = useState('');
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [selectedContainer, setSelectedContainer] = useState(containerName);
   const [isMaximized, setIsMaximized] = useState(false);
-  
+  const [execConnected, setExecConnected] = useState(false);
+  const [execConnecting, setExecConnecting] = useState(false);
+  const [execError, setExecError] = useState<string | null>(null);
+
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
-  // Initial welcome message
+  const useRealExec = isBackendConfigured() && !!clusterId && !!namespace && !!podName && !!selectedContainer;
+
+  // WebSocket pod exec: connect when backend + cluster + pod/container set
   useEffect(() => {
+    if (!useRealExec) {
+      setExecConnected(false);
+      setExecConnecting(false);
+      setExecError(null);
+      return;
+    }
+    const url = getPodExecWebSocketUrl(backendBaseUrl, clusterId!, namespace!, podName!, {
+      container: selectedContainer,
+      shell: '/bin/sh',
+    });
+    setExecConnecting(true);
+    setExecError(null);
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setExecConnecting(false);
+      setExecConnected(true);
+      // Send initial resize (rows x cols)
+      try {
+        ws.send(JSON.stringify({ t: 'resize', r: { rows: 24, cols: 80 } }));
+      } catch {
+        // ignore
+      }
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data) as { t?: string; d?: string };
+        const t = msg.t;
+        const d = msg.d;
+        if (t === 'stdout' && d) {
+          const text = base64Decode(d);
+          setLines((prev) => [...prev, { type: 'output', content: text }]);
+        } else if (t === 'stderr' && d) {
+          const text = base64Decode(d);
+          setLines((prev) => [...prev, { type: 'error', content: text }]);
+        } else if (t === 'exit') {
+          setExecConnected(false);
+        } else if (t === 'error' && d) {
+          setExecError(d);
+          setExecConnected(false);
+        }
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    ws.onerror = () => {
+      setExecConnecting(false);
+      setExecError('WebSocket error');
+    };
+
+    ws.onclose = () => {
+      setExecConnecting(false);
+      setExecConnected(false);
+      wsRef.current = null;
+    };
+
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+  }, [useRealExec, backendBaseUrl, clusterId, namespace, podName, selectedContainer]);
+
+  // Initial welcome message (when not using real exec or before connected)
+  useEffect(() => {
+    if (execConnected) return;
     const welcomeLines: TerminalLine[] = [
       { type: 'system', content: `Connecting to ${podName || 'pod'}/${selectedContainer}...` },
-      { type: 'system', content: isConnected 
-        ? '⚠️  Note: Real exec requires a WebSocket proxy. Using demo mode.'
-        : '📋 Demo mode - simulated terminal session' 
-      },
+      ...(execConnecting
+        ? [{ type: 'system' as const, content: 'Opening exec session…' }]
+        : execError
+          ? [{ type: 'system' as const, content: `Exec not available: ${execError}` }]
+          : useRealExec
+            ? []
+            : [
+                { type: 'system' as const, content: isConnected ? '⚠️  Using demo mode (no backend exec).' : '📋 Demo mode - simulated terminal session' },
+              ]),
       { type: 'system', content: `Container: ${selectedContainer} | Shell: /bin/sh` },
-      { type: 'system', content: 'Type "help" for available commands.\n' },
+      ...(execConnected ? [] : [{ type: 'system' as const, content: 'Type "help" for available commands.\n' }]),
     ];
-    setLines(welcomeLines);
-  }, [podName, selectedContainer, isConnected]);
+    setLines((prev) => {
+      if (prev.length === 0) return welcomeLines;
+      return prev;
+    });
+  }, [podName, selectedContainer, isConnected, useRealExec, execConnecting, execConnected, execError]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -138,60 +236,68 @@ export function TerminalViewer({
     inputRef.current?.focus();
   }, []);
 
-  // Execute command
+  // Execute command: send over WebSocket when real exec connected; else mock
   const executeCommand = useCallback((command: string) => {
     const trimmedCmd = command.trim();
     if (!trimmedCmd) return;
 
-    // Add to history
     setCommandHistory(prev => [...prev, trimmedCmd]);
     setHistoryIndex(-1);
 
-    // Add input line
-    setLines(prev => [...prev, { 
-      type: 'input', 
+    setLines(prev => [...prev, {
+      type: 'input',
       content: `$ ${trimmedCmd}`,
       timestamp: new Date().toISOString(),
     }]);
 
-    // Handle special commands
     if (trimmedCmd === 'clear') {
       setLines([]);
       return;
     }
 
     if (trimmedCmd === 'exit') {
+      if (execConnected && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.close();
+      }
       setLines(prev => [...prev, { type: 'system', content: 'Session terminated. Refresh to reconnect.' }]);
       return;
     }
 
-    // Parse command and args
+    // Real exec: send stdin to backend
+    if (execConnected && wsRef.current?.readyState === WebSocket.OPEN) {
+      try {
+        const payload = trimmedCmd + '\n';
+        wsRef.current.send(JSON.stringify({ t: 'stdin', d: base64Encode(payload) }));
+      } catch {
+        setLines(prev => [...prev, { type: 'error', content: 'Failed to send command' }]);
+      }
+      return;
+    }
+
+    // Mock command responses when not using real exec
     const parts = trimmedCmd.split(' ');
     const cmd = parts[0];
     const args = parts.slice(1);
     const fullCmd = trimmedCmd;
 
-    // Check for echo command
     if (cmd === 'echo') {
       setLines(prev => [...prev, { type: 'output', content: args.join(' ') }]);
       return;
     }
 
-    // Look up command response
-    let response = mockCommands[fullCmd] || mockCommands[cmd];
-    
+    const response = mockCommands[fullCmd] || mockCommands[cmd];
     if (response) {
-      const output = typeof response === 'function' 
+      const output = typeof response === 'function'
         ? response([podName || 'unknown-pod', ...args])
         : response;
       setLines(prev => [...prev, { type: 'output', content: output }]);
     } else {
-      setLines(prev => [...prev, { 
-        type: 'error', 
-        content: `sh: ${cmd}: command not found` 
+      setLines(prev => [...prev, {
+        type: 'error',
+        content: `sh: ${cmd}: command not found`,
       }]);
     }
-  }, [podName]);
+  }, [podName, execConnected]);
 
   // Handle key events
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {

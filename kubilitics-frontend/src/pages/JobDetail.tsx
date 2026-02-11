@@ -1,29 +1,40 @@
-import { useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { useState, useCallback, useMemo } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Workflow,
   Clock,
   CheckCircle2,
   XCircle,
   RefreshCw,
+  RotateCw,
   Download,
   Trash2,
   Copy,
   Play,
   Activity,
   Timer,
+  Box,
+  FileText,
+  Terminal,
+  LayoutDashboard,
+  Layers,
+  CalendarClock,
+  BarChart2,
+  FileCode,
+  GitCompare,
+  Network,
+  Settings,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import {
-  ResourceHeader,
-  ResourceStatusCards,
-  ResourceTabs,
+  ResourceDetailLayout,
   TopologyViewer,
   ContainersSection,
   YamlViewer,
@@ -34,7 +45,9 @@ import {
   MetricsDashboard,
   NodeDetailPopup,
   LogViewer,
+  TerminalViewer,
   DeleteConfirmDialog,
+  SectionCard,
   type TopologyNode,
   type TopologyEdge,
   type ResourceStatus,
@@ -42,9 +55,16 @@ import {
   type YamlVersion,
   type ResourceDetail,
 } from '@/components/resources';
-import { useResourceDetail, useK8sEvents } from '@/hooks/useK8sResourceDetail';
-import { useDeleteK8sResource, useUpdateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
+import { useDeleteK8sResource, useUpdateK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
+import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
+import { useClusterStore } from '@/stores/clusterStore';
+import { useActiveClusterId } from '@/hooks/useActiveClusterId';
+import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
+import { useQuery } from '@tanstack/react-query';
+import { postJobRetry } from '@/services/backendApiClient';
 
 interface JobResource extends KubernetesResource {
   spec?: {
@@ -76,80 +96,52 @@ interface JobResource extends KubernetesResource {
   };
 }
 
-const mockJobResource: JobResource = {
-  apiVersion: 'batch/v1',
-  kind: 'Job',
-  metadata: {
-    name: 'data-migration-abc123',
-    namespace: 'production',
-    uid: 'job-123-456',
-    creationTimestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-    labels: { 'job-name': 'data-migration-abc123', batch: 'migration' },
-  },
-  spec: {
-    completions: 1,
-    parallelism: 1,
-    backoffLimit: 6,
-    activeDeadlineSeconds: 3600,
-    ttlSecondsAfterFinished: 86400,
-    template: {
-      spec: {
-        containers: [{
-          name: 'migration',
-          image: 'myapp/migration:v1.0',
-          command: ['/bin/sh', '-c'],
-          args: ['./migrate.sh'],
-          resources: { requests: { cpu: '500m', memory: '512Mi' }, limits: { cpu: '1', memory: '1Gi' } },
-        }],
-        restartPolicy: 'Never',
-      },
-    },
-  },
-  status: {
-    succeeded: 1,
-    failed: 0,
-    active: 0,
-    startTime: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-    completionTime: new Date(Date.now() - 2 * 60 * 60 * 1000 + 5 * 60 * 1000).toISOString(),
-    conditions: [
-      { type: 'Complete', status: 'True', lastTransitionTime: new Date().toISOString(), reason: 'JobComplete' },
-    ],
-  },
+type PodContainerState = {
+  running?: { startedAt?: string };
+  terminated?: { exitCode?: number; finishedAt?: string; reason?: string };
 };
 
-const topologyNodes: TopologyNode[] = [
-  { id: 'job', type: 'job', name: 'data-migration-abc123', namespace: 'production', status: 'healthy', isCurrent: true },
-  { id: 'pod-1', type: 'pod', name: 'data-migration-abc123-xyz12', namespace: 'production', status: 'healthy' },
-];
-
-const topologyEdges: TopologyEdge[] = [
-  { from: 'job', to: 'pod-1', label: 'Created' },
-];
-
-const mockEvents = [
-  { type: 'Normal' as const, reason: 'SuccessfulCreate', message: 'Created pod: data-migration-abc123-xyz12', time: '2h ago' },
-  { type: 'Normal' as const, reason: 'Completed', message: 'Job completed', time: '2h ago' },
-];
+type PodStatusWithContainers = {
+  containerStatuses?: Array<{ state?: PodContainerState }>;
+};
 
 export default function JobDetail() {
   const { namespace, name } = useParams();
+  const clusterId = useActiveClusterId();
   const navigate = useNavigate();
   
   const [activeTab, setActiveTab] = useState('overview');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [selectedNode, setSelectedNode] = useState<ResourceDetail | null>(null);
-  const [selectedLogContainer, setSelectedLogContainer] = useState<string | undefined>(undefined);
+  const [selectedLogPod, setSelectedLogPod] = useState<string>('');
+  const [selectedLogContainer, setSelectedLogContainer] = useState<string>('');
+  const [selectedTerminalPod, setSelectedTerminalPod] = useState<string>('');
+  const [selectedTerminalContainer, setSelectedTerminalContainer] = useState<string>('');
   
-  const { config } = useKubernetesConfigStore();
-  const { resource: job, isLoading, age, yaml, isConnected, refetch } = useResourceDetail<JobResource>(
+  const { isConnected } = useConnectionStatus();
+  const { activeCluster } = useClusterStore();
+  const breadcrumbSegments = useDetailBreadcrumbs('Job', name ?? undefined, namespace ?? undefined, activeCluster?.name);
+  const { resource: job, isLoading, error, age, yaml, refetch } = useResourceDetail<JobResource>(
     'jobs',
     name,
     namespace,
-    mockJobResource
+    {} as JobResource
   );
-  const { events } = useK8sEvents(namespace);
+  const resourceEvents = useResourceEvents('Job', namespace ?? undefined, name ?? undefined);
+  const displayEvents = resourceEvents.events;
+  const backendBaseUrl = getEffectiveBackendBaseUrl(useBackendConfigStore((s) => s.backendBaseUrl));
+  const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
   const deleteJob = useDeleteK8sResource('jobs');
   const updateJob = useUpdateK8sResource('jobs');
+  const resourceTopology = useResourceTopology('jobs', namespace ?? undefined, name ?? undefined);
+  const topologyNodes = useMemo(
+    () =>
+      resourceTopology.nodes.map((n) => ({
+        ...n,
+        isCurrent: n.type === 'job' && n.name === name && n.namespace === namespace,
+      })),
+    [resourceTopology.nodes, name, namespace]
+  );
 
   const succeeded = job.status?.succeeded || 0;
   const failed = job.status?.failed || 0;
@@ -164,7 +156,7 @@ export default function JobDetail() {
     : job.status?.startTime
     ? 'Running...'
     : '-';
-  
+
   const containers: ContainerInfo[] = (job.spec?.template?.spec?.containers || []).map(c => ({
     name: c.name,
     image: c.image,
@@ -174,10 +166,22 @@ export default function JobDetail() {
     stateReason: status === 'Succeeded' ? 'Completed' : undefined,
     ports: [],
     resources: c.resources || {},
-    currentUsage: { cpu: status === 'Succeeded' ? 0 : Math.floor(Math.random() * 40) + 10, memory: status === 'Succeeded' ? 0 : Math.floor(Math.random() * 50) + 20 },
   }));
 
   const conditions = job.status?.conditions || [];
+
+  type PodLike = KubernetesResource & { metadata?: { name?: string; labels?: Record<string, string> }; status?: { phase?: string }; spec?: { nodeName?: string; containers?: Array<{ name: string }> } };
+  const { data: podsList } = useK8sResourceList<PodLike>(
+    'pods',
+    namespace ?? undefined,
+    { enabled: !!namespace && !!name, limit: 5000 }
+  );
+  const jobPods = (podsList?.items ?? []).filter((pod) => (pod.metadata?.labels?.['job-name'] ?? '') === name);
+  const firstJobPodName = jobPods[0]?.metadata?.name ?? '';
+  const logPod = selectedLogPod || firstJobPodName;
+  const terminalPod = selectedTerminalPod || firstJobPodName;
+  const logPodContainers = jobPods.find((p) => p.metadata?.name === logPod)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
+  const terminalPodContainers = jobPods.find((p) => p.metadata?.name === terminalPod)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
 
   const handleNodeClick = useCallback((node: TopologyNode) => {
     const resourceDetail: ResourceDetail = {
@@ -207,19 +211,45 @@ export default function JobDetail() {
   }, [yaml]);
 
   const handleSaveYaml = useCallback(async (newYaml: string) => {
-    if (isConnected && name && namespace) {
-      try {
-        await updateJob.mutateAsync({ name, yaml: newYaml, namespace });
-        toast.success('Job updated successfully');
-        refetch();
-      } catch (error: any) {
-        toast.error(`Failed to update: ${error.message}`);
-        throw error;
-      }
-    } else {
-      toast.success('Job updated (demo mode)');
+    if (!isConnected || !name || !namespace) {
+      toast.error('Connect cluster to update Job');
+      throw new Error('Not connected');
+    }
+    try {
+      await updateJob.mutateAsync({ name, yaml: newYaml, namespace });
+      toast.success('Job updated successfully');
+      refetch();
+    } catch (error: any) {
+      toast.error(`Failed to update: ${error.message}`);
+      throw error;
     }
   }, [isConnected, name, namespace, updateJob, refetch]);
+
+  const handleRetry = useCallback(async () => {
+    if (!isConnected || !name || !namespace) {
+      toast.error('Connect cluster to retry Job');
+      return;
+    }
+    if (!isBackendConfigured()) {
+      toast.error('Connect to Kubilitics backend in Settings to retry Job.');
+      return;
+    }
+    const cid = useClusterStore.getState().activeCluster?.id ?? useBackendConfigStore.getState().currentClusterId;
+    if (!cid) {
+      toast.error('Select a cluster from the cluster list to perform this action.');
+      return;
+    }
+    const backendBase = getEffectiveBackendBaseUrl(useBackendConfigStore.getState().backendBaseUrl);
+    try {
+      await postJobRetry(backendBase, cid, namespace, name);
+      toast.success(`Created new Job from ${name} (retry)`);
+      refetch();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(msg ?? 'Retry failed');
+      throw e;
+    }
+  }, [isConnected, name, namespace, refetch, isBackendConfigured]);
 
   if (isLoading) {
     return (
@@ -233,24 +263,41 @@ export default function JobDetail() {
     );
   }
 
+  if (!job?.metadata?.name) {
+    return (
+      <div className="space-y-4 p-6">
+        <Breadcrumbs segments={breadcrumbSegments} className="mb-2" />
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-muted-foreground">Job not found.</p>
+            {error && <p className="text-sm text-destructive mt-2">{String(error)}</p>}
+            <Button variant="outline" className="mt-4" onClick={() => navigate('/jobs')}>
+              Back to Jobs
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const statusCards = [
+    { label: 'Status', value: status, icon: status === 'Succeeded' ? CheckCircle2 : status === 'Failed' ? XCircle : Activity, iconColor: status === 'Succeeded' ? 'success' as const : status === 'Failed' ? 'error' as const : 'warning' as const },
     { label: 'Completions', value: `${succeeded}/${completions}`, icon: CheckCircle2, iconColor: succeeded >= completions ? 'success' as const : 'warning' as const },
+    { label: 'Active', value: active, icon: Activity, iconColor: 'muted' as const },
+    { label: 'Succeeded', value: succeeded, icon: CheckCircle2, iconColor: 'success' as const },
     { label: 'Failed', value: failed, icon: XCircle, iconColor: failed > 0 ? 'error' as const : 'muted' as const },
     { label: 'Duration', value: duration, icon: Timer, iconColor: 'info' as const },
-    { label: 'Age', value: age, icon: Clock, iconColor: 'primary' as const },
   ];
 
   const yamlVersions: YamlVersion[] = [
     { id: 'current', label: 'Current Version', yaml, timestamp: 'now' },
-    { id: 'previous', label: 'Previous Version', yaml: yaml.replace('backoffLimit: 6', 'backoffLimit: 4'), timestamp: '2 hours ago' },
   ];
-
-  const displayEvents = isConnected && events.length > 0 ? events : mockEvents;
 
   const tabs = [
     {
       id: 'overview',
       label: 'Overview',
+      icon: LayoutDashboard,
       content: (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -367,60 +414,270 @@ export default function JobDetail() {
       ),
     },
     {
+      id: 'executionDetails',
+      label: 'Execution Details',
+      icon: Timer,
+      content: (
+        <SectionCard icon={Timer} title="Execution Details" tooltip={<p className="text-xs text-muted-foreground">Per-pod execution times and exit codes</p>}>
+          {jobPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods for this Job yet.</p>
+          ) : (
+            <div className="rounded-lg border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="text-left p-3 font-medium">Pod</th>
+                    <th className="text-left p-3 font-medium">Node</th>
+                    <th className="text-left p-3 font-medium">Start Time</th>
+                    <th className="text-left p-3 font-medium">End Time</th>
+                    <th className="text-left p-3 font-medium">Duration</th>
+                    <th className="text-left p-3 font-medium">Exit Code</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobPods.map((pod) => {
+                    const podName = pod.metadata?.name ?? '';
+                    const podNs = pod.metadata?.namespace ?? namespace ?? '';
+                    const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
+                    const created = pod.metadata?.creationTimestamp;
+                    const status = pod.status as PodStatusWithContainers | undefined;
+                    const firstContainer = status?.containerStatuses?.[0];
+                    const startedAt = firstContainer?.state?.running?.startedAt ?? firstContainer?.state?.terminated?.finishedAt ?? created;
+                    const terminated = firstContainer?.state?.terminated;
+                    const phase = (pod.status as { phase?: string } | undefined)?.phase;
+                    const endAt = terminated?.finishedAt ?? (phase === 'Succeeded' || phase === 'Failed' ? startedAt : null);
+                    let durationStr = '-';
+                    if (startedAt && endAt) {
+                      const s = new Date(startedAt).getTime();
+                      const e = new Date(endAt).getTime();
+                      const sec = Math.floor((e - s) / 1000);
+                      durationStr = sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m` : `${Math.floor(sec / 3600)}h`;
+                    } else if (startedAt) {
+                      durationStr = 'Running';
+                    }
+                    const exitCode = terminated?.exitCode ?? (terminated ? 0 : '-');
+                    return (
+                      <tr key={podName} className="border-t">
+                        <td className="p-3">
+                          <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">{podName}</Link>
+                        </td>
+                        <td className="p-3 font-mono text-xs">{nodeName}</td>
+                        <td className="p-3 text-muted-foreground whitespace-nowrap">{startedAt ? new Date(startedAt).toLocaleString() : '-'}</td>
+                        <td className="p-3 text-muted-foreground whitespace-nowrap">{endAt ? new Date(endAt).toLocaleString() : '-'}</td>
+                        <td className="p-3 font-mono">{durationStr}</td>
+                        <td className="p-3 font-mono">{String(exitCode)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
       id: 'containers',
       label: 'Containers',
+      icon: Layers,
       badge: containers.length.toString(),
       content: <ContainersSection containers={containers} />,
     },
     {
+      id: 'pods',
+      label: 'Pods',
+      icon: Box,
+      badge: jobPods.length.toString(),
+      content: (
+        <SectionCard icon={Box} title="Pods" tooltip={<p className="text-xs text-muted-foreground">Pods created by this Job</p>}>
+          {jobPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods for this Job yet.</p>
+          ) : (
+            <div className="rounded-lg border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="text-left p-3 font-medium">Name</th>
+                    <th className="text-left p-3 font-medium">Status</th>
+                    <th className="text-left p-3 font-medium">Node</th>
+                    <th className="text-left p-3 font-medium">Age</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobPods.map((pod) => {
+                    const podName = pod.metadata?.name ?? '';
+                    const podNs = pod.metadata?.namespace ?? namespace ?? '';
+                    const phase = (pod.status as { phase?: string } | undefined)?.phase ?? '-';
+                    const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
+                    const created = pod.metadata?.creationTimestamp ? calculateAge(pod.metadata.creationTimestamp) : '-';
+                    return (
+                      <tr key={podName} className="border-t">
+                        <td className="p-3">
+                          <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">
+                            {podName}
+                          </Link>
+                        </td>
+                        <td className="p-3">{phase}</td>
+                        <td className="p-3 font-mono text-xs">{nodeName}</td>
+                        <td className="p-3">{created}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
       id: 'logs',
       label: 'Logs',
+      icon: FileText,
       content: (
-        <LogViewer 
-          podName={`${name}-xyz12`}
-          namespace={namespace}
-          containerName={selectedLogContainer || containers[0]?.name}
-          containers={containers.map(c => c.name)}
-          onContainerChange={setSelectedLogContainer}
-        />
+        <SectionCard icon={FileText} title="Logs" tooltip={<p className="text-xs text-muted-foreground">Stream logs from Job pods</p>}>
+          {jobPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods available to view logs.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="space-y-2">
+                  <Label>Pod</Label>
+                  <Select value={logPod} onValueChange={setSelectedLogPod}>
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select pod" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {jobPods.map((p) => (
+                        <SelectItem key={p.metadata?.name} value={p.metadata?.name ?? ''}>
+                          {p.metadata?.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Container</Label>
+                  <Select value={selectedLogContainer || logPodContainers[0]} onValueChange={setSelectedLogContainer}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Select container" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {logPodContainers.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <LogViewer podName={logPod} namespace={namespace ?? undefined} containerName={selectedLogContainer || logPodContainers[0]} containers={logPodContainers} onContainerChange={setSelectedLogContainer} />
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'terminal',
+      label: 'Terminal',
+      icon: Terminal,
+      content: (
+        <SectionCard icon={Terminal} title="Terminal" tooltip={<p className="text-xs text-muted-foreground">Exec into Job pods (active only)</p>}>
+          {jobPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods available for terminal.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="space-y-2">
+                  <Label>Pod</Label>
+                  <Select value={terminalPod} onValueChange={setSelectedTerminalPod}>
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select pod" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {jobPods.map((p) => (
+                        <SelectItem key={p.metadata?.name} value={p.metadata?.name ?? ''}>
+                          {p.metadata?.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Container</Label>
+                  <Select value={selectedTerminalContainer || terminalPodContainers[0]} onValueChange={setSelectedTerminalContainer}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Select container" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {terminalPodContainers.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <TerminalViewer podName={terminalPod} namespace={namespace ?? undefined} containerName={selectedTerminalContainer || terminalPodContainers[0]} containers={terminalPodContainers} onContainerChange={setSelectedTerminalContainer} />
+            </div>
+          )}
+        </SectionCard>
       ),
     },
     {
       id: 'events',
       label: 'Events',
+      icon: CalendarClock,
       badge: displayEvents.length.toString(),
       content: <EventsSection events={displayEvents} />,
     },
     {
       id: 'metrics',
       label: 'Metrics',
-      content: <MetricsDashboard resourceType="pod" resourceName={name} namespace={namespace} />,
+      icon: BarChart2,
+      content: <MetricsDashboard resourceType="job" resourceName={name} namespace={namespace} clusterId={clusterId} />,
     },
     {
       id: 'yaml',
       label: 'YAML',
+      icon: FileCode,
       content: <YamlViewer yaml={yaml} resourceName={job.metadata?.name || ''} editable onSave={handleSaveYaml} />,
     },
     {
       id: 'compare',
       label: 'Compare',
+      icon: GitCompare,
       content: <YamlCompareViewer versions={yamlVersions} resourceName={job.metadata?.name || ''} />,
     },
     {
       id: 'topology',
       label: 'Topology',
+      icon: Network,
       content: (
         <>
-          <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
-          <NodeDetailPopup resource={selectedNode} onClose={() => setSelectedNode(null)} />
+          {resourceTopology.isLoading ? (
+            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">Loading topology...</div>
+          ) : resourceTopology.error ? (
+            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">
+              Topology unavailable: {resourceTopology.error instanceof Error ? resourceTopology.error.message : String(resourceTopology.error)}
+            </div>
+          ) : (
+            <TopologyViewer nodes={topologyNodes} edges={resourceTopology.edges} onNodeClick={handleNodeClick} />
+          )}
+          <NodeDetailPopup
+            resource={selectedNode}
+            onClose={() => setSelectedNode(null)}
+            sourceResourceType="Job"
+            sourceResourceName={job?.metadata?.name ?? name ?? ''}
+          />
         </>
       ),
     },
     {
       id: 'actions',
       label: 'Actions',
+      icon: Settings,
       content: (
         <ActionsSection actions={[
+          { icon: RotateCw, label: 'Retry', description: 'Create a new Job with the same spec', onClick: handleRetry },
           { icon: Play, label: 'View Pod Logs', description: 'See logs from job pod', onClick: () => setActiveTab('logs') },
           { icon: Download, label: 'Download YAML', description: 'Export Job definition', onClick: handleDownloadYaml },
           { icon: Trash2, label: 'Delete Job', description: 'Permanently remove this Job', variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
@@ -430,8 +687,8 @@ export default function JobDetail() {
   ];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <ResourceHeader
+    <>
+      <ResourceDetailLayout
         resourceType="Job"
         resourceIcon={Workflow}
         name={job.metadata?.name || ''}
@@ -439,7 +696,7 @@ export default function JobDetail() {
         status={status}
         backLink="/jobs"
         backLabel="Jobs"
-        metadata={
+        headerMetadata={
           <span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
             Created {age}
@@ -450,12 +707,18 @@ export default function JobDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => refetch() },
+          { label: 'Retry', icon: RotateCw, variant: 'outline', onClick: handleRetry },
+          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
+          { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}
-      />
-      <ResourceStatusCards cards={statusCards} />
-      <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
+        statusCards={statusCards}
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+      >
+        <Breadcrumbs segments={breadcrumbSegments} className="mb-2" />
+      </ResourceDetailLayout>
 
       <DeleteConfirmDialog
         open={showDeleteDialog}
@@ -464,16 +727,16 @@ export default function JobDetail() {
         resourceName={job.metadata?.name || ''}
         namespace={job.metadata?.namespace}
         onConfirm={async () => {
-          if (isConnected && name && namespace) {
-            await deleteJob.mutateAsync({ name, namespace });
-            navigate('/jobs');
-          } else {
-            toast.success(`Job ${name} deleted (demo mode)`);
-            navigate('/jobs');
+          if (!isConnected || !name || !namespace) {
+            toast.error('Connect cluster to delete Job');
+            return;
           }
+          await deleteJob.mutateAsync({ name, namespace });
+          toast.success(`Job ${name} deleted`);
+          navigate('/jobs');
         }}
         requireNameConfirmation
       />
-    </motion.div>
+    </>
   );
 }

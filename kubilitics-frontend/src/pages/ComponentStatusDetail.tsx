@@ -1,13 +1,17 @@
-import { useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Activity, Clock, CheckCircle, AlertTriangle, Download } from 'lucide-react';
+import { useState, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { Activity, Clock, CheckCircle, AlertTriangle, Download, Trash2, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { toast } from 'sonner';
 import {
-  ResourceHeader, ResourceStatusCards, ResourceTabs,
-  YamlViewer, EventsSection,
-  type ResourceStatus, type EventInfo,
+  ResourceDetailLayout,
+  YamlViewer,
+  EventsSection,
+  ActionsSection,
+  DeleteConfirmDialog,
+  type ResourceStatus,
+  type EventInfo,
 } from '@/components/resources';
 
 const mockComponentStatus = {
@@ -32,8 +36,20 @@ conditions:
 
 export default function ComponentStatusDetail() {
   const { name } = useParams();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const cs = mockComponentStatus;
+
+  const handleDownloadYaml = useCallback(() => {
+    const blob = new Blob([yaml], { type: 'application/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${cs.name || 'componentstatus'}.yaml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [cs.name]);
 
   const isHealthy = cs.conditions.some(c => c.type === 'Healthy' && c.status === 'True');
 
@@ -101,21 +117,49 @@ export default function ComponentStatusDetail() {
     },
     { id: 'events', label: 'Events', content: <EventsSection events={mockEvents} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={cs.name} /> },
+    {
+      id: 'actions',
+      label: 'Actions',
+      content: (
+        <ActionsSection actions={[
+          { icon: Download, label: 'Download YAML', description: 'Export ComponentStatus definition', onClick: handleDownloadYaml },
+          { icon: Trash2, label: 'Delete', description: 'Remove this component status', variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
+        ]} />
+      ),
+    },
   ];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <ResourceHeader
+    <>
+      <ResourceDetailLayout
         resourceType="ComponentStatus"
         resourceIcon={Activity}
         name={cs.name}
         status={cs.status}
         backLink="/componentstatuses"
         backLabel="Component Statuses"
-        metadata={<span className="flex items-center gap-1.5 ml-2"><Clock className="h-3.5 w-3.5" />Age {cs.age}</span>}
+        headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Age {cs.age}</span>}
+        actions={[
+          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => {} },
+          { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
+          { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
+        ]}
+        statusCards={statusCards}
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
       />
-      <ResourceStatusCards cards={statusCards} />
-      <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
-    </motion.div>
+      <DeleteConfirmDialog
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        resourceType="ComponentStatus"
+        resourceName={cs.name}
+        onConfirm={() => {
+          toast.success(`ComponentStatus ${cs.name} deleted (demo mode)`);
+          navigate('/componentstatuses');
+        }}
+        requireNameConfirmation
+      />
+    </>
   );
 }

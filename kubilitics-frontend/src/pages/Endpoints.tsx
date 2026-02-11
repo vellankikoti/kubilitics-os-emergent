@@ -1,14 +1,14 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { 
   Search, 
+  Filter,
   RefreshCw, 
   MoreHorizontal,
   Download,
   Network,
   Loader2,
   WifiOff,
-  ArrowUpDown,
   ChevronDown,
   CheckSquare,
   ExternalLink,
@@ -31,15 +31,19 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { Link, useNavigate } from 'react-router-dom';
 import { useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { toast } from 'sonner';
 import { Card, CardContent } from '@/components/ui/card';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
+import { ResourceExportDropdown, ResourceCommandBar, ListPageStatCard, TableColumnHeaderWithFilterAndSort, ListPagination, PAGE_SIZE_OPTIONS, resourceTableRowClassName, ROW_MOTION } from '@/components/list';
+import { ResizableTableProvider, ResizableTableHead, ResizableTableCell, type ResizableColumnConfig } from '@/components/ui/resizable-table';
+import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
 
 interface K8sEndpoint extends KubernetesResource {
   subsets?: Array<{
@@ -59,32 +63,28 @@ interface Endpoint {
   age: string;
 }
 
-const mockEndpoints: Endpoint[] = [
-  { name: 'nginx-svc', namespace: 'production', endpoints: '10.244.1.45:8080, 10.244.2.46:8080, 10.244.3.47:8080', readyCount: 3, notReadyCount: 0, ports: '8080/TCP', age: '30d' },
-  { name: 'api-gateway', namespace: 'production', endpoints: '10.244.1.50:443, 10.244.2.51:443', readyCount: 2, notReadyCount: 0, ports: '443/TCP', age: '14d' },
-  { name: 'frontend', namespace: 'production', endpoints: '10.244.1.60:80, 10.244.2.61:80', readyCount: 2, notReadyCount: 0, ports: '80/TCP', age: '7d' },
-  { name: 'redis', namespace: 'production', endpoints: '10.244.1.70:6379', readyCount: 1, notReadyCount: 0, ports: '6379/TCP', age: '60d' },
-  { name: 'postgres', namespace: 'production', endpoints: '10.244.1.80:5432', readyCount: 1, notReadyCount: 0, ports: '5432/TCP', age: '90d' },
-  { name: 'kubernetes', namespace: 'default', endpoints: '192.168.1.10:6443', readyCount: 1, notReadyCount: 0, ports: '6443/TCP', age: '180d' },
-  { name: 'kube-dns', namespace: 'kube-system', endpoints: '10.244.0.2:53, 10.244.0.3:53', readyCount: 2, notReadyCount: 0, ports: '53/UDP,53/TCP', age: '180d' },
-  { name: 'failing-service', namespace: 'staging', endpoints: '10.244.1.90:8080', readyCount: 1, notReadyCount: 2, ports: '8080/TCP', age: '1d' },
+const ENDPOINTS_TABLE_COLUMNS: ResizableColumnConfig[] = [
+  { id: 'name', defaultWidth: 200, minWidth: 120 },
+  { id: 'namespace', defaultWidth: 140, minWidth: 90 },
+  { id: 'readyCount', defaultWidth: 90, minWidth: 70 },
+  { id: 'notReadyCount', defaultWidth: 100, minWidth: 80 },
+  { id: 'ports', defaultWidth: 140, minWidth: 80 },
+  { id: 'age', defaultWidth: 90, minWidth: 60 },
 ];
-
-type SortKey = 'name' | 'namespace' | 'readyCount' | 'age';
 
 export default function Endpoints() {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showCreateWizard, setShowCreateWizard] = useState(false);
+  const [pageSize, setPageSize] = useState(10);
+  const [pageIndex, setPageIndex] = useState(0);
 
-  const { config } = useKubernetesConfigStore();
-  const { data, isLoading, refetch } = useK8sResourceList<K8sEndpoint>('endpoints');
+  const { isConnected } = useConnectionStatus();
+  const { data, isLoading, refetch } = useK8sResourceList<K8sEndpoint>('endpoints', undefined, { limit: 5000 });
 
-  const endpoints: Endpoint[] = config.isConnected && data?.items
+  const endpoints: Endpoint[] = isConnected && data?.items
     ? data.items.map((ep) => {
         let readyCount = 0;
         let notReadyCount = 0;
@@ -116,64 +116,69 @@ export default function Endpoints() {
           age: calculateAge(ep.metadata.creationTimestamp),
         };
       })
-    : mockEndpoints;
+    : [];
 
   const stats = useMemo(() => ({
     total: endpoints.length,
-    healthy: endpoints.filter(e => e.notReadyCount === 0 && e.readyCount > 0).length,
-    partial: endpoints.filter(e => e.notReadyCount > 0 && e.readyCount > 0).length,
-    empty: endpoints.filter(e => e.readyCount === 0).length,
-    totalReady: endpoints.reduce((sum, e) => sum + e.readyCount, 0),
+    healthy: endpoints.filter((e) => e.notReadyCount === 0 && e.readyCount > 0).length,
+    degraded: endpoints.filter((e) => e.notReadyCount > 0 && e.readyCount > 0).length,
+    empty: endpoints.filter((e) => e.readyCount === 0).length,
   }), [endpoints]);
 
   const namespaces = useMemo(() => {
     return ['all', ...Array.from(new Set(endpoints.map(e => e.namespace)))];
   }, [endpoints]);
 
-  const filteredEndpoints = useMemo(() => {
-    let result = endpoints.filter(ep => {
+  const itemsAfterSearchAndNs = useMemo(() => {
+    return endpoints.filter(ep => {
       const matchesSearch = ep.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                            ep.namespace.toLowerCase().includes(searchQuery.toLowerCase()) ||
                            ep.endpoints.includes(searchQuery);
       const matchesNamespace = selectedNamespace === 'all' || ep.namespace === selectedNamespace;
       return matchesSearch && matchesNamespace;
     });
+  }, [endpoints, searchQuery, selectedNamespace]);
 
-    result.sort((a, b) => {
-      let comparison = 0;
-      switch (sortKey) {
-        case 'name': comparison = a.name.localeCompare(b.name); break;
-        case 'namespace': comparison = a.namespace.localeCompare(b.namespace); break;
-        case 'readyCount': comparison = a.readyCount - b.readyCount; break;
-        case 'age': comparison = a.age.localeCompare(b.age); break;
-      }
-      return sortOrder === 'asc' ? comparison : -comparison;
-    });
+  const endpointsTableConfig: ColumnConfig<Endpoint>[] = useMemo(() => [
+    { columnId: 'name', getValue: (e) => e.name, sortable: true, filterable: false },
+    { columnId: 'namespace', getValue: (e) => e.namespace, sortable: true, filterable: true },
+    { columnId: 'readyCount', getValue: (e) => e.readyCount, sortable: true, filterable: false },
+    { columnId: 'age', getValue: (e) => e.age, sortable: true, filterable: false },
+  ], []);
 
-    return result;
-  }, [endpoints, searchQuery, selectedNamespace, sortKey, sortOrder]);
+  const { filteredAndSortedItems: filteredEndpoints, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: endpointsTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
 
-  const handleSort = (key: SortKey) => {
-    if (sortKey === key) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortKey(key);
-      setSortOrder('asc');
-    }
-  };
+  const totalFiltered = filteredEndpoints.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+  const safePageIndex = Math.min(pageIndex, totalPages - 1);
+  const start = safePageIndex * pageSize;
+  const itemsOnPage = filteredEndpoints.slice(start, start + pageSize);
 
-  const handleExportAll = () => {
-    const itemsToExport = selectedItems.size > 0 
-      ? filteredEndpoints.filter(e => selectedItems.has(`${e.namespace}/${e.name}`))
-      : filteredEndpoints;
-    const blob = new Blob([JSON.stringify(itemsToExport, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'endpoints-export.json';
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success(`Exported ${itemsToExport.length} endpoints`);
+  useEffect(() => {
+    if (safePageIndex !== pageIndex) setPageIndex(safePageIndex);
+  }, [safePageIndex, pageIndex]);
+
+  const endpointExportConfig = {
+    filenamePrefix: 'endpoints',
+    resourceLabel: 'endpoints',
+    getExportData: (e: Endpoint) => ({ name: e.name, namespace: e.namespace, endpoints: e.endpoints, readyCount: e.readyCount, notReadyCount: e.notReadyCount, ports: e.ports, age: e.age }),
+    csvColumns: [
+      { label: 'Name', getValue: (e: Endpoint) => e.name },
+      { label: 'Namespace', getValue: (e: Endpoint) => e.namespace },
+      { label: 'Endpoints', getValue: (e: Endpoint) => e.endpoints },
+      { label: 'Ready', getValue: (e: Endpoint) => e.readyCount },
+      { label: 'Not Ready', getValue: (e: Endpoint) => e.notReadyCount },
+      { label: 'Ports', getValue: (e: Endpoint) => e.ports },
+      { label: 'Age', getValue: (e: Endpoint) => e.age },
+    ],
+    toK8sYaml: (e: Endpoint) => `---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: ${e.name}
+  namespace: ${e.namespace}
+subsets: []
+`,
   };
 
   const toggleSelection = (item: Endpoint) => {
@@ -211,7 +216,7 @@ export default function Endpoints() {
               <h1 className="text-2xl font-semibold tracking-tight">Endpoints</h1>
               <p className="text-sm text-muted-foreground">
                 {filteredEndpoints.length} endpoints across {namespaces.length - 1} namespaces
-                {!config.isConnected && (
+                {!isConnected && (
                   <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]">
                     <WifiOff className="h-3 w-3" /> Demo mode
                   </span>
@@ -220,10 +225,14 @@ export default function Endpoints() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="gap-2" onClick={handleExportAll}>
-              <Download className="h-4 w-4" />
-              {selectedItems.size > 0 ? `Export (${selectedItems.size})` : 'Export'}
-            </Button>
+            <ResourceExportDropdown
+              items={filteredEndpoints}
+              selectedKeys={selectedItems}
+              getKey={(e) => `${e.namespace}/${e.name}`}
+              config={endpointExportConfig}
+              selectionLabel={selectedItems.size > 0 ? 'Selected endpoints' : 'All visible endpoints'}
+              onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+            />
             <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>
               {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             </Button>
@@ -246,10 +255,15 @@ export default function Endpoints() {
               {selectedItems.size} selected
             </Badge>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExportAll}>
-                <Download className="h-3.5 w-3.5" />
-                Export
-              </Button>
+              <ResourceExportDropdown
+                items={filteredEndpoints}
+                selectedKeys={selectedItems}
+                getKey={(e) => `${e.namespace}/${e.name}`}
+                config={endpointExportConfig}
+                selectionLabel={selectedItems.size > 0 ? 'Selected endpoints' : 'All visible endpoints'}
+                onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+                triggerLabel={selectedItems.size > 0 ? `Export (${selectedItems.size})` : 'Export'}
+              />
               <Button variant="ghost" size="sm" onClick={() => setSelectedItems(new Set())}>
                 Clear
               </Button>
@@ -257,164 +271,160 @@ export default function Endpoints() {
           </motion.div>
         )}
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <Card className="cursor-pointer hover:border-primary/50 transition-colors">
-            <CardContent className="p-4">
-              <div className="text-2xl font-bold">{stats.total}</div>
-              <div className="text-xs text-muted-foreground">Total Endpoints</div>
-            </CardContent>
-          </Card>
-          <Card className="cursor-pointer hover:border-primary/50 transition-colors">
-            <CardContent className="p-4">
-              <div className="text-2xl font-bold text-[hsl(142,76%,36%)]">{stats.healthy}</div>
-              <div className="text-xs text-muted-foreground">Healthy</div>
-            </CardContent>
-          </Card>
-          <Card className="cursor-pointer hover:border-primary/50 transition-colors">
-            <CardContent className="p-4">
-              <div className="text-2xl font-bold text-[hsl(45,93%,47%)]">{stats.partial}</div>
-              <div className="text-xs text-muted-foreground">Partial</div>
-            </CardContent>
-          </Card>
-          <Card className="cursor-pointer hover:border-primary/50 transition-colors">
-            <CardContent className="p-4">
-              <div className="text-2xl font-bold text-[hsl(0,72%,51%)]">{stats.empty}</div>
-              <div className="text-xs text-muted-foreground">Empty</div>
-            </CardContent>
-          </Card>
-          <Card className="cursor-pointer hover:border-primary/50 transition-colors">
-            <CardContent className="p-4">
-              <div className="text-2xl font-bold text-blue-600">{stats.totalReady}</div>
-              <div className="text-xs text-muted-foreground">Ready Addresses</div>
-            </CardContent>
-          </Card>
+        {/* Stats Cards - Design 3.4: Total, Healthy, Degraded, Empty */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <ListPageStatCard size="sm" label="Total Endpoints" value={stats.total} selected={!hasActiveFilters} onClick={clearAllFilters} className={cn(!hasActiveFilters && 'ring-2 ring-primary')} />
+          <ListPageStatCard size="sm" label="Healthy" value={stats.healthy} valueClassName="text-[hsl(142,76%,36%)]" />
+          <ListPageStatCard size="sm" label="Degraded" value={stats.degraded} valueClassName="text-[hsl(45,93%,47%)]" />
+          <ListPageStatCard size="sm" label="Empty" value={stats.empty} valueClassName="text-[hsl(0,72%,51%)]" />
         </div>
 
-        {/* Filters */}
-        <div className="flex flex-col sm:flex-row gap-3">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <ResourceCommandBar
+          scope={
+            <div className="w-full min-w-0">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full min-w-0 h-10 gap-2 justify-between truncate rounded-lg border border-border bg-background font-medium shadow-sm hover:bg-muted/50 hover:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/20">
+                    <Filter className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{selectedNamespace === 'all' ? 'All Namespaces' : selectedNamespace}</span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {namespaces.map((ns) => (
+                    <DropdownMenuItem key={ns} onClick={() => setSelectedNamespace(ns)} className={cn(selectedNamespace === ns && 'bg-accent')}>
+                      {ns === 'all' ? 'All Namespaces' : ns}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          }
+        search={
+          <div className="relative w-full min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
             <Input
               placeholder="Search endpoints by name, namespace, or IP..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10"
+              className="w-full h-10 pl-9 rounded-lg border border-border bg-background text-sm font-medium shadow-sm placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary/50 transition-all"
+              aria-label="Search endpoints"
             />
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="gap-2 min-w-[140px]">
-                {selectedNamespace === 'all' ? 'All Namespaces' : selectedNamespace}
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {namespaces.map((ns) => (
-                <DropdownMenuItem key={ns} onClick={() => setSelectedNamespace(ns)}>
-                  {ns === 'all' ? 'All Namespaces' : ns}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        }
+        footer={hasActiveFilters || searchQuery ? (
+          <Button variant="link" size="sm" className="text-muted-foreground h-auto p-0" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
+        ) : undefined}
+        />
 
         {/* Table */}
         <Card>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">
-                  <Checkbox
-                    checked={isAllSelected}
-                    onCheckedChange={toggleAllSelection}
-                    aria-label="Select all"
-                    className={isSomeSelected ? 'opacity-50' : ''}
-                  />
-                </TableHead>
-                <TableHead className="cursor-pointer hover:text-foreground" onClick={() => handleSort('name')}>
-                  <div className="flex items-center gap-1">Name <ArrowUpDown className="h-3 w-3" /></div>
-                </TableHead>
-                <TableHead className="cursor-pointer hover:text-foreground" onClick={() => handleSort('namespace')}>
-                  <div className="flex items-center gap-1">Namespace <ArrowUpDown className="h-3 w-3" /></div>
-                </TableHead>
-                <TableHead>Endpoints</TableHead>
-                <TableHead className="cursor-pointer hover:text-foreground" onClick={() => handleSort('readyCount')}>
-                  <div className="flex items-center gap-1">Ready <ArrowUpDown className="h-3 w-3" /></div>
-                </TableHead>
-                <TableHead>Not Ready</TableHead>
-                <TableHead>Ports</TableHead>
-                <TableHead className="cursor-pointer hover:text-foreground" onClick={() => handleSort('age')}>
-                  <div className="flex items-center gap-1">Age <ArrowUpDown className="h-3 w-3" /></div>
-                </TableHead>
-                <TableHead className="w-12"></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredEndpoints.map((ep) => {
-                const isSelected = selectedItems.has(`${ep.namespace}/${ep.name}`);
-                return (
-                  <TableRow key={`${ep.namespace}/${ep.name}`} className={cn(isSelected && "bg-primary/5")}>
-                    <TableCell>
-                      <Checkbox
-                        checked={isSelected}
-                        onCheckedChange={() => toggleSelection(ep)}
-                        aria-label={`Select ${ep.name}`}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Link 
-                        to={`/endpoints/${ep.namespace}/${ep.name}`}
-                        className="font-medium text-primary hover:underline"
-                      >
-                        {ep.name}
-                      </Link>
-                    </TableCell>
-                    <TableCell><Badge variant="outline">{ep.namespace}</Badge></TableCell>
-                    <TableCell>
-                      <span className="font-mono text-xs max-w-[250px] truncate block">{ep.endpoints}</span>
-                    </TableCell>
-                    <TableCell>
-                      <span className={cn("font-mono", ep.readyCount > 0 ? "text-[hsl(142,76%,36%)]" : "text-muted-foreground")}>
-                        {ep.readyCount}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <span className={cn("font-mono", ep.notReadyCount > 0 ? "text-[hsl(0,72%,51%)]" : "text-muted-foreground")}>
-                        {ep.notReadyCount}
-                      </span>
-                    </TableCell>
-                    <TableCell><span className="font-mono text-xs">{ep.ports}</span></TableCell>
-                    <TableCell><span className="text-muted-foreground">{ep.age}</span></TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => navigate(`/endpoints/${ep.namespace}/${ep.name}`)}>
-                            <ExternalLink className="h-4 w-4 mr-2" />
-                            View Details
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => navigate(`/services/${ep.namespace}/${ep.name}`)}>
-                            <Link2 className="h-4 w-4 mr-2" />
-                            View Service
-                          </DropdownMenuItem>
-                          <DropdownMenuItem>
-                            <Download className="h-4 w-4 mr-2" />
-                            Download YAML
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
+          <ResizableTableProvider tableId="kubilitics-resizable-table-endpoints" columnConfig={ENDPOINTS_TABLE_COLUMNS}>
+            <div className="border border-border rounded-xl overflow-x-auto bg-card">
+              <Table className="table-fixed" style={{ minWidth: 960 }}>
+                <TableHeader>
+                  <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+                    <TableHead className="w-12">
+                      <Checkbox checked={isAllSelected} onCheckedChange={toggleAllSelection} aria-label="Select all" className={isSomeSelected ? 'opacity-50' : ''} />
+                    </TableHead>
+                    <ResizableTableHead columnId="name">
+                      <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                    </ResizableTableHead>
+                    <ResizableTableHead columnId="namespace">
+                      <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} />
+                    </ResizableTableHead>
+                    <ResizableTableHead columnId="readyCount">Ready Addresses</ResizableTableHead>
+                    <TableHead>Not Ready Addresses</TableHead>
+                    <TableHead>Total Addresses</TableHead>
+                    <ResizableTableHead columnId="ports">Ports</ResizableTableHead>
+                    <TableHead>Service</TableHead>
+                    <ResizableTableHead columnId="age">
+                      <TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                    </ResizableTableHead>
+                    <TableHead className="w-12"></TableHead>
                   </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+                </TableHeader>
+                <TableBody>
+                  {itemsOnPage.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={11} className="h-32 text-center text-muted-foreground">
+                        <div className="flex flex-col items-center gap-2">
+                          <Network className="h-8 w-8 opacity-50" />
+                          <p>No endpoints found</p>
+                          {(searchQuery || hasActiveFilters) && (
+                            <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    itemsOnPage.map((ep, idx) => {
+                      const isSelected = selectedItems.has(`${ep.namespace}/${ep.name}`);
+                      return (
+                        <motion.tr
+                          key={`${ep.namespace}/${ep.name}`}
+                          initial={ROW_MOTION.initial}
+                          animate={ROW_MOTION.animate}
+                          transition={ROW_MOTION.transition(idx)}
+                          className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}
+                        >
+                          <TableCell>
+                            <Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(ep)} aria-label={`Select ${ep.name}`} />
+                          </TableCell>
+                          <ResizableTableCell columnId="name">
+                            <Link to={`/endpoints/${ep.namespace}/${ep.name}`} className="font-medium text-primary hover:underline truncate block">{ep.name}</Link>
+                          </ResizableTableCell>
+                          <ResizableTableCell columnId="namespace"><Badge variant="outline">{ep.namespace}</Badge></ResizableTableCell>
+                          <ResizableTableCell columnId="readyCount">
+                            <span className={cn('font-mono', ep.readyCount > 0 ? 'text-[hsl(142,76%,36%)]' : 'text-muted-foreground')}>{ep.readyCount}</span>
+                          </ResizableTableCell>
+                          <TableCell><span className={cn('font-mono', ep.notReadyCount > 0 ? 'text-[hsl(0,72%,51%)]' : 'text-muted-foreground')}>{ep.notReadyCount}</span></TableCell>
+                          <TableCell><span className="font-mono">{ep.readyCount + ep.notReadyCount}</span></TableCell>
+                          <ResizableTableCell columnId="ports"><span className="font-mono text-xs truncate block">{ep.ports}</span></ResizableTableCell>
+                          <TableCell><Link to={`/services/${ep.namespace}/${ep.name}`} className="text-primary hover:underline text-sm truncate block">{ep.name}</Link></TableCell>
+                          <ResizableTableCell columnId="age"><span className="text-muted-foreground">{ep.age}</span></ResizableTableCell>
+                          <TableCell>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => navigate(`/endpoints/${ep.namespace}/${ep.name}`)}><ExternalLink className="h-4 w-4 mr-2" />View Details</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => navigate(`/services/${ep.namespace}/${ep.name}`)}><Link2 className="h-4 w-4 mr-2" />View Service</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => navigate(`/endpoints/${ep.namespace}/${ep.name}?tab=yaml`)}><Download className="h-4 w-4 mr-2" />Download YAML</DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </motion.tr>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </ResizableTableProvider>
         </Card>
+
+        <div className="pt-4 pb-2 border-t border-border mt-2">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">
+                {totalFiltered > 0 ? `Showing ${start + 1}–${Math.min(start + pageSize, totalFiltered)} of ${totalFiltered}` : 'No endpoints'}
+              </span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <DropdownMenuItem key={size} onClick={() => { setPageSize(size); setPageIndex(0); }} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination hasPrev={safePageIndex > 0} hasNext={start + pageSize < totalFiltered} onPrev={() => setPageIndex((i) => Math.max(0, i - 1))} onNext={() => setPageIndex((i) => Math.min(totalPages - 1, i + 1))} currentPage={safePageIndex + 1} totalPages={Math.max(1, totalPages)} onPageChange={(p) => setPageIndex(Math.max(0, p - 1))} />
+          </div>
+        </div>
       </motion.div>
 
       {showCreateWizard && (

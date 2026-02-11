@@ -44,9 +44,29 @@ func (r *SQLiteRepository) RunMigrations(migrationSQL string) error {
 	return err
 }
 
-// ClusterRepository implementation
+// ClusterRepository implementation (interface: Create, Get, List, Update, Delete)
 
-func (r *SQLiteRepository) CreateCluster(ctx context.Context, cluster *models.Cluster) error {
+func (r *SQLiteRepository) Create(ctx context.Context, cluster *models.Cluster) error {
+	return r.createCluster(ctx, cluster)
+}
+
+func (r *SQLiteRepository) Get(ctx context.Context, id string) (*models.Cluster, error) {
+	return r.getCluster(ctx, id)
+}
+
+func (r *SQLiteRepository) List(ctx context.Context) ([]*models.Cluster, error) {
+	return r.listClusters(ctx)
+}
+
+func (r *SQLiteRepository) Update(ctx context.Context, cluster *models.Cluster) error {
+	return r.updateCluster(ctx, cluster)
+}
+
+func (r *SQLiteRepository) Delete(ctx context.Context, id string) error {
+	return r.deleteCluster(ctx, id)
+}
+
+func (r *SQLiteRepository) createCluster(ctx context.Context, cluster *models.Cluster) error {
 	if cluster.ID == "" {
 		cluster.ID = uuid.New().String()
 	}
@@ -72,7 +92,7 @@ func (r *SQLiteRepository) CreateCluster(ctx context.Context, cluster *models.Cl
 	return err
 }
 
-func (r *SQLiteRepository) GetCluster(ctx context.Context, id string) (*models.Cluster, error) {
+func (r *SQLiteRepository) getCluster(ctx context.Context, id string) (*models.Cluster, error) {
 	var cluster models.Cluster
 	query := `SELECT * FROM clusters WHERE id = ?`
 
@@ -84,7 +104,7 @@ func (r *SQLiteRepository) GetCluster(ctx context.Context, id string) (*models.C
 	return &cluster, err
 }
 
-func (r *SQLiteRepository) ListClusters(ctx context.Context) ([]*models.Cluster, error) {
+func (r *SQLiteRepository) listClusters(ctx context.Context) ([]*models.Cluster, error) {
 	var clusters []*models.Cluster
 	query := `SELECT * FROM clusters ORDER BY created_at DESC`
 
@@ -92,7 +112,7 @@ func (r *SQLiteRepository) ListClusters(ctx context.Context) ([]*models.Cluster,
 	return clusters, err
 }
 
-func (r *SQLiteRepository) UpdateCluster(ctx context.Context, cluster *models.Cluster) error {
+func (r *SQLiteRepository) updateCluster(ctx context.Context, cluster *models.Cluster) error {
 	query := `
 		UPDATE clusters
 		SET name = ?, context = ?, kubeconfig_path = ?, server_url = ?, version = ?,
@@ -115,7 +135,7 @@ func (r *SQLiteRepository) UpdateCluster(ctx context.Context, cluster *models.Cl
 	return err
 }
 
-func (r *SQLiteRepository) DeleteCluster(ctx context.Context, id string) error {
+func (r *SQLiteRepository) deleteCluster(ctx context.Context, id string) error {
 	query := `DELETE FROM clusters WHERE id = ?`
 	_, err := r.db.ExecContext(ctx, query, id)
 	return err
@@ -144,9 +164,9 @@ func (r *SQLiteRepository) SaveTopologySnapshot(ctx context.Context, snapshot *m
 		snapshot.ClusterID,
 		snapshot.Namespace,
 		snapshot.Data,
-		topology.Meta.NodeCount,
-		topology.Meta.EdgeCount,
-		topology.Meta.LayoutSeed,
+		topology.Metadata.NodeCount,
+		topology.Metadata.EdgeCount,
+		topology.Metadata.LayoutSeed,
 		snapshot.Timestamp,
 	)
 

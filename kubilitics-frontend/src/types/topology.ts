@@ -6,6 +6,7 @@
 
 // Kubernetes resource kinds
 export type KubernetesKind =
+  | 'Cluster'
   | 'Pod'
   | 'Deployment'
   | 'StatefulSet'

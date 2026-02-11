@@ -1,6 +1,5 @@
-import { useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { useState, useCallback, useMemo } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Database,
   Clock,
@@ -16,17 +15,32 @@ import {
   Scale,
   HardDrive,
   History,
+  Box,
+  FileText,
+  Terminal,
+  LayoutDashboard,
+  Layers,
+  CalendarClock,
+  BarChart2,
+  FileCode,
+  GitCompare,
+  Network,
+  Settings,
+  Globe,
+  SlidersHorizontal,
+  Hash,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import {
-  ResourceHeader,
-  ResourceStatusCards,
-  ResourceTabs,
+  ResourceDetailLayout,
   TopologyViewer,
   ContainersSection,
   YamlViewer,
@@ -39,6 +53,9 @@ import {
   ScaleDialog,
   RolloutActionsDialog,
   DeleteConfirmDialog,
+  SectionCard,
+  LogViewer,
+  TerminalViewer,
   type TopologyNode,
   type TopologyEdge,
   type ResourceStatus,
@@ -46,15 +63,23 @@ import {
   type YamlVersion,
   type ResourceDetail,
 } from '@/components/resources';
-import { useResourceDetail, useK8sEvents } from '@/hooks/useK8sResourceDetail';
-import { useDeleteK8sResource, useUpdateK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
+import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
+import { useDeleteK8sResource, useUpdateK8sResource, usePatchK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
+import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
+import { useClusterStore } from '@/stores/clusterStore';
+import { useActiveClusterId } from '@/hooks/useActiveClusterId';
+import { useQuery } from '@tanstack/react-query';
 
 interface StatefulSetResource extends KubernetesResource {
   spec?: {
     replicas?: number;
     serviceName?: string;
     podManagementPolicy?: string;
+    revisionHistoryLimit?: number;
+    minReadySeconds?: number;
     updateStrategy?: { type?: string; rollingUpdate?: { partition?: number } };
     selector?: { matchLabels?: Record<string, string> };
     template?: {
@@ -77,97 +102,51 @@ interface StatefulSetResource extends KubernetesResource {
     readyReplicas?: number;
     currentReplicas?: number;
     updatedReplicas?: number;
+    conditions?: Array<{ type: string; status: string; lastTransitionTime?: string; reason?: string; message?: string }>;
   };
 }
 
-const mockStatefulSetResource: StatefulSetResource = {
-  apiVersion: 'apps/v1',
-  kind: 'StatefulSet',
-  metadata: {
-    name: 'postgres-primary',
-    namespace: 'production',
-    uid: 'sts-123-456',
-    creationTimestamp: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString(),
-    labels: { app: 'postgres', tier: 'database' },
-  },
-  spec: {
-    replicas: 3,
-    serviceName: 'postgres-headless',
-    podManagementPolicy: 'OrderedReady',
-    updateStrategy: { type: 'RollingUpdate', rollingUpdate: { partition: 0 } },
-    selector: { matchLabels: { app: 'postgres' } },
-    template: {
-      spec: {
-        containers: [{
-          name: 'postgres',
-          image: 'postgres:15.4',
-          ports: [{ containerPort: 5432, protocol: 'TCP' }],
-          resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } },
-        }],
-      },
-    },
-    volumeClaimTemplates: [{
-      metadata: { name: 'data' },
-      spec: { storageClassName: 'standard', resources: { requests: { storage: '100Gi' } } },
-    }],
-  },
-  status: {
-    replicas: 3,
-    readyReplicas: 3,
-    currentReplicas: 3,
-    updatedReplicas: 3,
-  },
-};
-
-const topologyNodes: TopologyNode[] = [
-  { id: 'statefulset', type: 'statefulset', name: 'postgres-primary', namespace: 'production', status: 'healthy', isCurrent: true },
-  { id: 'service', type: 'service', name: 'postgres-headless', namespace: 'production', status: 'healthy' },
-  { id: 'pod-0', type: 'pod', name: 'postgres-primary-0', namespace: 'production', status: 'healthy' },
-  { id: 'pod-1', type: 'pod', name: 'postgres-primary-1', namespace: 'production', status: 'healthy' },
-  { id: 'pod-2', type: 'pod', name: 'postgres-primary-2', namespace: 'production', status: 'healthy' },
-  { id: 'pvc-0', type: 'pvc', name: 'data-postgres-primary-0', namespace: 'production', status: 'healthy' },
-  { id: 'pvc-1', type: 'pvc', name: 'data-postgres-primary-1', namespace: 'production', status: 'healthy' },
-  { id: 'pvc-2', type: 'pvc', name: 'data-postgres-primary-2', namespace: 'production', status: 'healthy' },
-];
-
-const topologyEdges: TopologyEdge[] = [
-  { from: 'statefulset', to: 'pod-0', label: 'Manages' },
-  { from: 'statefulset', to: 'pod-1', label: 'Manages' },
-  { from: 'statefulset', to: 'pod-2', label: 'Manages' },
-  { from: 'service', to: 'pod-0', label: 'Routes to' },
-  { from: 'service', to: 'pod-1', label: 'Routes to' },
-  { from: 'service', to: 'pod-2', label: 'Routes to' },
-  { from: 'pod-0', to: 'pvc-0', label: 'Mounts' },
-  { from: 'pod-1', to: 'pvc-1', label: 'Mounts' },
-  { from: 'pod-2', to: 'pvc-2', label: 'Mounts' },
-];
-
-const mockEvents = [
-  { type: 'Normal' as const, reason: 'SuccessfulCreate', message: 'Created pod: postgres-primary-0', time: '60d ago' },
-  { type: 'Normal' as const, reason: 'SuccessfulCreate', message: 'Created pod: postgres-primary-1', time: '60d ago' },
-  { type: 'Normal' as const, reason: 'SuccessfulCreate', message: 'Created pod: postgres-primary-2', time: '60d ago' },
-];
-
 export default function StatefulSetDetail() {
   const { namespace, name } = useParams();
+  const clusterId = useActiveClusterId();
   const navigate = useNavigate();
-  
+  const { activeCluster } = useClusterStore();
+  const breadcrumbSegments = useDetailBreadcrumbs('StatefulSet', name ?? undefined, namespace ?? undefined, activeCluster?.name);
+
   const [activeTab, setActiveTab] = useState('overview');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showScaleDialog, setShowScaleDialog] = useState(false);
   const [showRolloutDialog, setShowRolloutDialog] = useState(false);
   const [selectedNode, setSelectedNode] = useState<ResourceDetail | null>(null);
-  
-  const { config } = useKubernetesConfigStore();
-  const { resource: statefulSet, isLoading, age, yaml, isConnected, refetch } = useResourceDetail<StatefulSetResource>(
+  const [selectedLogPod, setSelectedLogPod] = useState<string>('');
+  const [selectedLogContainer, setSelectedLogContainer] = useState<string>('');
+  const [selectedTerminalPod, setSelectedTerminalPod] = useState<string>('');
+  const [selectedTerminalContainer, setSelectedTerminalContainer] = useState<string>('');
+  const [partitionInput, setPartitionInput] = useState<string>('');
+
+  const { isConnected } = useConnectionStatus();
+  const { resource: statefulSet, isLoading, error, age, yaml, refetch } = useResourceDetail<StatefulSetResource>(
     'statefulsets',
     name,
     namespace,
-    mockStatefulSetResource
+    {} as StatefulSetResource
   );
-  const { events } = useK8sEvents(namespace);
+  const resourceEvents = useResourceEvents('StatefulSet', namespace ?? undefined, name ?? undefined);
+  const displayEvents = resourceEvents.events;
+  const backendBaseUrl = getEffectiveBackendBaseUrl(useBackendConfigStore((s) => s.backendBaseUrl));
+  const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
   const deleteStatefulSet = useDeleteK8sResource('statefulsets');
   const updateStatefulSet = useUpdateK8sResource('statefulsets');
+  const patchStatefulSet = usePatchK8sResource('statefulsets');
+  const resourceTopology = useResourceTopology('statefulsets', namespace ?? undefined, name ?? undefined);
+  const topologyNodes = useMemo(
+    () =>
+      resourceTopology.nodes.map((n) => ({
+        ...n,
+        isCurrent: n.type === 'statefulset' && n.name === name && n.namespace === namespace,
+      })),
+    [resourceTopology.nodes, name, namespace]
+  );
 
   const status: ResourceStatus = statefulSet.status?.readyReplicas === statefulSet.spec?.replicas ? 'Running' : 
     statefulSet.status?.readyReplicas ? 'Pending' : 'Failed';
@@ -185,10 +164,46 @@ export default function StatefulSetDetail() {
     state: 'running',
     ports: c.ports?.map(p => ({ containerPort: p.containerPort, protocol: p.protocol || 'TCP' })) || [],
     resources: c.resources || {},
-    currentUsage: { cpu: Math.floor(Math.random() * 40) + 10, memory: Math.floor(Math.random() * 50) + 20 },
   }));
 
   const volumeClaimTemplates = statefulSet.spec?.volumeClaimTemplates || [];
+
+  const { data: podsList } = useK8sResourceList<KubernetesResource & { metadata?: { name?: string; labels?: Record<string, string> }; status?: { phase?: string; podIP?: string }; spec?: { nodeName?: string } }>(
+    'pods',
+    namespace ?? undefined,
+    { enabled: !!namespace && !!statefulSet?.spec?.selector?.matchLabels, limit: 5000 }
+  );
+  const stsMatchLabels = statefulSet.spec?.selector?.matchLabels ?? {};
+  const stsPodsRaw = (podsList?.items ?? []).filter((pod) => {
+    const labels = pod.metadata?.labels ?? {};
+    return Object.entries(stsMatchLabels).every(([k, v]) => labels[k] === v);
+  });
+  const stsName = statefulSet.metadata?.name ?? '';
+  const stsPods = useMemo(() => {
+    return [...stsPodsRaw].sort((a, b) => {
+      const ordA = parseInt(a.metadata?.name?.replace(new RegExp(`^${stsName}-`), '') ?? '-1', 10);
+      const ordB = parseInt(b.metadata?.name?.replace(new RegExp(`^${stsName}-`), '') ?? '-1', 10);
+      return ordA - ordB;
+    });
+  }, [stsPodsRaw, stsName]);
+  const firstStsPodName = stsPods[0]?.metadata?.name ?? '';
+
+  const { data: pvcList } = useK8sResourceList<KubernetesResource & { metadata?: { name?: string }; status?: { phase?: string }; spec?: { storageClassName?: string; resources?: { requests?: { storage?: string } } } }>(
+    'persistentvolumeclaims',
+    namespace ?? undefined,
+    { enabled: !!namespace && !!name, limit: 5000 }
+  );
+  const stsPvcs = useMemo(() => {
+    const items = pvcList?.items ?? [];
+    return items.filter((pvc) => {
+      const pvcName = pvc.metadata?.name ?? '';
+      return pvcName.includes(stsName) && new RegExp(`^[a-z0-9-]+-${stsName}-\\d+$`).test(pvcName);
+    });
+  }, [pvcList?.items, stsName]);
+  const logPod = selectedLogPod || firstStsPodName;
+  const terminalPod = selectedTerminalPod || firstStsPodName;
+  const logPodContainers = (stsPods.find((p) => p.metadata?.name === logPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
+  const terminalPodContainers = (stsPods.find((p) => p.metadata?.name === terminalPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
 
   const handleNodeClick = useCallback((node: TopologyNode) => {
     const resourceDetail: ResourceDetail = {
@@ -218,32 +233,50 @@ export default function StatefulSetDetail() {
   }, [yaml]);
 
   const handleScale = useCallback(async (replicas: number) => {
-    toast.success(`Scaled ${name} to ${replicas} replicas ${isConnected ? '' : '(demo mode)'}`);
-    refetch();
-  }, [isConnected, name, refetch]);
+    if (!isConnected || !name || !namespace) { toast.error('Connect cluster to scale StatefulSet'); return; }
+    try {
+      await patchStatefulSet.mutateAsync({ name, namespace, patch: { spec: { replicas } } });
+      toast.success(`Scaled ${name} to ${replicas} replicas`);
+      refetch();
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to scale');
+      throw err;
+    }
+  }, [isConnected, name, namespace, patchStatefulSet, refetch]);
 
   const handleRestart = useCallback(async () => {
-    toast.success(`Rollout restart initiated for ${name} ${isConnected ? '' : '(demo mode)'}`);
-    refetch();
-  }, [isConnected, name, refetch]);
+    if (!isConnected || !name || !namespace) { toast.error('Connect cluster to restart StatefulSet'); return; }
+    try {
+      await patchStatefulSet.mutateAsync({
+        name,
+        namespace,
+        patch: { spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } } } } },
+      });
+      toast.success(`Rollout restart initiated for ${name}`);
+      refetch();
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to restart');
+      throw err;
+    }
+  }, [isConnected, name, namespace, patchStatefulSet, refetch]);
 
-  const handleRollback = useCallback(async (revision: number) => {
-    toast.success(`Rolling back ${name} to revision ${revision} ${isConnected ? '' : '(demo mode)'}`);
+  const handleRollback = useCallback(async (_revision: number) => {
+    toast.info('Rollback for StatefulSet is revision-specific; use detail when supported.');
     refetch();
-  }, [isConnected, name, refetch]);
+  }, [refetch]);
 
   const handleSaveYaml = useCallback(async (newYaml: string) => {
-    if (isConnected && name && namespace) {
-      try {
-        await updateStatefulSet.mutateAsync({ name, yaml: newYaml, namespace });
-        toast.success('StatefulSet updated successfully');
-        refetch();
-      } catch (error: any) {
-        toast.error(`Failed to update: ${error.message}`);
-        throw error;
-      }
-    } else {
-      toast.success('StatefulSet updated (demo mode)');
+    if (!isConnected || !name || !namespace) {
+      toast.error('Connect cluster to update StatefulSet');
+      throw new Error('Not connected');
+    }
+    try {
+      await updateStatefulSet.mutateAsync({ name, yaml: newYaml, namespace });
+      toast.success('StatefulSet updated successfully');
+      refetch();
+    } catch (error: any) {
+      toast.error(`Failed to update: ${error.message}`);
+      throw error;
     }
   }, [isConnected, name, namespace, updateStatefulSet, refetch]);
 
@@ -259,24 +292,44 @@ export default function StatefulSetDetail() {
     );
   }
 
+  if (!statefulSet?.metadata?.name) {
+    return (
+      <div className="space-y-4 p-6">
+        <Breadcrumbs segments={breadcrumbSegments} className="mb-2" />
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-muted-foreground">StatefulSet not found.</p>
+            {error && <p className="text-sm text-destructive mt-2">{String(error)}</p>}
+            <Button variant="outline" className="mt-4" onClick={() => navigate('/statefulsets')}>
+              Back to StatefulSets
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const updateStrategyType = statefulSet.spec?.updateStrategy?.type ?? 'RollingUpdate';
+  const partition = statefulSet.spec?.updateStrategy?.rollingUpdate?.partition ?? 0;
+  const pvcCount = volumeClaimTemplates.length * desired;
   const statusCards = [
     { label: 'Ready', value: `${ready}/${desired}`, icon: Server, iconColor: ready === desired ? 'success' as const : 'warning' as const },
-    { label: 'Current', value: current, icon: Activity, iconColor: 'info' as const },
-    { label: 'Updated', value: updated, icon: RefreshCw, iconColor: 'success' as const },
-    { label: 'Age', value: age, icon: Clock, iconColor: 'primary' as const },
+    { label: 'Replicas', value: desired, icon: Activity, iconColor: 'info' as const },
+    { label: 'Update Strategy', value: updateStrategyType, icon: SlidersHorizontal, iconColor: 'primary' as const },
+    { label: 'Partition', value: partition, icon: Hash, iconColor: 'primary' as const },
+    { label: 'Service', value: statefulSet.spec?.serviceName || '—', icon: Globe, iconColor: 'primary' as const },
+    { label: 'PVCs', value: pvcCount, icon: HardDrive, iconColor: 'primary' as const },
   ];
 
   const yamlVersions: YamlVersion[] = [
     { id: 'current', label: 'Current Version', yaml, timestamp: 'now' },
-    { id: 'previous', label: 'Previous Version', yaml: yaml.replace('replicas: 3', 'replicas: 2'), timestamp: '1 week ago' },
   ];
-
-  const displayEvents = isConnected && events.length > 0 ? events : mockEvents;
 
   const tabs = [
     {
       id: 'overview',
       label: 'Overview',
+      icon: LayoutDashboard,
       content: (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -308,6 +361,14 @@ export default function StatefulSetDetail() {
                   <div>
                     <p className="text-muted-foreground mb-1">Partition</p>
                     <p className="font-mono">{statefulSet.spec?.updateStrategy?.rollingUpdate?.partition ?? 0}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground mb-1">Revision History Limit</p>
+                    <p className="font-mono">{statefulSet.spec?.revisionHistoryLimit ?? 10}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground mb-1">Min Ready Seconds</p>
+                    <p className="font-mono">{statefulSet.spec?.minReadySeconds ?? 0}s</p>
                   </div>
                 </div>
               </CardContent>
@@ -373,6 +434,30 @@ export default function StatefulSetDetail() {
             </Card>
           )}
 
+          {(statefulSet.status?.conditions?.length ?? 0) > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Conditions</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {statefulSet.status?.conditions?.map((c) => (
+                    <div key={c.type} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                      <div className="flex items-center gap-3">
+                        {c.status === 'True' ? <CheckCircle2 className="h-5 w-5 text-[hsl(142,76%,36%)]" /> : <XCircle className="h-5 w-5 text-[hsl(0,72%,51%)]" />}
+                        <div>
+                          <p className="font-medium text-sm">{c.type}</p>
+                          {c.reason && <p className="text-xs text-muted-foreground">{c.reason}</p>}
+                        </div>
+                      </div>
+                      {c.lastTransitionTime && <span className="text-xs text-muted-foreground">{new Date(c.lastTransitionTime).toLocaleString()}</span>}
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <MetadataCard title="Labels" items={statefulSet.metadata?.labels || {}} variant="badges" />
             <MetadataCard title="Selector" items={statefulSet.spec?.selector?.matchLabels || {}} variant="default" />
@@ -381,45 +466,359 @@ export default function StatefulSetDetail() {
       ),
     },
     {
+      id: 'pods-ordinals',
+      label: 'Pods & Ordinals',
+      icon: Hash,
+      badge: stsPods.length.toString(),
+      content: (
+        <SectionCard icon={Box} title="Pods & Ordinals" tooltip={<p className="text-xs text-muted-foreground">Ordered pod list with ordinal index</p>}>
+          {stsPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods match this StatefulSet&apos;s selector yet.</p>
+          ) : (
+            <div className="rounded-lg border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="text-left p-3 font-medium">Ordinal</th>
+                    <th className="text-left p-3 font-medium">Name</th>
+                    <th className="text-left p-3 font-medium">Status</th>
+                    <th className="text-left p-3 font-medium">Node</th>
+                    <th className="text-left p-3 font-medium">IP</th>
+                    <th className="text-left p-3 font-medium">Age</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stsPods.map((pod) => {
+                    const podName = pod.metadata?.name ?? '';
+                    const podNs = pod.metadata?.namespace ?? namespace ?? '';
+                    const phase = (pod.status as { phase?: string } | undefined)?.phase ?? '-';
+                    const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
+                    const podIP = (pod.status as { podIP?: string } | undefined)?.podIP ?? '-';
+                    const created = pod.metadata?.creationTimestamp ? calculateAge(pod.metadata.creationTimestamp) : '-';
+                    const ordinal = podName.replace(new RegExp(`^${stsName}-`), '') || '?';
+                    return (
+                      <tr key={podName} className="border-t">
+                        <td className="p-3"><Badge variant="secondary" className="font-mono">{ordinal}</Badge></td>
+                        <td className="p-3">
+                          <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">
+                            {podName}
+                          </Link>
+                        </td>
+                        <td className="p-3">{phase}</td>
+                        <td className="p-3 font-mono text-xs">{nodeName}</td>
+                        <td className="p-3 font-mono text-xs">{podIP}</td>
+                        <td className="p-3">{created}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {stsPods.length > 0 && updateStrategyType === 'RollingUpdate' && (
+            <p className="text-xs text-muted-foreground mt-3">RollingUpdate applies in reverse ordinal order (highest first).</p>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'pvc',
+      label: 'PersistentVolumeClaims',
+      icon: HardDrive,
+      badge: stsPvcs.length.toString(),
+      content: (
+        <SectionCard icon={HardDrive} title="PersistentVolumeClaims" tooltip={<p className="text-xs text-muted-foreground">PVCs used by this StatefulSet</p>}>
+          {volumeClaimTemplates.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No volume claim templates defined.</p>
+          ) : stsPvcs.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No PVCs found for this StatefulSet yet.</p>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-lg border overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="text-left p-3 font-medium">PVC Name</th>
+                      <th className="text-left p-3 font-medium">Status</th>
+                      <th className="text-left p-3 font-medium">Storage Class</th>
+                      <th className="text-left p-3 font-medium">Capacity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stsPvcs.map((pvc) => {
+                      const pvcName = pvc.metadata?.name ?? '';
+                      const phase = (pvc.status as { phase?: string })?.phase ?? '-';
+                      const storageClass = (pvc.spec as { storageClassName?: string })?.storageClassName ?? 'default';
+                      const capacity = (pvc.status as { capacity?: { storage?: string } })?.capacity?.storage ?? '—';
+                      return (
+                        <tr key={pvcName} className="border-t">
+                          <td className="p-3">
+                            <Link to={`/persistentvolumeclaims/${namespace}/${pvcName}`} className="text-primary hover:underline font-mono text-xs">
+                              {pvcName}
+                            </Link>
+                          </td>
+                          <td className="p-3"><Badge variant={phase === 'Bound' ? 'default' : 'secondary'}>{phase}</Badge></td>
+                          <td className="p-3 font-mono text-xs">{storageClass}</td>
+                          <td className="p-3 font-mono text-xs">{capacity}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'headless-service',
+      label: 'Headless Service',
+      icon: Globe,
+      content: (
+        <SectionCard icon={Globe} title="Headless Service" tooltip={<p className="text-xs text-muted-foreground">Service and DNS for StatefulSet pods</p>}>
+          {!statefulSet.spec?.serviceName ? (
+            <p className="text-sm text-muted-foreground">No service name configured.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-muted-foreground mb-1">Service</p>
+                  <Link to={`/services/${namespace}/${statefulSet.spec.serviceName}`} className="font-mono text-primary hover:underline">
+                    {statefulSet.spec.serviceName}
+                  </Link>
+                </div>
+                <div>
+                  <p className="text-muted-foreground mb-1">Cluster IP</p>
+                  <p className="font-mono">None (headless)</p>
+                </div>
+              </div>
+              <div>
+                <p className="text-muted-foreground mb-2">DNS names (pod-0, pod-1, ...)</p>
+                <div className="rounded-lg bg-muted/50 p-3 font-mono text-xs space-y-1">
+                  {Array.from({ length: desired }, (_, i) => (
+                    <div key={i}>{stsName}-{i}.{statefulSet.spec.serviceName}.{namespace}.svc.cluster.local</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'update-strategy',
+      label: 'Update Strategy',
+      icon: SlidersHorizontal,
+      content: (
+        <SectionCard icon={SlidersHorizontal} title="Update Strategy" tooltip={<p className="text-xs text-muted-foreground">Strategy and partition control</p>}>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <p className="text-muted-foreground mb-1">Type</p>
+                <Badge variant="outline">{updateStrategyType}</Badge>
+              </div>
+              <div>
+                <p className="text-muted-foreground mb-1">Partition</p>
+                <p className="font-mono">Pods with ordinal &gt;= partition receive updates.</p>
+              </div>
+            </div>
+            {updateStrategyType === 'RollingUpdate' && (
+              <>
+                <div className="flex items-center gap-4 flex-wrap">
+                  <Label className="w-24">Partition</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={desired}
+                    value={partitionInput !== '' ? partitionInput : partition}
+                    onChange={(e) => setPartitionInput(e.target.value)}
+                    className="w-24 font-mono"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      const val = partitionInput !== '' ? parseInt(partitionInput, 10) : partition;
+                      if (Number.isNaN(val) || val < 0) return;
+                      try {
+                        await patchStatefulSet.mutateAsync({
+                          name: name!,
+                          namespace: namespace!,
+                          patch: { spec: { updateStrategy: { type: 'RollingUpdate', rollingUpdate: { partition: val } } } },
+                        });
+                        toast.success(`Partition set to ${val}`);
+                        setPartitionInput('');
+                        refetch();
+                      } catch (err: any) {
+                        toast.error(err?.message ?? 'Failed to update partition');
+                      }
+                    }}
+                  >
+                    Apply
+                  </Button>
+                </div>
+                <div>
+                  <p className="text-muted-foreground text-sm mb-1">Update progress</p>
+                  <p className="text-sm">Updated replicas: <span className="font-mono">{updated}</span> of <span className="font-mono">{desired}</span></p>
+                </div>
+              </>
+            )}
+          </div>
+        </SectionCard>
+      ),
+    },
+    {
       id: 'containers',
       label: 'Containers',
+      icon: Layers,
       badge: containers.length.toString(),
       content: <ContainersSection containers={containers} />,
     },
     {
+      id: 'logs',
+      label: 'Logs',
+      icon: FileText,
+      content: (
+        <SectionCard icon={FileText} title="Logs" tooltip={<p className="text-xs text-muted-foreground">Stream logs from StatefulSet pods</p>}>
+          {stsPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods available to view logs.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="space-y-2">
+                  <Label>Pod</Label>
+                  <Select value={logPod} onValueChange={setSelectedLogPod}>
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select pod" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {stsPods.map((p) => (
+                        <SelectItem key={p.metadata?.name} value={p.metadata?.name ?? ''}>
+                          {p.metadata?.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Container</Label>
+                  <Select value={selectedLogContainer || logPodContainers[0]} onValueChange={setSelectedLogContainer}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Select container" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {logPodContainers.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <LogViewer podName={logPod} namespace={namespace ?? undefined} containerName={selectedLogContainer || logPodContainers[0]} containers={logPodContainers} onContainerChange={setSelectedLogContainer} />
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'terminal',
+      label: 'Terminal',
+      icon: Terminal,
+      content: (
+        <SectionCard icon={Terminal} title="Terminal" tooltip={<p className="text-xs text-muted-foreground">Exec into StatefulSet pods</p>}>
+          {stsPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods available for terminal.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="space-y-2">
+                  <Label>Pod</Label>
+                  <Select value={terminalPod} onValueChange={setSelectedTerminalPod}>
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select pod" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {stsPods.map((p) => (
+                        <SelectItem key={p.metadata?.name} value={p.metadata?.name ?? ''}>
+                          {p.metadata?.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Container</Label>
+                  <Select value={selectedTerminalContainer || terminalPodContainers[0]} onValueChange={setSelectedTerminalContainer}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Select container" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {terminalPodContainers.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <TerminalViewer podName={terminalPod} namespace={namespace ?? undefined} containerName={selectedTerminalContainer || terminalPodContainers[0]} containers={terminalPodContainers} onContainerChange={setSelectedTerminalContainer} />
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
       id: 'events',
       label: 'Events',
+      icon: CalendarClock,
       badge: displayEvents.length.toString(),
       content: <EventsSection events={displayEvents} />,
     },
     {
       id: 'metrics',
       label: 'Metrics',
-      content: <MetricsDashboard resourceType="pod" resourceName={name} namespace={namespace} />,
+      icon: BarChart2,
+      content: <MetricsDashboard resourceType="statefulset" resourceName={name} namespace={namespace} clusterId={clusterId} />,
     },
     {
       id: 'yaml',
       label: 'YAML',
+      icon: FileCode,
       content: <YamlViewer yaml={yaml} resourceName={statefulSet.metadata?.name || ''} editable onSave={handleSaveYaml} />,
     },
     {
       id: 'compare',
       label: 'Compare',
+      icon: GitCompare,
       content: <YamlCompareViewer versions={yamlVersions} resourceName={statefulSet.metadata?.name || ''} />,
     },
     {
       id: 'topology',
       label: 'Topology',
+      icon: Network,
       content: (
         <>
-          <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
-          <NodeDetailPopup resource={selectedNode} onClose={() => setSelectedNode(null)} />
+          {resourceTopology.isLoading ? (
+            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">Loading topology...</div>
+          ) : resourceTopology.error ? (
+            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">
+              Topology unavailable: {resourceTopology.error instanceof Error ? resourceTopology.error.message : String(resourceTopology.error)}
+            </div>
+          ) : (
+            <TopologyViewer nodes={topologyNodes} edges={resourceTopology.edges} onNodeClick={handleNodeClick} />
+          )}
+          <NodeDetailPopup
+            resource={selectedNode}
+            onClose={() => setSelectedNode(null)}
+            sourceResourceType="StatefulSet"
+            sourceResourceName={statefulSet?.metadata?.name ?? name ?? ''}
+          />
         </>
       ),
     },
     {
       id: 'actions',
       label: 'Actions',
+      icon: Settings,
       content: (
         <ActionsSection actions={[
           { icon: Scale, label: 'Scale StatefulSet', description: 'Adjust the number of replicas', onClick: () => setShowScaleDialog(true) },
@@ -433,8 +832,8 @@ export default function StatefulSetDetail() {
   ];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <ResourceHeader
+    <>
+      <ResourceDetailLayout
         resourceType="StatefulSet"
         resourceIcon={Database}
         name={statefulSet.metadata?.name || ''}
@@ -442,7 +841,7 @@ export default function StatefulSetDetail() {
         status={status}
         backLink="/statefulsets"
         backLabel="StatefulSets"
-        metadata={
+        headerMetadata={
           <span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
             Created {age}
@@ -453,14 +852,17 @@ export default function StatefulSetDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => refetch() },
+          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
+          { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Scale', icon: Scale, variant: 'outline', onClick: () => setShowScaleDialog(true) },
           { label: 'Restart', icon: RotateCcw, variant: 'outline', onClick: () => setShowRolloutDialog(true) },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}
+        statusCards={statusCards}
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
       />
-      <ResourceStatusCards cards={statusCards} />
-      <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
 
       <ScaleDialog
         open={showScaleDialog}
@@ -478,6 +880,7 @@ export default function StatefulSetDetail() {
         resourceType="StatefulSet"
         resourceName={statefulSet.metadata?.name || ''}
         namespace={statefulSet.metadata?.namespace}
+        revisions={[]}
         onRestart={handleRestart}
         onRollback={handleRollback}
       />
@@ -489,16 +892,16 @@ export default function StatefulSetDetail() {
         resourceName={statefulSet.metadata?.name || ''}
         namespace={statefulSet.metadata?.namespace}
         onConfirm={async () => {
-          if (isConnected && name && namespace) {
-            await deleteStatefulSet.mutateAsync({ name, namespace });
-            navigate('/statefulsets');
-          } else {
-            toast.success(`StatefulSet ${name} deleted (demo mode)`);
-            navigate('/statefulsets');
+          if (!isConnected || !name || !namespace) {
+            toast.error('Connect cluster to delete StatefulSet');
+            return;
           }
+          await deleteStatefulSet.mutateAsync({ name, namespace });
+          toast.success(`StatefulSet ${name} deleted`);
+          navigate('/statefulsets');
         }}
         requireNameConfirmation
       />
-    </motion.div>
+    </>
   );
 }

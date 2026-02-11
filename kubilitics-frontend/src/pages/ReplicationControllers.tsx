@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Layers, AlertTriangle } from 'lucide-react';
 import { ResourceList, type Column } from '@/components/resources';
-import { useK8sResourceList, calculateAge } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { usePaginatedResourceList, calculateAge } from '@/hooks/useKubernetes';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -64,12 +64,12 @@ const mockData: ReplicationController[] = [
 ];
 
 export default function ReplicationControllers() {
-  const { config } = useKubernetesConfigStore();
-  const { data, isLoading, refetch } = useK8sResourceList('replicationcontrollers');
+  const { isConnected } = useConnectionStatus();
+  const { data, isLoading, refetch, pagination } = usePaginatedResourceList('replicationcontrollers');
   const [showCreateWizard, setShowCreateWizard] = useState(false);
 
-  const items: ReplicationController[] = config.isConnected && data?.items
-    ? data.items.map((item: any) => ({
+  const items: ReplicationController[] = isConnected && data
+    ? (data?.items ?? []).map((item: any) => ({
         id: item.metadata.uid,
         name: item.metadata.name,
         namespace: item.metadata.namespace || 'default',
@@ -78,7 +78,7 @@ export default function ReplicationControllers() {
         ready: item.status?.readyReplicas || 0,
         age: calculateAge(item.metadata.creationTimestamp),
       }))
-    : mockData;
+    : [];
 
   return (
     <>
@@ -104,6 +104,7 @@ export default function ReplicationControllers() {
         isLoading={isLoading}
         onRefresh={() => refetch()}
         onCreate={() => setShowCreateWizard(true)}
+        pagination={pagination}
       />
 
       {showCreateWizard && (

@@ -12,17 +12,22 @@ import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Separator } from '@/components/ui/separator';
 import { useClusterStore } from '@/stores/clusterStore';
-import { 
-  TopologyCanvas, 
-  TopologyFilters, 
-  TopologyToolbar, 
+import { useBackendConfigStore } from '@/stores/backendConfigStore';
+import { useTopologyFromBackend } from '@/hooks/useTopologyFromBackend';
+import {
+  TopologyCanvas,
+  TopologyFilters,
+  TopologyToolbar,
   LayoutDirectionToggle,
   resourceTypes,
-  type TopologyCanvasRef 
+  type TopologyCanvasRef,
 } from '@/features/topology';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import type { TopologyGraph, TopologyNode, KubernetesKind, HealthStatus, RelationshipType } from '@/types/topology';
+import { BackendApiError } from '@/services/backendApiClient';
+import { Loader2, ArrowLeft } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 // Comprehensive mock topology data
 const mockGraph: TopologyGraph = {
@@ -125,20 +130,29 @@ const mockGraph: TopologyGraph = {
 };
 
 export default function Topology() {
-  const { activeCluster, namespaces } = useClusterStore();
+  const { activeCluster } = useClusterStore();
+  const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured());
+  const currentClusterId = useBackendConfigStore((s) => s.currentClusterId);
+  const clusterId = activeCluster?.id ?? currentClusterId;
+  const topologyFromBackend = useTopologyFromBackend(
+    isBackendConfigured ? clusterId : null,
+    { namespace: undefined }
+  );
+
   const navigate = useNavigate();
   const canvasRef = useRef<TopologyCanvasRef>(null);
-  
+
   // View state
   const [viewMode, setViewMode] = useState<'cluster' | 'namespace'>('cluster');
-  const [selectedNamespace, setSelectedNamespace] = useState('blue-green-demo');
+  const [selectedNamespace, setSelectedNamespace] = useState('default');
   const [searchQuery, setSearchQuery] = useState('');
   const [layoutDirection, setLayoutDirection] = useState<'TB' | 'LR'>('TB');
   const [isRefreshing, setIsRefreshing] = useState(false);
-  
+  const [useDemoGraph, setUseDemoGraph] = useState(false);
+
   // Filter state
   const [selectedResources, setSelectedResources] = useState<Set<KubernetesKind>>(
-    new Set(resourceTypes.map(r => r.kind))
+    new Set(resourceTypes.map((r) => r.kind))
   );
   const [selectedRelationships, setSelectedRelationships] = useState<Set<RelationshipType>>(
     new Set(['owns', 'selects', 'schedules', 'routes', 'configures', 'mounts', 'stores', 'contains'])
@@ -146,18 +160,34 @@ export default function Topology() {
   const [selectedHealth, setSelectedHealth] = useState<Set<HealthStatus | 'pending'>>(
     new Set(['healthy', 'warning', 'critical', 'unknown'])
   );
-  
+
   // Selected node state
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null);
 
-  // Available namespaces from mock data
+  // Graph: when backend is configured and clusterId set, use only backend data (no mock).
+  // Mock is used only when backend is not configured (demo/offline).
+  const emptyGraph: TopologyGraph = useMemo(
+    () => ({
+      schemaVersion: '1.0',
+      nodes: [],
+      edges: [],
+      metadata: { nodeCount: 0, edgeCount: 0, layoutSeed: '', isComplete: true, warnings: [] },
+    }),
+    []
+  );
+  const graph: TopologyGraph = useMemo(() => {
+    if (useDemoGraph && !isBackendConfigured) return mockGraph;
+    if (isBackendConfigured && clusterId && topologyFromBackend.data) return topologyFromBackend.data;
+    return emptyGraph;
+  }, [useDemoGraph, isBackendConfigured, clusterId, topologyFromBackend.data, emptyGraph]);
+
   const availableNamespaces = useMemo(() => {
     const nsSet = new Set<string>();
-    mockGraph.nodes.forEach(n => {
+    graph.nodes.forEach((n) => {
       if (n.namespace) nsSet.add(n.namespace);
     });
     return Array.from(nsSet);
-  }, []);
+  }, [graph.nodes]);
 
   const handleResourceToggle = useCallback((kind: KubernetesKind) => {
     setSelectedResources(prev => {
@@ -252,10 +282,15 @@ export default function Topology() {
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (isBackendConfigured && clusterId) {
+      await topologyFromBackend.refetch();
+      toast.success('Topology refreshed');
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      toast.success('Topology refreshed');
+    }
     setIsRefreshing(false);
-    toast.success('Topology refreshed');
-  }, []);
+  }, [isBackendConfigured, clusterId, topologyFromBackend]);
 
   const handleLayoutDirectionChange = useCallback((direction: 'TB' | 'LR') => {
     setLayoutDirection(direction);
@@ -311,30 +346,100 @@ export default function Topology() {
         className="flex-shrink-0 bg-card/50 p-4 rounded-xl border border-border"
       />
 
-      {/* Canvas Container */}
-      <div className="flex-1 relative min-h-0">
-        <TopologyCanvas
-          ref={canvasRef}
-          graph={mockGraph}
-          selectedResources={selectedResources}
-          selectedRelationships={selectedRelationships}
-          selectedHealth={selectedHealth}
-          searchQuery={searchQuery}
-          layoutDirection={layoutDirection}
-          onNodeSelect={handleNodeSelect}
-          onNodeDoubleClick={handleNodeDoubleClick}
-          className="h-full"
-        />
+      {/* Backend topology loading / error */}
+      {isBackendConfigured && clusterId && (
+        <>
+          {topologyFromBackend.isLoading && !topologyFromBackend.data && (
+            <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
+              <Loader2 className="h-6 w-6 animate-spin" />
+              <span>Building topology…</span>
+            </div>
+          )}
+          {topologyFromBackend.error && (
+            <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <span className="text-sm text-destructive">
+                  {topologyFromBackend.error instanceof Error
+                    ? topologyFromBackend.error.message
+                    : 'Failed to load topology'}
+                </span>
+                <div className="flex items-center gap-2">
+                  {topologyFromBackend.error instanceof BackendApiError && [404, 403, 503, 504].includes(topologyFromBackend.error.status) && (
+                    <Button size="sm" variant="outline" asChild className="gap-1">
+                      <Link to="/setup/clusters">
+                        <ArrowLeft className="h-4 w-4" />
+                        Back to cluster list
+                      </Link>
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => topologyFromBackend.refetch()}
+                    disabled={topologyFromBackend.isFetching}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              </div>
+              {topologyFromBackend.error instanceof BackendApiError && (
+                <p className="text-xs text-muted-foreground">
+                  {topologyFromBackend.error.status > 0 && <>Status: {topologyFromBackend.error.status}. </>}
+                  {topologyFromBackend.error.requestId && (
+                    <>Request ID: <code className="bg-muted px-1 rounded">{topologyFromBackend.error.requestId}</code> (for support)</>
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
 
-        {/* Layout Direction Toggle - positioned over canvas */}
-        <LayoutDirectionToggle
-          direction={layoutDirection}
-          onChange={handleLayoutDirectionChange}
-          className="absolute top-4 right-4"
-        />
+      {/* Empty state when no backend/cluster or no topology data */}
+      {(!isBackendConfigured || !clusterId) && (
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed bg-muted/30 p-8 text-center">
+          <Network className="h-12 w-12 text-muted-foreground" />
+          <p className="text-muted-foreground">Connect backend and select a cluster to view topology.</p>
+          <Button asChild variant="outline" className="gap-2">
+            <Link to="/setup/clusters">
+              <ArrowLeft className="h-4 w-4" />
+              Select cluster
+            </Link>
+          </Button>
+        </div>
+      )}
 
-        {/* Zoom Controls - positioned over canvas */}
-        <div className="absolute bottom-4 right-4 flex items-center gap-1 p-1 bg-card/95 backdrop-blur-sm border border-border rounded-lg shadow-lg">
+      {/* Canvas Container — only when backend + cluster; hide until topology loaded */}
+      {isBackendConfigured && clusterId && (
+        <div className="flex-1 relative min-h-0">
+          {topologyFromBackend.isLoading && !topologyFromBackend.data ? null : (
+            <TopologyCanvas
+              ref={canvasRef}
+              graph={graph}
+              selectedResources={selectedResources}
+              selectedRelationships={selectedRelationships}
+              selectedHealth={selectedHealth}
+              searchQuery={searchQuery}
+              layoutDirection={layoutDirection}
+              onNodeSelect={handleNodeSelect}
+              onNodeDoubleClick={handleNodeDoubleClick}
+              className="h-full"
+            />
+          )}
+          {/* C2.2: Large-graph notice — canvas handles 1K+ nodes; recommend scope for 10K+ */}
+          {graph.nodes.length > 1000 && (
+            <div className="absolute top-4 left-4 max-w-sm rounded-lg border border-border bg-card/95 backdrop-blur-sm px-3 py-2 text-xs text-muted-foreground shadow">
+              Large graph: {graph.nodes.length} nodes. Use namespace or filters for smoother interaction.
+            </div>
+          )}
+          {/* Layout Direction Toggle - positioned over canvas */}
+          <LayoutDirectionToggle
+            direction={layoutDirection}
+            onChange={handleLayoutDirectionChange}
+            className="absolute top-4 right-4"
+          />
+          {/* Zoom Controls - positioned over canvas */}
+          <div className="absolute bottom-4 right-4 flex items-center gap-1 p-1 bg-card/95 backdrop-blur-sm border border-border rounded-lg shadow-lg">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button 
@@ -430,7 +535,8 @@ export default function Topology() {
             </Card>
           </motion.div>
         )}
-      </div>
+        </div>
+      )}
     </motion.div>
   );
 }

@@ -5,9 +5,27 @@ import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  test: {
+    include: ['src/**/*.test.{ts,tsx}'],
+    exclude: ['e2e/**', 'node_modules/**'],
+  },
   server: {
     host: "::",
-    port: 8080,
+    // Use 5173 only; fail if port is in use instead of trying another
+    port: 5173,
+    strictPort: true,
+    // Proxy API, WebSocket, and health to backend so dev uses same-origin (no cross-origin WS errors)
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        ws: true,
+      },
+      '/health': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+    },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {

@@ -1,6 +1,5 @@
-import { useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { useState, useCallback, useMemo } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Cpu,
   Clock,
@@ -9,20 +8,32 @@ import {
   RefreshCw,
   Download,
   Trash2,
-  Copy,
   CheckCircle2,
   Activity,
+  Box,
+  FileText,
+  Terminal,
+  LayoutDashboard,
+  Layers,
+  CalendarClock,
+  BarChart2,
+  FileCode,
+  GitCompare,
+  Network,
+  Settings,
+  History,
+  Gauge,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import {
-  ResourceHeader,
-  ResourceStatusCards,
-  ResourceTabs,
+  ResourceDetailLayout,
   TopologyViewer,
   ContainersSection,
   YamlViewer,
@@ -34,6 +45,9 @@ import {
   NodeDetailPopup,
   RolloutActionsDialog,
   DeleteConfirmDialog,
+  SectionCard,
+  LogViewer,
+  TerminalViewer,
   type TopologyNode,
   type TopologyEdge,
   type ResourceStatus,
@@ -41,9 +55,15 @@ import {
   type YamlVersion,
   type ResourceDetail,
 } from '@/components/resources';
-import { useResourceDetail, useK8sEvents } from '@/hooks/useK8sResourceDetail';
-import { useDeleteK8sResource, useUpdateK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
+import { useDeleteK8sResource, useUpdateK8sResource, usePatchK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
+import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
+import { useClusterStore } from '@/stores/clusterStore';
+import { useActiveClusterId } from '@/hooks/useActiveClusterId';
+import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
+import { useQuery } from '@tanstack/react-query';
 
 interface DaemonSetResource extends KubernetesResource {
   spec?: {
@@ -72,85 +92,45 @@ interface DaemonSetResource extends KubernetesResource {
   };
 }
 
-const mockDaemonSetResource: DaemonSetResource = {
-  apiVersion: 'apps/v1',
-  kind: 'DaemonSet',
-  metadata: {
-    name: 'fluentd',
-    namespace: 'kube-system',
-    uid: 'ds-123-456',
-    creationTimestamp: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(),
-    labels: { app: 'fluentd', 'app.kubernetes.io/name': 'fluentd' },
-  },
-  spec: {
-    selector: { matchLabels: { app: 'fluentd' } },
-    updateStrategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: '1' } },
-    template: {
-      spec: {
-        containers: [{
-          name: 'fluentd',
-          image: 'fluent/fluentd:v1.16',
-          ports: [{ containerPort: 24224, protocol: 'TCP' }],
-          resources: { requests: { cpu: '100m', memory: '200Mi' }, limits: { cpu: '500m', memory: '500Mi' } },
-        }],
-        tolerations: [{ operator: 'Exists' }],
-      },
-    },
-  },
-  status: {
-    currentNumberScheduled: 5,
-    desiredNumberScheduled: 5,
-    numberReady: 5,
-    numberAvailable: 5,
-    updatedNumberScheduled: 5,
-    numberMisscheduled: 0,
-  },
-};
-
-const topologyNodes: TopologyNode[] = [
-  { id: 'daemonset', type: 'daemonset', name: 'fluentd', namespace: 'kube-system', status: 'healthy', isCurrent: true },
-  { id: 'pod-1', type: 'pod', name: 'fluentd-abc12', namespace: 'kube-system', status: 'healthy' },
-  { id: 'pod-2', type: 'pod', name: 'fluentd-def34', namespace: 'kube-system', status: 'healthy' },
-  { id: 'pod-3', type: 'pod', name: 'fluentd-ghi56', namespace: 'kube-system', status: 'healthy' },
-  { id: 'node-1', type: 'node', name: 'node-1', status: 'healthy' },
-  { id: 'node-2', type: 'node', name: 'node-2', status: 'healthy' },
-  { id: 'node-3', type: 'node', name: 'node-3', status: 'healthy' },
-];
-
-const topologyEdges: TopologyEdge[] = [
-  { from: 'daemonset', to: 'pod-1', label: 'Manages' },
-  { from: 'daemonset', to: 'pod-2', label: 'Manages' },
-  { from: 'daemonset', to: 'pod-3', label: 'Manages' },
-  { from: 'pod-1', to: 'node-1', label: 'Runs on' },
-  { from: 'pod-2', to: 'node-2', label: 'Runs on' },
-  { from: 'pod-3', to: 'node-3', label: 'Runs on' },
-];
-
-const mockEvents = [
-  { type: 'Normal' as const, reason: 'SuccessfulCreate', message: 'Created pod: fluentd-abc12', time: '90d ago' },
-  { type: 'Normal' as const, reason: 'SuccessfulCreate', message: 'Created pod: fluentd-def34', time: '90d ago' },
-  { type: 'Normal' as const, reason: 'SuccessfulCreate', message: 'Created pod: fluentd-ghi56', time: '90d ago' },
-];
-
 export default function DaemonSetDetail() {
   const { namespace, name } = useParams();
+  const clusterId = useActiveClusterId();
   const navigate = useNavigate();
   
   const [activeTab, setActiveTab] = useState('overview');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showRolloutDialog, setShowRolloutDialog] = useState(false);
   const [selectedNode, setSelectedNode] = useState<ResourceDetail | null>(null);
-  
-  const { config } = useKubernetesConfigStore();
-  const { resource: daemonSet, isLoading, age, yaml, isConnected, refetch } = useResourceDetail<DaemonSetResource>(
+  const [selectedLogPod, setSelectedLogPod] = useState<string>('');
+  const [selectedLogContainer, setSelectedLogContainer] = useState<string>('');
+  const [selectedTerminalPod, setSelectedTerminalPod] = useState<string>('');
+  const [selectedTerminalContainer, setSelectedTerminalContainer] = useState<string>('');
+
+  const { isConnected } = useConnectionStatus();
+  const { activeCluster } = useClusterStore();
+  const breadcrumbSegments = useDetailBreadcrumbs('DaemonSet', name ?? undefined, namespace ?? undefined, activeCluster?.name);
+  const { resource: daemonSet, isLoading, error, age, yaml, refetch } = useResourceDetail<DaemonSetResource>(
     'daemonsets',
     name,
     namespace,
-    mockDaemonSetResource
+    {} as DaemonSetResource
   );
-  const { events } = useK8sEvents(namespace);
+  const resourceEvents = useResourceEvents('DaemonSet', namespace ?? undefined, name ?? undefined);
+  const displayEvents = resourceEvents.events;
+  const backendBaseUrl = getEffectiveBackendBaseUrl(useBackendConfigStore((s) => s.backendBaseUrl));
+  const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
   const deleteDaemonSet = useDeleteK8sResource('daemonsets');
   const updateDaemonSet = useUpdateK8sResource('daemonsets');
+  const patchDaemonSet = usePatchK8sResource('daemonsets');
+  const resourceTopology = useResourceTopology('daemonsets', namespace ?? undefined, name ?? undefined);
+  const topologyNodes = useMemo(
+    () =>
+      resourceTopology.nodes.map((n) => ({
+        ...n,
+        isCurrent: n.type === 'daemonset' && n.name === name && n.namespace === namespace,
+      })),
+    [resourceTopology.nodes, name, namespace]
+  );
 
   const status: ResourceStatus = daemonSet.status?.numberReady === daemonSet.status?.desiredNumberScheduled ? 'Running' : 
     daemonSet.status?.numberReady ? 'Pending' : 'Failed';
@@ -169,11 +149,26 @@ export default function DaemonSetDetail() {
     state: 'running',
     ports: c.ports || [],
     resources: c.resources || {},
-    currentUsage: { cpu: Math.floor(Math.random() * 40) + 10, memory: Math.floor(Math.random() * 50) + 20 },
   }));
 
   const tolerations = daemonSet.spec?.template?.spec?.tolerations || [];
   const nodeSelector = daemonSet.spec?.template?.spec?.nodeSelector || {};
+
+  const { data: podsList } = useK8sResourceList<KubernetesResource & { metadata?: { name?: string; labels?: Record<string, string> }; status?: { phase?: string }; spec?: { nodeName?: string } }>(
+    'pods',
+    namespace ?? undefined,
+    { enabled: !!namespace && !!daemonSet?.spec?.selector?.matchLabels, limit: 5000 }
+  );
+  const dsMatchLabels = daemonSet.spec?.selector?.matchLabels ?? {};
+  const dsPods = (podsList?.items ?? []).filter((pod) => {
+    const labels = pod.metadata?.labels ?? {};
+    return Object.entries(dsMatchLabels).every(([k, v]) => labels[k] === v);
+  });
+  const firstDsPodName = dsPods[0]?.metadata?.name ?? '';
+  const logPod = selectedLogPod || firstDsPodName;
+  const terminalPod = selectedTerminalPod || firstDsPodName;
+  const logPodContainers = (dsPods.find((p) => p.metadata?.name === logPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
+  const terminalPodContainers = (dsPods.find((p) => p.metadata?.name === terminalPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
 
   const handleNodeClick = useCallback((node: TopologyNode) => {
     const resourceDetail: ResourceDetail = {
@@ -203,22 +198,33 @@ export default function DaemonSetDetail() {
   }, [yaml]);
 
   const handleRestart = useCallback(async () => {
-    toast.success(`Rollout restart initiated for ${name} ${isConnected ? '' : '(demo mode)'}`);
-    refetch();
-  }, [isConnected, name, refetch]);
+    if (!isConnected || !name || !namespace) { toast.error('Connect cluster to restart DaemonSet'); return; }
+    try {
+      await patchDaemonSet.mutateAsync({
+        name,
+        namespace,
+        patch: { spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } } } } },
+      });
+      toast.success(`Rollout restart initiated for ${name}`);
+      refetch();
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to restart');
+      throw err;
+    }
+  }, [isConnected, name, namespace, patchDaemonSet, refetch]);
 
   const handleSaveYaml = useCallback(async (newYaml: string) => {
-    if (isConnected && name && namespace) {
-      try {
-        await updateDaemonSet.mutateAsync({ name, yaml: newYaml, namespace });
-        toast.success('DaemonSet updated successfully');
-        refetch();
-      } catch (error: any) {
-        toast.error(`Failed to update: ${error.message}`);
-        throw error;
-      }
-    } else {
-      toast.success('DaemonSet updated (demo mode)');
+    if (!isConnected || !name || !namespace) {
+      toast.error('Connect cluster to update DaemonSet');
+      throw new Error('Not connected');
+    }
+    try {
+      await updateDaemonSet.mutateAsync({ name, yaml: newYaml, namespace });
+      toast.success('DaemonSet updated successfully');
+      refetch();
+    } catch (error: any) {
+      toast.error(`Failed to update: ${error.message}`);
+      throw error;
     }
   }, [isConnected, name, namespace, updateDaemonSet, refetch]);
 
@@ -234,24 +240,42 @@ export default function DaemonSetDetail() {
     );
   }
 
+  if (!daemonSet?.metadata?.name) {
+    return (
+      <div className="space-y-4 p-6">
+        <Breadcrumbs segments={breadcrumbSegments} className="mb-2" />
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-muted-foreground">DaemonSet not found.</p>
+            {error && <p className="text-sm text-destructive mt-2">{String(error)}</p>}
+            <Button variant="outline" className="mt-4" onClick={() => navigate('/daemonsets')}>
+              Back to DaemonSets
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const nodeCoveragePct = desired > 0 ? Math.round((ready / desired) * 100) : 0;
   const statusCards = [
     { label: 'Desired', value: desired, icon: Server, iconColor: 'primary' as const },
+    { label: 'Current', value: current, icon: Server, iconColor: 'muted' as const },
     { label: 'Ready', value: `${ready}/${desired}`, icon: CheckCircle2, iconColor: ready === desired ? 'success' as const : 'warning' as const },
+    { label: 'Up-to-date', value: `${updated}/${desired}`, icon: Activity, iconColor: updated === desired ? 'success' as const : 'warning' as const },
     { label: 'Available', value: available, icon: Activity, iconColor: 'success' as const },
-    { label: 'Age', value: age, icon: Clock, iconColor: 'muted' as const },
+    { label: 'Node Coverage', value: `${nodeCoveragePct}%`, icon: Gauge, iconColor: nodeCoveragePct === 100 ? 'success' as const : 'warning' as const },
   ];
 
   const yamlVersions: YamlVersion[] = [
     { id: 'current', label: 'Current Version', yaml, timestamp: 'now' },
-    { id: 'previous', label: 'Previous Version', yaml: yaml.replace('v1.16', 'v1.15'), timestamp: '1 week ago' },
   ];
-
-  const displayEvents = isConnected && events.length > 0 ? events : mockEvents;
 
   const tabs = [
     {
       id: 'overview',
       label: 'Overview',
+      icon: LayoutDashboard,
       content: (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -291,21 +315,21 @@ export default function DaemonSetDetail() {
                   <div className="flex justify-between items-center">
                     <span className="text-sm">Scheduled</span>
                     <div className="flex items-center gap-2">
-                      <Progress value={(current / desired) * 100} className="w-32 h-2" />
+                      <Progress value={desired > 0 ? (current / desired) * 100 : 0} className="w-32 h-2" />
                       <span className="font-mono text-sm w-12">{current}/{desired}</span>
                     </div>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-sm">Ready</span>
                     <div className="flex items-center gap-2">
-                      <Progress value={(ready / desired) * 100} className="w-32 h-2" />
+                      <Progress value={desired > 0 ? (ready / desired) * 100 : 0} className="w-32 h-2" />
                       <span className="font-mono text-sm w-12">{ready}/{desired}</span>
                     </div>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-sm">Available</span>
                     <div className="flex items-center gap-2">
-                      <Progress value={(available / desired) * 100} className="w-32 h-2" />
+                      <Progress value={desired > 0 ? (available / desired) * 100 : 0} className="w-32 h-2" />
                       <span className="font-mono text-sm w-12">{available}/{desired}</span>
                     </div>
                   </div>
@@ -343,45 +367,288 @@ export default function DaemonSetDetail() {
       ),
     },
     {
+      id: 'nodeDistribution',
+      label: 'Node Distribution',
+      icon: Server,
+      content: (
+        <SectionCard icon={Server} title="Node Distribution" tooltip={<p className="text-xs text-muted-foreground">Per-node pod placement and status</p>}>
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-4 text-sm">
+              <span className="text-muted-foreground">Coverage: <span className="font-medium text-foreground">{dsPods.length}</span> nodes with pod</span>
+              <span className="text-muted-foreground">Desired: <span className="font-medium text-foreground">{desired}</span> nodes</span>
+              <span className="text-muted-foreground">Ready: <span className="font-medium text-foreground">{ready}/{desired}</span></span>
+            </div>
+            {dsPods.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No pods scheduled yet.</p>
+            ) : (
+              <div className="rounded-lg border overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="text-left p-3 font-medium">Node</th>
+                      <th className="text-left p-3 font-medium">Pod</th>
+                      <th className="text-left p-3 font-medium">Status</th>
+                      <th className="text-left p-3 font-medium">Age</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dsPods.map((pod) => {
+                      const podName = pod.metadata?.name ?? '';
+                      const podNs = pod.metadata?.namespace ?? namespace ?? '';
+                      const phase = (pod.status as { phase?: string } | undefined)?.phase ?? '-';
+                      const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
+                      const created = pod.metadata?.creationTimestamp ? calculateAge(pod.metadata.creationTimestamp) : '-';
+                      const phaseColor = phase === 'Running' ? 'text-[hsl(142,76%,36%)]' : phase === 'Pending' ? 'text-[hsl(45,93%,47%)]' : 'text-[hsl(0,72%,51%)]';
+                      return (
+                        <tr key={podName} className="border-t">
+                          <td className="p-3">
+                            {nodeName !== '-' ? (
+                              <Link to={`/nodes/${nodeName}`} className="font-mono text-xs text-primary hover:underline">{nodeName}</Link>
+                            ) : (
+                              <span className="font-mono text-xs text-muted-foreground">—</span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">{podName}</Link>
+                          </td>
+                          <td className={`p-3 font-medium ${phaseColor}`}>{phase}</td>
+                          <td className="p-3 text-muted-foreground">{created}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'rolloutHistory',
+      label: 'Rollout History',
+      icon: History,
+      content: (
+        <SectionCard icon={History} title="Rollout History" tooltip={<p className="text-xs text-muted-foreground">ControllerRevisions or last rollout from events</p>}>
+          {displayEvents.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No rollout events available. Backend may support ControllerRevisions for revision timeline later.</p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground mb-3">Recent events (rollout-related):</p>
+              <ul className="space-y-2 max-h-[300px] overflow-y-auto">
+                {displayEvents.slice(0, 15).map((ev, i) => (
+                  <li key={i} className="text-sm p-2 rounded bg-muted/50 flex flex-wrap gap-2 items-center">
+                    <Badge variant={ev.type === 'Warning' ? 'destructive' : 'secondary'} className="text-xs">{ev.type}</Badge>
+                    <span className="font-medium">{ev.reason}</span>
+                    <span className="text-muted-foreground">{ev.message}</span>
+                    <span className="text-xs text-muted-foreground ml-auto">{ev.time}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
       id: 'containers',
       label: 'Containers',
+      icon: Layers,
       badge: containers.length.toString(),
       content: <ContainersSection containers={containers} />,
     },
     {
+      id: 'pods',
+      label: 'Pods',
+      icon: Box,
+      badge: dsPods.length.toString(),
+      content: (
+        <SectionCard icon={Box} title="Pods" tooltip={<p className="text-xs text-muted-foreground">Pods managed by this DaemonSet</p>}>
+          {dsPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods match this DaemonSet&apos;s selector yet.</p>
+          ) : (
+            <div className="rounded-lg border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="text-left p-3 font-medium">Name</th>
+                    <th className="text-left p-3 font-medium">Status</th>
+                    <th className="text-left p-3 font-medium">Node</th>
+                    <th className="text-left p-3 font-medium">Age</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dsPods.map((pod) => {
+                    const podName = pod.metadata?.name ?? '';
+                    const podNs = pod.metadata?.namespace ?? namespace ?? '';
+                    const phase = (pod.status as { phase?: string } | undefined)?.phase ?? '-';
+                    const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
+                    const created = pod.metadata?.creationTimestamp ? calculateAge(pod.metadata.creationTimestamp) : '-';
+                    return (
+                      <tr key={podName} className="border-t">
+                        <td className="p-3">
+                          <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">
+                            {podName}
+                          </Link>
+                        </td>
+                        <td className="p-3">{phase}</td>
+                        <td className="p-3 font-mono text-xs">{nodeName}</td>
+                        <td className="p-3">{created}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'logs',
+      label: 'Logs',
+      icon: FileText,
+      content: (
+        <SectionCard icon={FileText} title="Logs" tooltip={<p className="text-xs text-muted-foreground">Stream logs from DaemonSet pods</p>}>
+          {dsPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods available to view logs.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="space-y-2">
+                  <Label>Pod</Label>
+                  <Select value={logPod} onValueChange={setSelectedLogPod}>
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select pod" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {dsPods.map((p) => (
+                        <SelectItem key={p.metadata?.name} value={p.metadata?.name ?? ''}>
+                          {p.metadata?.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Container</Label>
+                  <Select value={selectedLogContainer || logPodContainers[0]} onValueChange={setSelectedLogContainer}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Select container" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {logPodContainers.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <LogViewer podName={logPod} namespace={namespace ?? undefined} containerName={selectedLogContainer || logPodContainers[0]} containers={logPodContainers} onContainerChange={setSelectedLogContainer} />
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'terminal',
+      label: 'Terminal',
+      icon: Terminal,
+      content: (
+        <SectionCard icon={Terminal} title="Terminal" tooltip={<p className="text-xs text-muted-foreground">Exec into DaemonSet pods</p>}>
+          {dsPods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods available for terminal.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="space-y-2">
+                  <Label>Pod</Label>
+                  <Select value={terminalPod} onValueChange={setSelectedTerminalPod}>
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select pod" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {dsPods.map((p) => (
+                        <SelectItem key={p.metadata?.name} value={p.metadata?.name ?? ''}>
+                          {p.metadata?.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Container</Label>
+                  <Select value={selectedTerminalContainer || terminalPodContainers[0]} onValueChange={setSelectedTerminalContainer}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Select container" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {terminalPodContainers.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <TerminalViewer podName={terminalPod} namespace={namespace ?? undefined} containerName={selectedTerminalContainer || terminalPodContainers[0]} containers={terminalPodContainers} onContainerChange={setSelectedTerminalContainer} />
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
       id: 'events',
       label: 'Events',
+      icon: CalendarClock,
       badge: displayEvents.length.toString(),
       content: <EventsSection events={displayEvents} />,
     },
     {
       id: 'metrics',
       label: 'Metrics',
-      content: <MetricsDashboard resourceType="pod" resourceName={name} namespace={namespace} />,
+      icon: BarChart2,
+      content: <MetricsDashboard resourceType="daemonset" resourceName={name} namespace={namespace} clusterId={clusterId} />,
     },
     {
       id: 'yaml',
       label: 'YAML',
+      icon: FileCode,
       content: <YamlViewer yaml={yaml} resourceName={daemonSet.metadata?.name || ''} editable onSave={handleSaveYaml} />,
     },
     {
       id: 'compare',
       label: 'Compare',
+      icon: GitCompare,
       content: <YamlCompareViewer versions={yamlVersions} resourceName={daemonSet.metadata?.name || ''} />,
     },
     {
       id: 'topology',
       label: 'Topology',
+      icon: Network,
       content: (
         <>
-          <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
-          <NodeDetailPopup resource={selectedNode} onClose={() => setSelectedNode(null)} />
+          {resourceTopology.isLoading ? (
+            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">Loading topology...</div>
+          ) : resourceTopology.error ? (
+            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">
+              Topology unavailable: {resourceTopology.error instanceof Error ? resourceTopology.error.message : String(resourceTopology.error)}
+            </div>
+          ) : (
+            <TopologyViewer nodes={topologyNodes} edges={resourceTopology.edges} onNodeClick={handleNodeClick} />
+          )}
+          <NodeDetailPopup
+            resource={selectedNode}
+            onClose={() => setSelectedNode(null)}
+            sourceResourceType="DaemonSet"
+            sourceResourceName={daemonSet?.metadata?.name ?? name ?? ''}
+          />
         </>
       ),
     },
     {
       id: 'actions',
       label: 'Actions',
+      icon: Settings,
       content: (
         <ActionsSection actions={[
           { icon: RotateCcw, label: 'Rollout Restart', description: 'Trigger a rolling restart of all pods', onClick: () => setShowRolloutDialog(true) },
@@ -393,8 +660,8 @@ export default function DaemonSetDetail() {
   ];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <ResourceHeader
+    <>
+      <ResourceDetailLayout
         resourceType="DaemonSet"
         resourceIcon={Cpu}
         name={daemonSet.metadata?.name || ''}
@@ -402,7 +669,11 @@ export default function DaemonSetDetail() {
         status={status}
         backLink="/daemonsets"
         backLabel="DaemonSets"
-        metadata={
+        statusCards={statusCards}
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        headerMetadata={
           <span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
             Created {age}
@@ -413,13 +684,14 @@ export default function DaemonSetDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => refetch() },
+          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
+          { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Restart', icon: RotateCcw, variant: 'outline', onClick: () => setShowRolloutDialog(true) },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}
-      />
-      <ResourceStatusCards cards={statusCards} />
-      <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
+      >
+        <Breadcrumbs segments={breadcrumbSegments} className="mb-2" />
+      </ResourceDetailLayout>
 
       <RolloutActionsDialog
         open={showRolloutDialog}
@@ -427,7 +699,9 @@ export default function DaemonSetDetail() {
         resourceType="DaemonSet"
         resourceName={daemonSet.metadata?.name || ''}
         namespace={daemonSet.metadata?.namespace}
+        revisions={[]}
         onRestart={handleRestart}
+        onRollback={() => { toast.info('DaemonSet does not support rollback to revision.'); setShowRolloutDialog(false); }}
       />
 
       <DeleteConfirmDialog
@@ -437,16 +711,16 @@ export default function DaemonSetDetail() {
         resourceName={daemonSet.metadata?.name || ''}
         namespace={daemonSet.metadata?.namespace}
         onConfirm={async () => {
-          if (isConnected && name && namespace) {
-            await deleteDaemonSet.mutateAsync({ name, namespace });
-            navigate('/daemonsets');
-          } else {
-            toast.success(`DaemonSet ${name} deleted (demo mode)`);
-            navigate('/daemonsets');
+          if (!isConnected || !name || !namespace) {
+            toast.error('Connect cluster to delete DaemonSet');
+            return;
           }
+          await deleteDaemonSet.mutateAsync({ name, namespace });
+          toast.success(`DaemonSet ${name} deleted`);
+          navigate('/daemonsets');
         }}
         requireNameConfirmation
       />
-    </motion.div>
+    </>
   );
 }

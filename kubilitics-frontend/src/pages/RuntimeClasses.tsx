@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { FolderCog } from 'lucide-react';
 import { ResourceList, type Column } from '@/components/resources';
-import { useK8sResourceList, calculateAge } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { usePaginatedResourceList, calculateAge } from '@/hooks/useKubernetes';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { ResourceCreator } from '@/components/editor';
 import { toast } from 'sonner';
 
@@ -30,18 +30,18 @@ metadata:
 handler: ''`;
 
 export default function RuntimeClasses() {
-  const { config } = useKubernetesConfigStore();
-  const { data, isLoading, refetch } = useK8sResourceList('runtimeclasses');
+  const { isConnected } = useConnectionStatus();
+  const { data, isLoading, refetch, pagination } = usePaginatedResourceList('runtimeclasses');
   const [showCreator, setShowCreator] = useState(false);
 
-  const items: RuntimeClass[] = config.isConnected && data?.items
-    ? data.items.map((item: any) => ({
+  const items: RuntimeClass[] = isConnected && data
+    ? (data?.items ?? []).map((item: any) => ({
         id: item.metadata.uid,
         name: item.metadata.name,
         handler: item.handler || '-',
         age: calculateAge(item.metadata.creationTimestamp),
       }))
-    : mockData;
+    : [];
 
   const handleCreate = (yaml: string) => {
     toast.success('RuntimeClass created (demo mode)');
@@ -72,6 +72,7 @@ export default function RuntimeClasses() {
       isLoading={isLoading}
       onRefresh={() => refetch()}
       onCreate={() => setShowCreator(true)}
+      pagination={pagination}
     />
   );
 }

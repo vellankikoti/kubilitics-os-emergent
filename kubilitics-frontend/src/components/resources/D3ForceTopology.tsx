@@ -44,6 +44,7 @@ import { cn } from '@/lib/utils';
 import { TopologyMiniMap } from './TopologyMiniMap';
 
 export type ResourceType = 
+  | 'cluster'
   | 'pod' 
   | 'deployment' 
   | 'replicaset' 
@@ -97,6 +98,8 @@ export interface D3ForceTopologyProps {
   edges: TopologyEdge[];
   onNodeClick?: (node: TopologyNode) => void;
   className?: string;
+  /** When true, show traffic animation on edges (default true when used from Interactive topology). */
+  showTraffic?: boolean;
 }
 
 type GroupingMode = 'none' | 'namespace' | 'type';
@@ -133,6 +136,7 @@ const resourceStyles: Record<ResourceType, { color: string; radius: number }> = 
   storageclass: { color: 'hsl(200, 50%, 50%)', radius: 28 },
   user: { color: 'hsl(240, 60%, 55%)', radius: 24 },
   group: { color: 'hsl(250, 60%, 55%)', radius: 26 },
+  cluster: { color: 'hsl(217, 91%, 60%)', radius: 40 },
 };
 
 const resourceIcons: Record<ResourceType, LucideIcon> = {
@@ -166,6 +170,7 @@ const resourceIcons: Record<ResourceType, LucideIcon> = {
   storageclass: Layers,
   user: Settings,
   group: Settings,
+  cluster: Map,
 };
 
 const resourceLabels: Record<ResourceType, string> = {
@@ -199,6 +204,7 @@ const resourceLabels: Record<ResourceType, string> = {
   storageclass: 'StorageClass',
   user: 'User',
   group: 'Group',
+  cluster: 'Cluster',
 };
 
 // D3 simulation node type
@@ -235,7 +241,8 @@ export function D3ForceTopology({
   nodes, 
   edges, 
   onNodeClick, 
-  className 
+  className,
+  showTraffic: showTrafficProp,
 }: D3ForceTopologyProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -246,7 +253,7 @@ export function D3ForceTopology({
   const [dimensions, setDimensions] = useState({ width: 600, height: 500 });
   const [groupingMode, setGroupingMode] = useState<GroupingMode>('none');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [showTraffic, setShowTraffic] = useState(true);
+  const [showTraffic, setShowTraffic] = useState(showTrafficProp ?? true);
   const [showMiniMap, setShowMiniMap] = useState(true);
   const [hasAutoFitted, setHasAutoFitted] = useState(false);
   const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);

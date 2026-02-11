@@ -25,15 +25,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
+import { parseRawLogs, parseLogLine, detectLevel, levelColors, type LogEntry } from '@/lib/logParser';
 import { useK8sPodLogs } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 
-export interface LogEntry {
-  timestamp: string;
-  level: 'info' | 'warn' | 'error' | 'debug';
-  message: string;
-  raw?: string;
-}
+export type { LogEntry };
 
 export interface LogViewerProps {
   logs?: LogEntry[];
@@ -44,77 +40,6 @@ export interface LogViewerProps {
   onContainerChange?: (container: string) => void;
   className?: string;
   tailLines?: number;
-}
-
-const levelColors: Record<string, string> = {
-  info: 'text-[hsl(var(--info))]',
-  warn: 'text-[hsl(var(--warning))]',
-  error: 'text-[hsl(var(--error))]',
-  debug: 'text-muted-foreground',
-};
-
-// Parse a raw log line into structured LogEntry
-function parseLogLine(line: string): LogEntry {
-  const trimmed = line.trim();
-  if (!trimmed) {
-    return { timestamp: '', level: 'info', message: '', raw: line };
-  }
-
-  // Try to extract timestamp (ISO format at start)
-  const isoMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\s]*)\s+(.*)$/);
-  if (isoMatch) {
-    const [, timestamp, rest] = isoMatch;
-    return {
-      timestamp,
-      level: detectLevel(rest),
-      message: rest,
-      raw: line,
-    };
-  }
-
-  // Try to extract timestamp with brackets
-  const bracketMatch = trimmed.match(/^\[([^\]]+)\]\s*(.*)$/);
-  if (bracketMatch) {
-    const [, timestamp, rest] = bracketMatch;
-    return {
-      timestamp,
-      level: detectLevel(rest),
-      message: rest,
-      raw: line,
-    };
-  }
-
-  // No timestamp found
-  return {
-    timestamp: new Date().toISOString(),
-    level: detectLevel(trimmed),
-    message: trimmed,
-    raw: line,
-  };
-}
-
-// Detect log level from message content
-function detectLevel(message: string): 'info' | 'warn' | 'error' | 'debug' {
-  const lower = message.toLowerCase();
-  if (lower.includes('error') || lower.includes('fatal') || lower.includes('panic') || lower.includes('exception')) {
-    return 'error';
-  }
-  if (lower.includes('warn') || lower.includes('warning')) {
-    return 'warn';
-  }
-  if (lower.includes('debug') || lower.includes('trace')) {
-    return 'debug';
-  }
-  return 'info';
-}
-
-// Parse raw log text into entries
-function parseRawLogs(rawLogs: string): LogEntry[] {
-  if (!rawLogs) return [];
-  return rawLogs
-    .split('\n')
-    .filter(line => line.trim())
-    .map(parseLogLine);
 }
 
 const mockLogs: LogEntry[] = [
@@ -138,8 +63,7 @@ export function LogViewer({
   className,
   tailLines = 500,
 }: LogViewerProps) {
-  const { config } = useKubernetesConfigStore();
-  const isConnected = config.isConnected;
+  const { isConnected } = useConnectionStatus();
   
   const [isStreaming, setIsStreaming] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');

@@ -66,6 +66,7 @@ const resourceStyles: Record<string, { shape: string; color: string; borderColor
   HorizontalPodAutoscaler: { shape: 'round-rectangle', color: '#0ea5e9', borderColor: '#0284c7', width: 80, height: 35 },
   Endpoints: { shape: 'hexagon', color: '#64748b', borderColor: '#475569', width: 45, height: 45 },
   EndpointSlice: { shape: 'hexagon', color: '#64748b', borderColor: '#475569', width: 45, height: 45 },
+  Cluster: { shape: 'ellipse', color: '#3b82f6', borderColor: '#2563eb', width: 80, height: 80 },
 };
 
 const getResourceStyle = (kind: string) => {
@@ -298,27 +299,27 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
     graph.nodes.forEach((node) => {
       // Filter by resource type
       if (!selectedResources.has(node.kind)) return;
-      
+
       // Filter by health
       const healthMatch = selectedHealth.has(node.computed.health as HealthStatus);
       if (!healthMatch && selectedHealth.size > 0) return;
-      
+
       // Filter by search
-      if (searchQuery && !node.name.toLowerCase().includes(searchLower) && 
-          !node.kind.toLowerCase().includes(searchLower) &&
-          !node.namespace?.toLowerCase().includes(searchLower)) {
+      if (searchQuery && !node.name.toLowerCase().includes(searchLower) &&
+        !node.kind.toLowerCase().includes(searchLower) &&
+        !node.namespace?.toLowerCase().includes(searchLower)) {
         return;
       }
 
       const style = getResourceStyle(node.kind);
       const isCompound = node.kind === 'Namespace' || node.kind === 'Node';
-      
+
       visibleNodeIds.add(node.id);
-      
+
       // Create display label with kind prefix
       const kindPrefix = node.kind === 'Pod' ? '' : `${node.kind.toUpperCase()} • `;
-      const displayLabel = node.kind === 'Namespace' ? `${node.name}\nNamespace` : 
-                           node.kind === 'Node' ? `NODE • ${node.name}` : node.name;
+      const displayLabel = node.kind === 'Namespace' ? `${node.name}\nNamespace` :
+        node.kind === 'Node' ? `NODE • ${node.name}` : node.name;
 
       elements.push({
         data: {
@@ -345,7 +346,7 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
     graph.edges.forEach((edge) => {
       // Only add edges between visible nodes
       if (!visibleNodeIds.has(edge.source) || !visibleNodeIds.has(edge.target)) return;
-      
+
       // Filter by relationship type
       if (!selectedRelationships.has(edge.relationshipType)) return;
 
@@ -573,7 +574,7 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
         aria-label="Kubernetes topology graph"
         tabIndex={0}
       />
-      
+
       {/* Pause indicator */}
       {isPaused && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-500/10 text-amber-600 border border-amber-500/20 px-4 py-2 rounded-full text-sm font-medium flex items-center gap-2">

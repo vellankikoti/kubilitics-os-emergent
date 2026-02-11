@@ -163,7 +163,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search pods, deployments, services, nodes..."
+          placeholder="Search… (Cmd+K or /)"
           className="flex h-12 w-full bg-transparent py-3 px-2 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
         />
         {isLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}

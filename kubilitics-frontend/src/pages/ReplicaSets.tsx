@@ -1,20 +1,25 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { 
-  Search, Filter, RefreshCw, MoreHorizontal, CheckCircle2, XCircle, Clock, Download, Loader2, WifiOff,
-  ArrowUpDown, ChevronDown, CheckSquare, Trash2, Scale, FileText, Layers, Plus,
+  Search, Filter, RefreshCw, MoreHorizontal, CheckCircle2, XCircle, Clock, Loader2, WifiOff,
+  ChevronDown, ChevronRight, CheckSquare, Trash2, Scale, Layers, Plus, FileText, List,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { ResizableTableProvider, ResizableTableHead, ResizableTableCell, type ResizableColumnConfig } from '@/components/ui/resizable-table';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { Link, useNavigate } from 'react-router-dom';
-import { useK8sResourceList, useDeleteK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
-import { DeleteConfirmDialog, ScaleDialog } from '@/components/resources';
+import { useK8sResourceList, useDeleteK8sResource, usePatchK8sResource, useCreateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { DeleteConfirmDialog, ScaleDialog, UsageBar, parseCpu, parseMemory } from '@/components/resources';
+import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, TableColumnHeaderWithFilterAndSort } from '@/components/list';
+import type { StatusPillVariant } from '@/components/list';
+import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useWorkloadMetricsMap } from '@/hooks/useWorkloadMetricsMap';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
 import { toast } from 'sonner';
 import { Card, CardContent } from '@/components/ui/card';
@@ -34,21 +39,33 @@ interface ReplicaSet {
   ready: number;
   owner: string;
   age: string;
+  cpu: string;
+  memory: string;
 }
 
-const mockReplicaSets: ReplicaSet[] = [
-  { name: 'nginx-deployment-7fb96c846b', namespace: 'production', status: 'Healthy', desired: 3, current: 3, ready: 3, owner: 'nginx-deployment', age: '30d' },
-  { name: 'api-gateway-5f8f9c7d6', namespace: 'production', status: 'Healthy', desired: 2, current: 2, ready: 2, owner: 'api-gateway', age: '14d' },
-  { name: 'backend-service-6d4b75cb6d', namespace: 'production', status: 'Healthy', desired: 5, current: 5, ready: 5, owner: 'backend-service', age: '7d' },
-  { name: 'worker-deployment-8f7g6h5', namespace: 'staging', status: 'Progressing', desired: 3, current: 2, ready: 1, owner: 'worker-deployment', age: '1d' },
-  { name: 'test-service-abc123', namespace: 'staging', status: 'Degraded', desired: 2, current: 0, ready: 0, owner: 'test-service', age: '2h' },
-  { name: 'coredns-6d8c4cb4d', namespace: 'kube-system', status: 'Healthy', desired: 2, current: 2, ready: 2, owner: 'coredns', age: '90d' },
+const REPLICASETS_TABLE_COLUMNS: ResizableColumnConfig[] = [
+  { id: 'name', defaultWidth: 200, minWidth: 120 },
+  { id: 'namespace', defaultWidth: 130, minWidth: 100 },
+  { id: 'status', defaultWidth: 110, minWidth: 88 },
+  { id: 'desired', defaultWidth: 88, minWidth: 78 },
+  { id: 'current', defaultWidth: 88, minWidth: 78 },
+  { id: 'ready', defaultWidth: 88, minWidth: 72 },
+  { id: 'owner', defaultWidth: 140, minWidth: 80 },
+  { id: 'cpu', defaultWidth: 110, minWidth: 80 },
+  { id: 'memory', defaultWidth: 120, minWidth: 85 },
+  { id: 'age', defaultWidth: 90, minWidth: 60 },
 ];
 
 const statusConfig = {
   Healthy: { icon: CheckCircle2, color: 'text-[hsl(142,76%,36%)]', bg: 'bg-[hsl(142,76%,36%)]/10' },
   Progressing: { icon: Clock, color: 'text-[hsl(45,93%,47%)]', bg: 'bg-[hsl(45,93%,47%)]/10' },
   Degraded: { icon: XCircle, color: 'text-[hsl(0,72%,51%)]', bg: 'bg-[hsl(0,72%,51%)]/10' },
+};
+
+const replicaSetStatusToVariant: Record<ReplicaSet['status'], StatusPillVariant> = {
+  Healthy: 'success',
+  Progressing: 'warning',
+  Degraded: 'error',
 };
 
 function transformResource(resource: ReplicaSetResource): ReplicaSet {
@@ -59,11 +76,10 @@ function transformResource(resource: ReplicaSetResource): ReplicaSet {
   if (ready === 0 && desired > 0) status = 'Degraded';
   else if (ready < desired) status = 'Progressing';
   const ownerRefs = (resource.metadata as any).ownerReferences;
-  return { name: resource.metadata.name, namespace: resource.metadata.namespace || 'default', status, desired, current, ready, owner: ownerRefs?.[0]?.name || '-', age: calculateAge(resource.metadata.creationTimestamp) };
+  return { name: resource.metadata.name, namespace: resource.metadata.namespace || 'default', status, desired, current, ready, owner: ownerRefs?.[0]?.name || '-', age: calculateAge(resource.metadata.creationTimestamp), cpu: '-', memory: '-' };
 }
 
-type SortKey = 'name' | 'namespace' | 'status' | 'age';
-type ViewMode = 'all' | 'healthy' | 'progressing' | 'degraded';
+type ListView = 'flat' | 'byNamespace';
 
 export default function ReplicaSets() {
   const navigate = useNavigate();
@@ -71,50 +87,168 @@ export default function ReplicaSets() {
   const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: ReplicaSet | null; bulk?: boolean }>({ open: false, item: null });
   const [scaleDialog, setScaleDialog] = useState<{ open: boolean; item: ReplicaSet | null }>({ open: false, item: null });
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
-  const [viewMode, setViewMode] = useState<ViewMode>('all');
+  const [listView, setListView] = useState<ListView>('flat');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showCreateWizard, setShowCreateWizard] = useState(false);
+  const [pageSize, setPageSize] = useState(10);
+  const [pageIndex, setPageIndex] = useState(0);
 
-  const { config } = useKubernetesConfigStore();
-  const { data, isLoading, refetch } = useK8sResourceList<ReplicaSetResource>('replicasets');
+  const { isConnected } = useConnectionStatus();
+  const { data, isLoading, refetch } = useK8sResourceList<ReplicaSetResource>('replicasets', undefined, { limit: 5000 });
   const deleteResource = useDeleteK8sResource('replicasets');
+  const patchReplicaSet = usePatchK8sResource('replicasets');
+  const createResource = useCreateK8sResource('replicasets');
 
-  const items: ReplicaSet[] = config.isConnected && data?.items ? data.items.map(transformResource) : mockReplicaSets;
+  const items: ReplicaSet[] = isConnected && data ? (data.items ?? []).map(transformResource) : [];
 
-  const stats = useMemo(() => ({ total: items.length, healthy: items.filter(i => i.status === 'Healthy').length, progressing: items.filter(i => i.status === 'Progressing').length, degraded: items.filter(i => i.status === 'Degraded').length }), [items]);
+  const stats = useMemo(() => ({
+    total: items.length,
+    active: items.filter(i => i.desired > 0).length,
+    scaledToZero: items.filter(i => i.desired === 0).length,
+    mismatched: items.filter(i => i.ready !== i.desired).length,
+  }), [items]);
   const namespaces = useMemo(() => ['all', ...Array.from(new Set(items.map(i => i.namespace)))], [items]);
 
-  const filteredItems = useMemo(() => {
-    let result = items.filter((item) => {
+  const itemsAfterSearchAndNs = useMemo(() => {
+    return items.filter((item) => {
       const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase()) || item.namespace.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesNamespace = selectedNamespace === 'all' || item.namespace === selectedNamespace;
-      let matchesView = true;
-      if (viewMode === 'healthy') matchesView = item.status === 'Healthy';
-      else if (viewMode === 'progressing') matchesView = item.status === 'Progressing';
-      else if (viewMode === 'degraded') matchesView = item.status === 'Degraded';
-      return matchesSearch && matchesNamespace && matchesView;
+      return matchesSearch && matchesNamespace;
     });
-    result.sort((a, b) => { let cmp = 0; if (sortKey === 'name') cmp = a.name.localeCompare(b.name); else if (sortKey === 'namespace') cmp = a.namespace.localeCompare(b.namespace); else if (sortKey === 'status') cmp = a.status.localeCompare(b.status); else if (sortKey === 'age') cmp = a.age.localeCompare(b.age); return sortOrder === 'asc' ? cmp : -cmp; });
-    return result;
-  }, [items, searchQuery, selectedNamespace, viewMode, sortKey, sortOrder]);
+  }, [items, searchQuery, selectedNamespace]);
 
-  const handleSort = (key: SortKey) => { if (sortKey === key) setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc'); else { setSortKey(key); setSortOrder('asc'); } };
+  const replicaSetsTableConfig: ColumnConfig<ReplicaSet>[] = useMemo(() => [
+    { columnId: 'name', getValue: (i) => i.name, sortable: true, filterable: false },
+    { columnId: 'namespace', getValue: (i) => i.namespace, sortable: true, filterable: true },
+    { columnId: 'status', getValue: (i) => i.status, sortable: true, filterable: true },
+    { columnId: 'scale', getValue: (i) => (i.desired > 0 ? 'Active' : 'Scaled to zero'), sortable: true, filterable: true },
+    { columnId: 'desired', getValue: (i) => i.desired, sortable: true, filterable: false },
+    { columnId: 'current', getValue: (i) => i.current, sortable: true, filterable: false },
+    { columnId: 'ready', getValue: (i) => i.ready, sortable: true, filterable: false },
+    { columnId: 'owner', getValue: (i) => i.owner, sortable: true, filterable: false },
+    { columnId: 'cpu', getValue: (i) => i.cpu, sortable: true, filterable: false },
+    { columnId: 'memory', getValue: (i) => i.memory, sortable: true, filterable: false },
+    { columnId: 'age', getValue: (i) => i.age, sortable: true, filterable: false },
+  ], []);
+
+  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: replicaSetsTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+
+  const totalFiltered = filteredItems.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+  const safePageIndex = Math.min(pageIndex, totalPages - 1);
+  const start = safePageIndex * pageSize;
+  const itemsOnPage = filteredItems.slice(start, start + pageSize);
+
+  const metricsEntries = useMemo(
+    () => itemsOnPage.map((i) => ({ namespace: i.namespace, name: i.name })),
+    [itemsOnPage]
+  );
+  const { metricsMap } = useWorkloadMetricsMap('replicaset', metricsEntries);
+
+  const groupedOnPage = useMemo(() => {
+    if (listView !== 'byNamespace' || itemsOnPage.length === 0) return [];
+    const map = new Map<string, ReplicaSet[]>();
+    for (const item of itemsOnPage) {
+      const list = map.get(item.namespace) ?? [];
+      list.push(item);
+      map.set(item.namespace, list);
+    }
+    return Array.from(map.entries())
+      .map(([label, list]) => ({ groupKey: `ns:${label}`, label, list }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [listView, itemsOnPage]);
+
+  useEffect(() => {
+    if (safePageIndex !== pageIndex) setPageIndex(safePageIndex);
+  }, [safePageIndex, pageIndex]);
+
+  const handlePageSizeChange = (size: number) => {
+    setPageSize(size);
+    setPageIndex(0);
+  };
+
+  const pagination = {
+    rangeLabel: totalFiltered > 0
+      ? `Showing ${start + 1}–${Math.min(start + pageSize, totalFiltered)} of ${totalFiltered}`
+      : 'No replicasets',
+    hasPrev: safePageIndex > 0,
+    hasNext: start + pageSize < totalFiltered,
+    onPrev: () => setPageIndex((i) => Math.max(0, i - 1)),
+    onNext: () => setPageIndex((i) => Math.min(totalPages - 1, i + 1)),
+    currentPage: safePageIndex + 1,
+    totalPages: Math.max(1, totalPages),
+    onPageChange: (p: number) => setPageIndex(Math.max(0, Math.min(p - 1, totalPages - 1))),
+  };
+
+  const toggleGroup = (groupKey: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  };
 
   const handleDelete = async () => {
-    if (deleteDialog.bulk && selectedItems.size > 0) { toast.success(`Deleted ${selectedItems.size} replicasets (demo mode)`); setSelectedItems(new Set()); }
-    else if (deleteDialog.item) { if (config.isConnected) await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace }); else toast.success(`ReplicaSet ${deleteDialog.item.name} deleted (demo mode)`); }
+    if (!isConnected) {
+      toast.error('Connect cluster to delete replicasets');
+      setDeleteDialog({ open: false, item: null });
+      return;
+    }
+    if (deleteDialog.bulk && selectedItems.size > 0) {
+      for (const key of selectedItems) {
+        const [ns, n] = key.split('/');
+        if (n && ns) await deleteResource.mutateAsync({ name: n, namespace: ns });
+      }
+      toast.success(`Deleted ${selectedItems.size} replicaset(s)`);
+      setSelectedItems(new Set());
+    } else if (deleteDialog.item) {
+      await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
+      toast.success(`ReplicaSet ${deleteDialog.item.name} deleted`);
+    }
     setDeleteDialog({ open: false, item: null });
   };
 
-  const handleExport = () => { const toExport = selectedItems.size > 0 ? filteredItems.filter(i => selectedItems.has(`${i.namespace}/${i.name}`)) : filteredItems; const blob = new Blob([JSON.stringify(toExport, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'replicasets-export.json'; a.click(); URL.revokeObjectURL(url); toast.success(`Exported ${toExport.length} replicasets`); };
+  const replicaSetExportConfig = {
+    filenamePrefix: 'replicasets',
+    resourceLabel: 'replicasets',
+    getExportData: (r: ReplicaSet) => ({ name: r.name, namespace: r.namespace, status: r.status, desired: r.desired, current: r.current, ready: r.ready, owner: r.owner, age: r.age, cpu: r.cpu, memory: r.memory }),
+    csvColumns: [
+      { label: 'Name', getValue: (r: ReplicaSet) => r.name },
+      { label: 'Namespace', getValue: (r: ReplicaSet) => r.namespace },
+      { label: 'Status', getValue: (r: ReplicaSet) => r.status },
+      { label: 'Desired', getValue: (r: ReplicaSet) => r.desired },
+      { label: 'Current', getValue: (r: ReplicaSet) => r.current },
+      { label: 'Ready', getValue: (r: ReplicaSet) => r.ready },
+      { label: 'Owner', getValue: (r: ReplicaSet) => r.owner },
+      { label: 'CPU', getValue: (r: ReplicaSet) => r.cpu },
+      { label: 'Memory', getValue: (r: ReplicaSet) => r.memory },
+      { label: 'Age', getValue: (r: ReplicaSet) => r.age },
+    ],
+    toK8sYaml: (r: ReplicaSet) => `---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: ${r.name}
+  namespace: ${r.namespace}
+spec:
+  replicas: ${r.desired}
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels: {}
+    spec:
+      containers: []
+`,
+  };
 
   const toggleSelection = (item: ReplicaSet) => { const key = `${item.namespace}/${item.name}`; const newSel = new Set(selectedItems); if (newSel.has(key)) newSel.delete(key); else newSel.add(key); setSelectedItems(newSel); };
-  const toggleAll = () => { if (selectedItems.size === filteredItems.length) setSelectedItems(new Set()); else setSelectedItems(new Set(filteredItems.map(i => `${i.namespace}/${i.name}`))); };
+  const toggleAll = () => { if (selectedItems.size === itemsOnPage.length) setSelectedItems(new Set()); else setSelectedItems(new Set(itemsOnPage.map(i => `${i.namespace}/${i.name}`))); };
 
-  const isAllSelected = filteredItems.length > 0 && selectedItems.size === filteredItems.length;
-  const isSomeSelected = selectedItems.size > 0 && selectedItems.size < filteredItems.length;
+  const isAllSelected = itemsOnPage.length > 0 && selectedItems.size === itemsOnPage.length;
+  const isSomeSelected = selectedItems.size > 0 && selectedItems.size < itemsOnPage.length;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
@@ -123,11 +257,18 @@ export default function ReplicaSets() {
           <div className="p-2.5 rounded-xl bg-primary/10"><ReplicaSetIcon className="h-6 w-6 text-primary" /></div>
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">ReplicaSets</h1>
-            <p className="text-sm text-muted-foreground">{filteredItems.length} replicasets across {namespaces.length - 1} namespaces{!config.isConnected && <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]"><WifiOff className="h-3 w-3" /> Demo mode</span>}</p>
+            <p className="text-sm text-muted-foreground">{totalFiltered} replicasets across {namespaces.length - 1} namespaces{!isConnected && <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]"><WifiOff className="h-3 w-3" /> Connect cluster</span>}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="gap-2" onClick={handleExport}><Download className="h-4 w-4" />{selectedItems.size > 0 ? `Export (${selectedItems.size})` : 'Export'}</Button>
+          <ResourceExportDropdown
+            items={filteredItems}
+            selectedKeys={selectedItems}
+            getKey={(i) => `${i.namespace}/${i.name}`}
+            config={replicaSetExportConfig}
+            selectionLabel={selectedItems.size > 0 ? 'Selected replicasets' : 'All visible replicasets'}
+            onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+          />
           <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>{isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}</Button>
           <Button className="gap-2" onClick={() => setShowCreateWizard(true)}><Plus className="h-4 w-4" />Create ReplicaSet</Button>
         </div>
@@ -141,44 +282,136 @@ export default function ReplicaSets() {
       )}
 
       <div className="grid grid-cols-4 gap-4">
-        <Card className={cn('cursor-pointer transition-all', viewMode === 'all' && 'ring-2 ring-primary')} onClick={() => setViewMode('all')}><CardContent className="pt-4"><div className="flex items-center justify-between"><div><p className="text-sm text-muted-foreground">Total</p><p className="text-2xl font-bold">{stats.total}</p></div><ReplicaSetIcon className="h-8 w-8 text-primary opacity-50" /></div></CardContent></Card>
-        <Card className={cn('cursor-pointer transition-all', viewMode === 'healthy' && 'ring-2 ring-[hsl(142,76%,36%)]')} onClick={() => setViewMode('healthy')}><CardContent className="pt-4"><div className="flex items-center justify-between"><div><p className="text-sm text-muted-foreground">Healthy</p><p className="text-2xl font-bold text-[hsl(142,76%,36%)]">{stats.healthy}</p></div><CheckCircle2 className="h-8 w-8 text-[hsl(142,76%,36%)] opacity-50" /></div></CardContent></Card>
-        <Card className={cn('cursor-pointer transition-all', viewMode === 'progressing' && 'ring-2 ring-[hsl(45,93%,47%)]')} onClick={() => setViewMode('progressing')}><CardContent className="pt-4"><div className="flex items-center justify-between"><div><p className="text-sm text-muted-foreground">Progressing</p><p className="text-2xl font-bold text-[hsl(45,93%,47%)]">{stats.progressing}</p></div><Clock className="h-8 w-8 text-[hsl(45,93%,47%)] opacity-50" /></div></CardContent></Card>
-        <Card className={cn('cursor-pointer transition-all', viewMode === 'degraded' && 'ring-2 ring-[hsl(0,72%,51%)]')} onClick={() => setViewMode('degraded')}><CardContent className="pt-4"><div className="flex items-center justify-between"><div><p className="text-sm text-muted-foreground">Degraded</p><p className="text-2xl font-bold text-[hsl(0,72%,51%)]">{stats.degraded}</p></div><XCircle className="h-8 w-8 text-[hsl(0,72%,51%)] opacity-50" /></div></CardContent></Card>
+        <ListPageStatCard label="Total ReplicaSets" value={stats.total} icon={ReplicaSetIcon} iconColor="text-primary" selected={!hasActiveFilters} onClick={clearAllFilters} className={cn(!hasActiveFilters && 'ring-2 ring-primary')} />
+        <ListPageStatCard label="Active" value={stats.active} icon={CheckCircle2} iconColor="text-[hsl(142,76%,36%)]" valueClassName="text-[hsl(142,76%,36%)]" selected={columnFilters.scale?.size === 1 && columnFilters.scale.has('Active')} onClick={() => setColumnFilter('scale', new Set(['Active']))} className={cn(columnFilters.scale?.size === 1 && columnFilters.scale.has('Active') && 'ring-2 ring-[hsl(142,76%,36%)]')} />
+        <ListPageStatCard label="Scaled to Zero" value={stats.scaledToZero} icon={Clock} iconColor="text-[hsl(45,93%,47%)]" valueClassName="text-[hsl(45,93%,47%)]" selected={columnFilters.scale?.size === 1 && columnFilters.scale.has('Scaled to zero')} onClick={() => setColumnFilter('scale', new Set(['Scaled to zero']))} className={cn(columnFilters.scale?.size === 1 && columnFilters.scale.has('Scaled to zero') && 'ring-2 ring-[hsl(45,93%,47%)]')} />
+        <ListPageStatCard label="Mismatched" value={stats.mismatched} icon={XCircle} iconColor="text-[hsl(0,72%,51%)]" valueClassName="text-[hsl(0,72%,51%)]" selected={columnFilters.status?.size === 2 && columnFilters.status?.has('Progressing') && columnFilters.status?.has('Degraded')} onClick={() => setColumnFilter('status', new Set(['Progressing', 'Degraded']))} className={cn(columnFilters.status?.size === 2 && columnFilters.status?.has('Progressing') && columnFilters.status?.has('Degraded') && 'ring-2 ring-[hsl(0,72%,51%)]')} />
       </div>
 
-      <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-md"><Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" /><Input placeholder="Search replicasets..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-9" /></div>
-        <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" className="gap-2"><Filter className="h-4 w-4" />{selectedNamespace === 'all' ? 'All Namespaces' : selectedNamespace}<ChevronDown className="h-4 w-4 opacity-50" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-48">{namespaces.map(ns => <DropdownMenuItem key={ns} onClick={() => setSelectedNamespace(ns)} className={cn(selectedNamespace === ns && 'bg-accent')}>{ns === 'all' ? 'All Namespaces' : ns}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>
-      </div>
+      <ResourceCommandBar
+        scope={
+          <div className="w-full min-w-0">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" className="w-full min-w-0 h-10 gap-2 justify-between truncate rounded-lg border border-border bg-background font-medium shadow-sm hover:bg-muted/50 hover:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/20">
+                  <Filter className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{selectedNamespace === 'all' ? 'All Namespaces' : selectedNamespace}</span>
+                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                {namespaces.map((ns) => (
+                  <DropdownMenuItem key={ns} onClick={() => setSelectedNamespace(ns)} className={cn(selectedNamespace === ns && 'bg-accent')}>
+                    {ns === 'all' ? 'All Namespaces' : ns}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        }
+        search={
+          <div className="relative w-full min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+            <Input
+              placeholder="Search replicasets..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full h-10 pl-9 rounded-lg border border-border bg-background text-sm font-medium shadow-sm placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary/50 transition-all"
+              aria-label="Search replicasets"
+            />
+          </div>
+        }
+        structure={
+          <ListViewSegmentedControl
+            value={listView}
+            onChange={(v) => setListView(v as ListView)}
+            options={[
+              { id: 'flat', label: 'Flat', icon: List },
+              { id: 'byNamespace', label: 'By Namespace', icon: Layers },
+            ]}
+            label=""
+            ariaLabel="List structure"
+          />
+        }
+        footer={<span className="text-xs text-muted-foreground">{listView === 'flat' ? 'flat list' : 'grouped by namespace'}</span>}
+        className="mb-2"
+      />
 
-      <div className="border border-border rounded-xl overflow-hidden bg-card">
-        <Table>
-          <TableHeader><TableRow className="bg-muted/50 hover:bg-muted/50">
-            <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
-            <TableHead><Button variant="ghost" className="gap-1 -ml-2 h-auto p-1" onClick={() => handleSort('name')}>Name <ArrowUpDown className="h-3.5 w-3.5" /></Button></TableHead>
-            <TableHead><Button variant="ghost" className="gap-1 -ml-2 h-auto p-1" onClick={() => handleSort('namespace')}>Namespace <ArrowUpDown className="h-3.5 w-3.5" /></Button></TableHead>
-            <TableHead><Button variant="ghost" className="gap-1 -ml-2 h-auto p-1" onClick={() => handleSort('status')}>Status <ArrowUpDown className="h-3.5 w-3.5" /></Button></TableHead>
-            <TableHead>Desired</TableHead><TableHead>Current</TableHead><TableHead>Ready</TableHead><TableHead>Owner</TableHead>
-            <TableHead><Button variant="ghost" className="gap-1 -ml-2 h-auto p-1" onClick={() => handleSort('age')}>Age <ArrowUpDown className="h-3.5 w-3.5" /></Button></TableHead>
-            <TableHead className="w-12"></TableHead>
-          </TableRow></TableHeader>
+      <div className="border border-border rounded-xl overflow-x-auto bg-card">
+        <ResizableTableProvider tableId="replicasets" columnConfig={REPLICASETS_TABLE_COLUMNS}>
+        <Table className="table-fixed" style={{ minWidth: 1600 }}>
+          <TableHeader>
+            <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+              <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
+              <ResizableTableHead columnId="name">
+                <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+              </ResizableTableHead>
+              <ResizableTableHead columnId="namespace">
+                <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} />
+              </ResizableTableHead>
+              <ResizableTableHead columnId="status">
+                <TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} />
+              </ResizableTableHead>
+              <ResizableTableHead columnId="desired">
+                <TableColumnHeaderWithFilterAndSort columnId="desired" label="Desired" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+              </ResizableTableHead>
+              <ResizableTableHead columnId="current">
+                <TableColumnHeaderWithFilterAndSort columnId="current" label="Current" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+              </ResizableTableHead>
+              <ResizableTableHead columnId="ready">
+                <TableColumnHeaderWithFilterAndSort columnId="ready" label="Ready" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+              </ResizableTableHead>
+              <ResizableTableHead columnId="owner">
+                <TableColumnHeaderWithFilterAndSort columnId="owner" label="Owner" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+              </ResizableTableHead>
+              <ResizableTableHead columnId="cpu" title="CPU">
+                <TableColumnHeaderWithFilterAndSort columnId="cpu" label="CPU" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+              </ResizableTableHead>
+              <ResizableTableHead columnId="memory" title="Memory">
+                <TableColumnHeaderWithFilterAndSort columnId="memory" label="Memory" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+              </ResizableTableHead>
+              <ResizableTableHead columnId="age">
+                <TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+              </ResizableTableHead>
+              <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
+            </TableRow>
+          </TableHeader>
           <TableBody>
-            {isLoading && config.isConnected ? <TableRow><TableCell colSpan={10} className="h-32 text-center"><div className="flex flex-col items-center gap-2"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><p className="text-sm text-muted-foreground">Loading...</p></div></TableCell></TableRow>
-            : filteredItems.length === 0 ? <TableRow><TableCell colSpan={10} className="h-32 text-center text-muted-foreground"><div className="flex flex-col items-center gap-2"><Layers className="h-8 w-8 opacity-50" /><p>No replicasets found</p></div></TableCell></TableRow>
-            : filteredItems.map((item, idx) => {
-              const StatusIcon = statusConfig[item.status]?.icon || Clock; const style = statusConfig[item.status]; const key = `${item.namespace}/${item.name}`; const isSelected = selectedItems.has(key);
+            {isLoading && isConnected ? <TableRow><TableCell colSpan={12} className="h-32 text-center"><div className="flex flex-col items-center gap-2"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><p className="text-sm text-muted-foreground">Loading...</p></div></TableCell></TableRow>
+            : itemsOnPage.length === 0 ? <TableRow><TableCell colSpan={12} className="h-32 text-center text-muted-foreground"><div className="flex flex-col items-center gap-2"><Layers className="h-8 w-8 opacity-50" /><p>No replicasets found</p>{(searchQuery || hasActiveFilters) && <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>}</div></TableCell></TableRow>
+            : listView === 'flat' ? itemsOnPage.map((item, idx) => {
+              const StatusIcon = statusConfig[item.status]?.icon || Clock;
+              const key = `${item.namespace}/${item.name}`;
+              const isSelected = selectedItems.has(key);
+              const cpuVal = metricsMap[key]?.cpu ?? '-';
+              const memVal = metricsMap[key]?.memory ?? '-';
+              const cpuNum = parseCpu(cpuVal);
+              const memNum = parseMemory(memVal);
+              const cpuDataPoints = cpuNum != null ? Array(12).fill(cpuNum) : undefined;
+              const memDataPoints = memNum != null ? Array(12).fill(memNum) : undefined;
               return (
-                <motion.tr key={key} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: idx * 0.02 }} className={cn('group cursor-pointer border-b border-border hover:bg-muted/50', isSelected && 'bg-primary/5')}>
+                <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
                   <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
-                  <TableCell><Link to={`/replicasets/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2"><ReplicaSetIcon className="h-4 w-4 text-muted-foreground" /><span className="truncate max-w-[200px]">{item.name}</span></Link></TableCell>
-                  <TableCell><Badge variant="outline" className="font-normal">{item.namespace}</Badge></TableCell>
-                  <TableCell><div className={cn('inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium', style.bg, style.color)}><StatusIcon className="h-3.5 w-3.5" />{item.status}</div></TableCell>
-                  <TableCell className="font-mono text-sm">{item.desired}</TableCell><TableCell className="font-mono text-sm">{item.current}</TableCell><TableCell className="font-mono text-sm">{item.ready}</TableCell>
-                  <TableCell><Badge variant="secondary" className="font-mono text-xs">{item.owner}</Badge></TableCell>
-                  <TableCell className="text-muted-foreground">{item.age}</TableCell>
+                  <ResizableTableCell columnId="name"><Link to={`/replicasets/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><ReplicaSetIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
+                  <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
+                  <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={replicaSetStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>
+                  <ResizableTableCell columnId="desired" className="font-mono text-sm">{item.desired}</ResizableTableCell>
+                  <ResizableTableCell columnId="current" className="font-mono text-sm">{item.current}</ResizableTableCell>
+                  <ResizableTableCell columnId="ready" className="font-mono text-sm">{item.ready}</ResizableTableCell>
+                  <ResizableTableCell columnId="owner"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.owner}</Badge></ResizableTableCell>
+                  <ResizableTableCell columnId="cpu">
+                    <div className="min-w-0 overflow-hidden">
+                      <UsageBar variant="sparkline" value={cpuVal} kind="cpu" dataPoints={cpuDataPoints} displayFormat="compact" width={56} />
+                    </div>
+                  </ResizableTableCell>
+                  <ResizableTableCell columnId="memory">
+                    <div className="min-w-0 overflow-hidden">
+                      <UsageBar variant="sparkline" value={memVal} kind="memory" dataPoints={memDataPoints} displayFormat="compact" width={56} />
+                    </div>
+                  </ResizableTableCell>
+                  <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
                   <TableCell>
-                    <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                    <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-48">
                         <DropdownMenuItem onClick={() => setScaleDialog({ open: true, item })} className="gap-2"><Scale className="h-4 w-4" />Scale</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => navigate(`/replicasets/${item.namespace}/${item.name}?tab=yaml`)} className="gap-2"><FileText className="h-4 w-4" />View YAML</DropdownMenuItem>
@@ -188,19 +421,145 @@ export default function ReplicaSets() {
                   </TableCell>
                 </motion.tr>
               );
+            }) : groupedOnPage.flatMap((group) => {
+              const isCollapsed = collapsedGroups.has(group.groupKey);
+              const row = (item: ReplicaSet, idx: number) => {
+                const StatusIcon = statusConfig[item.status]?.icon || Clock;
+                const key = `${item.namespace}/${item.name}`;
+                const isSelected = selectedItems.has(key);
+                const cpuVal = metricsMap[key]?.cpu ?? '-';
+                const memVal = metricsMap[key]?.memory ?? '-';
+                const cpuNum = parseCpu(cpuVal);
+                const memNum = parseMemory(memVal);
+                const cpuDataPoints = cpuNum != null ? Array(12).fill(cpuNum) : undefined;
+                const memDataPoints = memNum != null ? Array(12).fill(memNum) : undefined;
+                return (
+                  <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
+                    <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
+                    <ResizableTableCell columnId="name"><Link to={`/replicasets/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><ReplicaSetIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
+                    <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
+                    <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={replicaSetStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>
+                    <ResizableTableCell columnId="desired" className="font-mono text-sm">{item.desired}</ResizableTableCell>
+                    <ResizableTableCell columnId="current" className="font-mono text-sm">{item.current}</ResizableTableCell>
+                    <ResizableTableCell columnId="ready" className="font-mono text-sm">{item.ready}</ResizableTableCell>
+                    <ResizableTableCell columnId="owner"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.owner}</Badge></ResizableTableCell>
+                    <ResizableTableCell columnId="cpu">
+                      <div className="min-w-0 overflow-hidden">
+                        <UsageBar variant="sparkline" value={cpuVal} kind="cpu" dataPoints={cpuDataPoints} displayFormat="compact" width={56} />
+                      </div>
+                    </ResizableTableCell>
+                    <ResizableTableCell columnId="memory">
+                      <div className="min-w-0 overflow-hidden">
+                        <UsageBar variant="sparkline" value={memVal} kind="memory" dataPoints={memDataPoints} displayFormat="compact" width={56} />
+                      </div>
+                    </ResizableTableCell>
+                    <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
+                    <TableCell>
+                      <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-48">
+                          <DropdownMenuItem onClick={() => setScaleDialog({ open: true, item })} className="gap-2"><Scale className="h-4 w-4" />Scale</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => navigate(`/replicasets/${item.namespace}/${item.name}?tab=yaml`)} className="gap-2"><FileText className="h-4 w-4" />View YAML</DropdownMenuItem>
+                          <DropdownMenuSeparator /><DropdownMenuItem className="gap-2 text-[hsl(0,72%,51%)]" onClick={() => setDeleteDialog({ open: true, item })}><Trash2 className="h-4 w-4" />Delete</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </motion.tr>
+                );
+              };
+              return [
+                <TableRow key={group.groupKey} className="bg-muted/30 hover:bg-muted/40 cursor-pointer border-b border-border" onClick={() => toggleGroup(group.groupKey)}>
+                  <TableCell colSpan={12} className="py-2 font-medium">
+                    <div className="flex items-center gap-2 font-medium">
+                      {isCollapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />}
+                      Namespace: {group.label}
+                      <span className="text-muted-foreground font-normal">({group.list.length})</span>
+                    </div>
+                  </TableCell>
+                </TableRow>,
+                ...(isCollapsed ? [] : group.list.map((item, idx) => row(item, idx))),
+              ];
             })}
           </TableBody>
         </Table>
+        </ResizableTableProvider>
+      </div>
+
+      <div className="pt-4 pb-2 border-t border-border mt-2">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-2">
+                  {pageSize} per page
+                  <ChevronDown className="h-4 w-4 opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <DropdownMenuItem
+                    key={size}
+                    onClick={() => handlePageSizeChange(size)}
+                    className={cn(pageSize === size && 'bg-accent')}
+                  >
+                    {size} per page
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <ListPagination
+            hasPrev={pagination.hasPrev}
+            hasNext={pagination.hasNext}
+            onPrev={pagination.onPrev}
+            onNext={pagination.onNext}
+            rangeLabel={undefined}
+            currentPage={pagination.currentPage}
+            totalPages={pagination.totalPages}
+            onPageChange={pagination.onPageChange}
+          />
+        </div>
       </div>
 
       <DeleteConfirmDialog open={deleteDialog.open} onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null })} resourceType="ReplicaSet" resourceName={deleteDialog.bulk ? `${selectedItems.size} replicasets` : (deleteDialog.item?.name || '')} namespace={deleteDialog.bulk ? undefined : deleteDialog.item?.namespace} onConfirm={handleDelete} />
-      {scaleDialog.item && <ScaleDialog open={scaleDialog.open} onOpenChange={(open) => setScaleDialog({ open, item: open ? scaleDialog.item : null })} resourceType="ReplicaSet" resourceName={scaleDialog.item.name} namespace={scaleDialog.item.namespace} currentReplicas={scaleDialog.item.desired} onScale={(r) => { toast.success(`Scaled ${scaleDialog.item?.name} to ${r} replicas (demo mode)`); setScaleDialog({ open: false, item: null }); }} />}
+      {scaleDialog.item && (
+        <ScaleDialog
+          open={scaleDialog.open}
+          onOpenChange={(open) => setScaleDialog({ open, item: open ? scaleDialog.item : null })}
+          resourceType="ReplicaSet"
+          resourceName={scaleDialog.item.name}
+          namespace={scaleDialog.item.namespace}
+          currentReplicas={scaleDialog.item.desired}
+          onScale={async (r) => {
+            if (!isConnected) { toast.error('Connect cluster to scale'); return; }
+            try {
+              await patchReplicaSet.mutateAsync({ name: scaleDialog.item!.name, namespace: scaleDialog.item!.namespace, patch: { spec: { replicas: r } } });
+              toast.success(`Scaled ${scaleDialog.item?.name} to ${r} replicas`);
+              setScaleDialog({ open: false, item: null });
+              refetch();
+            } catch (e: any) {
+              toast.error(e?.message ?? 'Failed to scale');
+            }
+          }}
+        />
+      )}
       {showCreateWizard && (
         <ResourceCreator
           resourceKind="ReplicaSet"
           defaultYaml={DEFAULT_YAMLS.ReplicaSet}
           onClose={() => setShowCreateWizard(false)}
-          onApply={() => { toast.success('ReplicaSet created successfully (demo mode)'); setShowCreateWizard(false); refetch(); }}
+          onApply={async (yaml) => {
+            if (!isConnected) { toast.error('Connect cluster to create ReplicaSet'); return; }
+            try {
+              await createResource.mutateAsync({ yaml });
+              toast.success('ReplicaSet created successfully');
+              setShowCreateWizard(false);
+              refetch();
+            } catch (e: any) {
+              toast.error(e?.message ?? 'Failed to create');
+              throw e;
+            }
+          }}
         />
       )}
     </motion.div>

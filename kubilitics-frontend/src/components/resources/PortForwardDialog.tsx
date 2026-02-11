@@ -33,6 +33,9 @@ export interface PortForwardDialogProps {
   podName: string;
   namespace: string;
   containers?: Array<{ name: string; ports?: PortInfo[] }>;
+  /** When set, dialog opens with this container and port pre-selected (e.g. from ContainersSection "Forward" click). */
+  initialContainer?: string;
+  initialPort?: number;
 }
 
 export function PortForwardDialog({
@@ -41,6 +44,8 @@ export function PortForwardDialog({
   podName,
   namespace,
   containers = [],
+  initialContainer,
+  initialPort,
 }: PortForwardDialogProps) {
   const [selectedContainer, setSelectedContainer] = useState(containers[0]?.name || '');
   const [selectedPort, setSelectedPort] = useState<number | null>(null);
@@ -60,21 +65,31 @@ export function PortForwardDialog({
     }
   }, [availablePorts, selectedPort]);
 
-  // Reset when dialog opens
+  // Reset when dialog opens; use initialContainer/initialPort when provided
   useEffect(() => {
     if (open) {
       setIsForwarding(false);
       setCopied(false);
       if (containers.length > 0) {
-        setSelectedContainer(containers[0].name);
-        const ports = containers[0]?.ports || [];
-        if (ports.length > 0) {
-          setSelectedPort(ports[0].containerPort);
-          setLocalPort(String(ports[0].containerPort));
+        const containerName = initialContainer && containers.some(c => c.name === initialContainer)
+          ? initialContainer
+          : containers[0].name;
+        setSelectedContainer(containerName);
+        const container = containers.find(c => c.name === containerName);
+        const ports = container?.ports || [];
+        const port = initialPort != null && ports.some(p => p.containerPort === initialPort)
+          ? initialPort
+          : ports[0]?.containerPort;
+        if (port != null) {
+          setSelectedPort(port);
+          setLocalPort(String(port));
+        } else {
+          setSelectedPort(null);
+          setLocalPort('');
         }
       }
     }
-  }, [open, containers]);
+  }, [open, containers, initialContainer, initialPort]);
 
   const kubectlCommand = `kubectl port-forward pod/${podName} ${localPort}:${selectedPort} -n ${namespace}`;
 

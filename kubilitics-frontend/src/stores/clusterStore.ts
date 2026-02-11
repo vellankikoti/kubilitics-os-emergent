@@ -114,7 +114,7 @@ export const useClusterStore = create<ClusterState>()(
             namespaces: demoNamespaces,
           });
         } else {
-          set({ isDemo, clusters: [], activeCluster: null, namespaces: [] });
+          set({ isDemo: false });
         }
       },
     }),

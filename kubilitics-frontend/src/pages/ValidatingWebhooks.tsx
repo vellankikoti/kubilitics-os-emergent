@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Webhook } from 'lucide-react';
 import { ResourceList, type Column } from '@/components/resources';
-import { useK8sResourceList, calculateAge } from '@/hooks/useKubernetes';
-import { useKubernetesConfigStore } from '@/stores/kubernetesConfigStore';
+import { usePaginatedResourceList, calculateAge } from '@/hooks/useKubernetes';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
 import { toast } from 'sonner';
 
@@ -48,19 +48,19 @@ webhooks:
     failurePolicy: Fail`;
 
 export default function ValidatingWebhooks() {
-  const { config } = useKubernetesConfigStore();
-  const { data, isLoading, refetch } = useK8sResourceList('validatingwebhookconfigurations');
+  const { isConnected } = useConnectionStatus();
+  const { data, isLoading, refetch, pagination } = usePaginatedResourceList('validatingwebhookconfigurations');
   const [showCreator, setShowCreator] = useState(false);
 
-  const items: ValidatingWebhook[] = config.isConnected && data?.items
-    ? data.items.map((item: any) => ({
+  const items: ValidatingWebhook[] = isConnected && data
+    ? (data?.items ?? []).map((item: any) => ({
         id: item.metadata.uid,
         name: item.metadata.name,
         webhooks: String(item.webhooks?.length || 0),
         failurePolicy: item.webhooks?.[0]?.failurePolicy || '-',
         age: calculateAge(item.metadata.creationTimestamp),
       }))
-    : mockData;
+    : [];
 
   const handleCreate = (yaml: string) => {
     toast.success('ValidatingWebhookConfiguration created (demo mode)');
@@ -91,6 +91,7 @@ export default function ValidatingWebhooks() {
       isLoading={isLoading}
       onRefresh={() => refetch()}
       onCreate={() => setShowCreator(true)}
+      pagination={pagination}
     />
   );
 }

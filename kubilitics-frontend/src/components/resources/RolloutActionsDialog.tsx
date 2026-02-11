@@ -33,21 +33,13 @@ export interface RolloutActionsDialogProps {
   onRollback?: (revision: number) => Promise<void> | void;
 }
 
-const mockRevisions: RolloutRevision[] = [
-  { revision: 5, createdAt: '2h ago', current: true, changeReason: 'Image update', image: 'nginx:1.25' },
-  { revision: 4, createdAt: '1d ago', current: false, changeReason: 'Config change', image: 'nginx:1.24' },
-  { revision: 3, createdAt: '3d ago', current: false, changeReason: 'Scale up', image: 'nginx:1.24' },
-  { revision: 2, createdAt: '7d ago', current: false, changeReason: 'Initial release', image: 'nginx:1.23' },
-  { revision: 1, createdAt: '14d ago', current: false, changeReason: 'First deployment', image: 'nginx:1.22' },
-];
-
 export function RolloutActionsDialog({
   open,
   onOpenChange,
   resourceType,
   resourceName,
   namespace,
-  revisions = mockRevisions,
+  revisions = [],
   onRestart,
   onRollback,
 }: RolloutActionsDialogProps) {

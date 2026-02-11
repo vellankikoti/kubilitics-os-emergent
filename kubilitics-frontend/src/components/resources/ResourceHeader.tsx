@@ -67,10 +67,10 @@ export function ResourceHeader({
         Back to {backLabel}
       </Link>
 
-      {/* Main Header */}
-      <div className="flex items-start justify-between">
+      {/* Main Header - subtle depth */}
+      <div className="flex items-start justify-between rounded-xl border border-border/50 bg-card shadow-sm p-4">
         <div className="flex items-center gap-4">
-          <div className="p-3 rounded-2xl bg-primary/10">
+          <div className="p-3 rounded-2xl bg-primary/10 shadow-sm">
             <Icon className="h-8 w-8 text-primary" />
           </div>
           <div>

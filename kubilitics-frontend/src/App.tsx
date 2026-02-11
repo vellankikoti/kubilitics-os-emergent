@@ -7,15 +7,16 @@ import { useClusterStore } from "@/stores/clusterStore";
 
 // Pages - Entry & Setup
 import ClusterConnect from "./pages/ClusterConnect";
+import ConnectedRedirect from "./pages/ConnectedRedirect";
 import KubeConfigSetup from "./pages/KubeConfigSetup";
 import ClusterSelection from "./pages/ClusterSelection";
-import Dashboard from "./pages/Dashboard";
+import DashboardPage from "./pages/DashboardPage";
+
+// Workloads
 import Pods from "./pages/Pods";
 import PodDetail from "./pages/PodDetail";
 import Topology from "./pages/Topology";
 import NotFound from "./pages/NotFound";
-
-// Workloads
 import Deployments from "./pages/Deployments";
 import DeploymentDetail from "./pages/DeploymentDetail";
 import ReplicaSets from "./pages/ReplicaSets";
@@ -65,6 +66,7 @@ import NodeDetail from "./pages/NodeDetail";
 import Namespaces from "./pages/Namespaces";
 import NamespaceDetail from "./pages/NamespaceDetail";
 import Events from "./pages/Events";
+import EventDetail from "./pages/EventDetail";
 import ComponentStatuses from "./pages/ComponentStatuses";
 import ComponentStatusDetail from "./pages/ComponentStatusDetail";
 import APIServices from "./pages/APIServices";
@@ -117,14 +119,10 @@ import { AppLayout } from "./components/layout/AppLayout";
 
 const queryClient = new QueryClient();
 
-// Protected route wrapper - requires active cluster connection
+// Protected route wrapper - requires active cluster connection.
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { activeCluster } = useClusterStore();
-  
-  if (!activeCluster) {
-    return <Navigate to="/" replace />;
-  }
-  
+  if (!activeCluster) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
@@ -137,11 +135,13 @@ const App = () => (
         <Routes>
           {/* Entry Point - Cluster Connection (replaces SaaS auth flows) */}
           <Route path="/" element={<ClusterConnect />} />
-          
+          {/* Apply cluster from Connect and redirect to dashboard (avoids ProtectedRoute timing) */}
+          <Route path="/connected" element={<ConnectedRedirect />} />
+
           {/* Setup Flow - Kubeconfig & Cluster Selection */}
           <Route path="/setup/kubeconfig" element={<KubeConfigSetup />} />
           <Route path="/setup/clusters" element={<ClusterSelection />} />
-          
+
           {/* Protected App Routes - Require Cluster Connection */}
           <Route
             element={
@@ -150,10 +150,10 @@ const App = () => (
               </ProtectedRoute>
             }
           >
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/topology" element={<Topology />} />
             <Route path="/settings" element={<Settings />} />
-            
+
             {/* Workloads */}
             <Route path="/pods" element={<Pods />} />
             <Route path="/pods/:namespace/:name" element={<PodDetail />} />
@@ -171,7 +171,7 @@ const App = () => (
             <Route path="/cronjobs/:namespace/:name" element={<CronJobDetail />} />
             <Route path="/replicationcontrollers" element={<ReplicationControllers />} />
             <Route path="/replicationcontrollers/:namespace/:name" element={<ReplicationControllerDetail />} />
-            
+
             {/* Networking */}
             <Route path="/services" element={<Services />} />
             <Route path="/services/:namespace/:name" element={<ServiceDetail />} />
@@ -185,7 +185,7 @@ const App = () => (
             <Route path="/ingressclasses/:name" element={<IngressClassDetail />} />
             <Route path="/networkpolicies" element={<NetworkPolicies />} />
             <Route path="/networkpolicies/:namespace/:name" element={<NetworkPolicyDetail />} />
-            
+
             {/* Storage & Config */}
             <Route path="/configmaps" element={<ConfigMaps />} />
             <Route path="/configmaps/:namespace/:name" element={<ConfigMapDetail />} />
@@ -199,13 +199,14 @@ const App = () => (
             <Route path="/storageclasses/:name" element={<StorageClassDetail />} />
             <Route path="/volumeattachments" element={<VolumeAttachments />} />
             <Route path="/volumeattachments/:name" element={<VolumeAttachmentDetail />} />
-            
+
             {/* Cluster */}
             <Route path="/nodes" element={<Nodes />} />
             <Route path="/nodes/:name" element={<NodeDetail />} />
             <Route path="/namespaces" element={<Namespaces />} />
             <Route path="/namespaces/:name" element={<NamespaceDetail />} />
             <Route path="/events" element={<Events />} />
+            <Route path="/events/:namespace/:name" element={<EventDetail />} />
             <Route path="/componentstatuses" element={<ComponentStatuses />} />
             <Route path="/componentstatuses/:name" element={<ComponentStatusDetail />} />
             <Route path="/apiservices" element={<APIServices />} />
@@ -214,7 +215,7 @@ const App = () => (
             <Route path="/leases/:namespace/:name" element={<LeaseDetail />} />
             <Route path="/runtimeclasses" element={<RuntimeClasses />} />
             <Route path="/runtimeclasses/:name" element={<RuntimeClassDetail />} />
-            
+
             {/* RBAC */}
             <Route path="/serviceaccounts" element={<ServiceAccounts />} />
             <Route path="/serviceaccounts/:namespace/:name" element={<ServiceAccountDetail />} />
@@ -228,7 +229,7 @@ const App = () => (
             <Route path="/clusterrolebindings/:name" element={<ClusterRoleBindingDetail />} />
             <Route path="/podsecuritypolicies" element={<PodSecurityPolicies />} />
             <Route path="/podsecuritypolicies/:name" element={<PodSecurityPolicyDetail />} />
-            
+
             {/* Autoscaling & Resource Management */}
             <Route path="/horizontalpodautoscalers" element={<HorizontalPodAutoscalers />} />
             <Route path="/horizontalpodautoscalers/:namespace/:name" element={<HorizontalPodAutoscalerDetail />} />
@@ -242,7 +243,7 @@ const App = () => (
             <Route path="/limitranges/:namespace/:name" element={<LimitRangeDetail />} />
             <Route path="/priorityclasses" element={<PriorityClasses />} />
             <Route path="/priorityclasses/:name" element={<PriorityClassDetail />} />
-            
+
             {/* Custom Resources & Admission Control */}
             <Route path="/customresourcedefinitions" element={<CustomResourceDefinitions />} />
             <Route path="/customresourcedefinitions/:name" element={<CustomResourceDefinitionDetail />} />
@@ -251,10 +252,10 @@ const App = () => (
             <Route path="/mutatingwebhooks/:name" element={<MutatingWebhookDetail />} />
             <Route path="/validatingwebhooks" element={<ValidatingWebhooks />} />
             <Route path="/validatingwebhooks/:name" element={<ValidatingWebhookDetail />} />
+
+            {/* 404 */}
+            <Route path="*" element={<NotFound />} />
           </Route>
-          
-          {/* 404 */}
-          <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
     </TooltipProvider>

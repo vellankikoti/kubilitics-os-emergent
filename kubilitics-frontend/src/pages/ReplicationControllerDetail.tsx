@@ -1,15 +1,23 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
 import { Layers, Clock, Server, Download, Trash2, RefreshCw, Scale, AlertTriangle, Package } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { toast } from 'sonner';
 import {
-  ResourceHeader, ResourceStatusCards, ResourceTabs, TopologyViewer,
-  YamlViewer, EventsSection, ActionsSection, MetadataCard, ScaleDialog,
-  type TopologyNode, type TopologyEdge, type ResourceStatus, type EventInfo,
+  ResourceDetailLayout,
+  TopologyViewer,
+  YamlViewer,
+  EventsSection,
+  ActionsSection,
+  MetadataCard,
+  ScaleDialog,
+  DeleteConfirmDialog,
+  type TopologyNode,
+  type TopologyEdge,
+  type ResourceStatus,
+  type EventInfo,
 } from '@/components/resources';
 
 const mockRC = {
@@ -104,7 +112,18 @@ export default function ReplicationControllerDetail() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
   const [showScaleDialog, setShowScaleDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const rc = mockRC;
+
+  const handleDownloadYaml = useCallback(() => {
+    const blob = new Blob([yaml], { type: 'application/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${rc.name || 'replicationcontroller'}.yaml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [rc.name]);
 
   const statusCards = [
     { label: 'Desired', value: rc.desired, icon: Layers, iconColor: 'primary' as const },
@@ -283,16 +302,16 @@ export default function ReplicationControllerDetail() {
       content: (
         <ActionsSection actions={[
           { icon: Scale, label: 'Scale', description: 'Scale the replication controller', onClick: () => setShowScaleDialog(true) },
-          { icon: Download, label: 'Download YAML', description: 'Export RC definition' },
-          { icon: Trash2, label: 'Delete RC', description: 'Remove this replication controller', variant: 'destructive' },
+          { icon: Download, label: 'Download YAML', description: 'Export RC definition', onClick: handleDownloadYaml },
+          { icon: Trash2, label: 'Delete RC', description: 'Remove this replication controller', variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]} />
       ),
     },
   ];
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <ResourceHeader
+    <>
+      <ResourceDetailLayout
         resourceType="ReplicationController"
         resourceIcon={Layers}
         name={rc.name}
@@ -300,7 +319,7 @@ export default function ReplicationControllerDetail() {
         status={rc.status}
         backLink="/replicationcontrollers"
         backLabel="Replication Controllers"
-        metadata={
+        headerMetadata={
           <div className="flex items-center gap-3">
             <Badge variant="outline" className="text-warning border-warning/30 bg-warning/10">
               <AlertTriangle className="h-3 w-3 mr-1" />
@@ -310,12 +329,16 @@ export default function ReplicationControllerDetail() {
           </div>
         }
         actions={[
+          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => {} },
+          { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Scale', icon: Scale, variant: 'outline', onClick: () => setShowScaleDialog(true) },
-          { label: 'Delete', icon: Trash2, variant: 'destructive' },
+          { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}
+        statusCards={statusCards}
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
       />
-      <ResourceStatusCards cards={statusCards} />
-      <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
 
       <ScaleDialog
         open={showScaleDialog}
@@ -326,6 +349,19 @@ export default function ReplicationControllerDetail() {
         currentReplicas={rc.desired}
         onScale={handleScale}
       />
-    </motion.div>
+
+      <DeleteConfirmDialog
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        resourceType="ReplicationController"
+        resourceName={rc.name}
+        namespace={rc.namespace}
+        onConfirm={() => {
+          toast.success(`ReplicationController ${rc.name} deleted (demo mode)`);
+          navigate('/replicationcontrollers');
+        }}
+        requireNameConfirmation
+      />
+    </>
   );
 }

@@ -12,7 +12,8 @@ import {
   Save,
   RotateCcw,
   CheckCircle2,
-  Info
+  Info,
+  Server,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,7 +23,10 @@ import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
+import { useBackendConfigStore } from '@/stores/backendConfigStore';
+import { DEFAULT_BACKEND_BASE_URL } from '@/lib/backendConstants';
 
 interface UserPreferences {
   theme: 'light' | 'dark' | 'system';
@@ -51,6 +55,14 @@ const defaultPreferences: UserPreferences = {
 export default function Settings() {
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
   const [hasChanges, setHasChanges] = useState(false);
+  const backendBaseUrl = useBackendConfigStore((s) => s.backendBaseUrl);
+  const setBackendBaseUrl = useBackendConfigStore((s) => s.setBackendBaseUrl);
+  const [backendUrlInput, setBackendUrlInput] = useState(backendBaseUrl);
+  const [backendUrlDirty, setBackendUrlDirty] = useState(false);
+
+  useEffect(() => {
+    setBackendUrlInput(backendBaseUrl);
+  }, [backendBaseUrl]);
 
   // Load preferences from localStorage
   useEffect(() => {
@@ -142,6 +154,50 @@ export default function Settings() {
           </Button>
         </div>
       </div>
+
+      {/* Backend API (A3.5: configure backend URL; recovery from unreachable) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Server className="h-5 w-5" />
+            Backend API
+          </CardTitle>
+          <CardDescription>
+            Kubilitics backend base URL. When set (or when using default on this device), clusters and topology load from the backend.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="backend-url">Backend base URL</Label>
+            <Input
+              id="backend-url"
+              type="url"
+              placeholder={DEFAULT_BACKEND_BASE_URL}
+              value={backendUrlInput}
+              onChange={(e) => {
+                setBackendUrlInput(e.target.value.trim());
+                setBackendUrlDirty(e.target.value.trim() !== backendBaseUrl);
+              }}
+              className="font-mono"
+            />
+            <p className="text-xs text-muted-foreground">
+              Leave empty to use default on this device ({DEFAULT_BACKEND_BASE_URL} when running locally or in the desktop app).
+            </p>
+          </div>
+          {backendUrlDirty && (
+            <Button
+              size="sm"
+              onClick={() => {
+                setBackendBaseUrl(backendUrlInput);
+                setBackendUrlDirty(false);
+                toast.success('Backend URL saved');
+              }}
+            >
+              Save backend URL
+            </Button>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Appearance Settings */}
       <Card>
