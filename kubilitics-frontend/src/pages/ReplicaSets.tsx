@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils';
 import { Link, useNavigate } from 'react-router-dom';
 import { useK8sResourceList, useDeleteK8sResource, usePatchK8sResource, useCreateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
-import { DeleteConfirmDialog, ScaleDialog, UsageBar, parseCpu, parseMemory } from '@/components/resources';
+import { DeleteConfirmDialog, ScaleDialog, UsageBar, parseCpu, parseMemory, calculatePodResourceMax } from '@/components/resources';
 import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, TableColumnHeaderWithFilterAndSort } from '@/components/list';
 import type { StatusPillVariant } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
@@ -26,7 +26,21 @@ import { Card, CardContent } from '@/components/ui/card';
 import { ReplicaSetIcon } from '@/components/icons/KubernetesIcons';
 
 interface ReplicaSetResource extends KubernetesResource {
-  spec: { replicas: number };
+  spec: { 
+    replicas: number;
+    template?: { 
+      spec?: { 
+        containers?: Array<{ 
+          name: string; 
+          image: string;
+          resources?: {
+            requests?: { cpu?: string; memory?: string };
+            limits?: { cpu?: string; memory?: string };
+          };
+        }> 
+      } 
+    };
+  };
   status: { replicas?: number; readyReplicas?: number; availableReplicas?: number };
 }
 
@@ -145,6 +159,23 @@ export default function ReplicaSets() {
     [itemsOnPage]
   );
   const { metricsMap } = useWorkloadMetricsMap('replicaset', metricsEntries);
+
+  // Calculate resource max values from replicaset pod template container limits/requests
+  const replicasetResourceMaxMap = useMemo(() => {
+    const m: Record<string, { cpuMax?: number; memoryMax?: number }> = {};
+    if (data?.items) {
+      data.items.forEach((rsResource) => {
+        const key = `${rsResource.metadata.namespace}/${rsResource.metadata.name}`;
+        const containers = rsResource.spec?.template?.spec?.containers || [];
+        const cpuMax = calculatePodResourceMax(containers, 'cpu');
+        const memoryMax = calculatePodResourceMax(containers, 'memory');
+        if (cpuMax !== undefined || memoryMax !== undefined) {
+          m[key] = { cpuMax, memoryMax };
+        }
+      });
+    }
+    return m;
+  }, [data?.items]);
 
   const groupedOnPage = useMemo(() => {
     if (listView !== 'byNamespace' || itemsOnPage.length === 0) return [];
@@ -401,12 +432,12 @@ spec:
                   <ResizableTableCell columnId="owner"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.owner}</Badge></ResizableTableCell>
                   <ResizableTableCell columnId="cpu">
                     <div className="min-w-0 overflow-hidden">
-                      <UsageBar variant="sparkline" value={cpuVal} kind="cpu" dataPoints={cpuDataPoints} displayFormat="compact" width={56} />
+                      <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} />
                     </div>
                   </ResizableTableCell>
                   <ResizableTableCell columnId="memory">
                     <div className="min-w-0 overflow-hidden">
-                      <UsageBar variant="sparkline" value={memVal} kind="memory" dataPoints={memDataPoints} displayFormat="compact" width={56} />
+                      <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} />
                     </div>
                   </ResizableTableCell>
                   <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
@@ -445,12 +476,12 @@ spec:
                     <ResizableTableCell columnId="owner"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.owner}</Badge></ResizableTableCell>
                     <ResizableTableCell columnId="cpu">
                       <div className="min-w-0 overflow-hidden">
-                        <UsageBar variant="sparkline" value={cpuVal} kind="cpu" dataPoints={cpuDataPoints} displayFormat="compact" width={56} />
+                        <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} max={replicasetResourceMaxMap[key]?.cpuMax} />
                       </div>
                     </ResizableTableCell>
                     <ResizableTableCell columnId="memory">
                       <div className="min-w-0 overflow-hidden">
-                        <UsageBar variant="sparkline" value={memVal} kind="memory" dataPoints={memDataPoints} displayFormat="compact" width={56} />
+                        <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={replicasetResourceMaxMap[key]?.memoryMax} />
                       </div>
                     </ResizableTableCell>
                     <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>

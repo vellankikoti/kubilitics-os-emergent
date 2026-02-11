@@ -69,13 +69,7 @@ type AnthropicClient struct {
 	budgetingTokens int
 }
 
-// NewAnthropicClient creates a new Anthropic client with configuration.
-func NewAnthropicClient() *AnthropicClient {
-	// Load configuration from env vars and files
-	// Create HTTP client with API key headers
-	// Validate model is supported
-	return nil
-}
+// NewAnthropicClient is now implemented in client_impl.go
 
 // Complete implements LLMAdapter.Complete for Anthropic API.
 func (c *AnthropicClient) Complete(ctx context.Context, messages []interface{}, tools []interface{}) (string, []interface{}, error) {

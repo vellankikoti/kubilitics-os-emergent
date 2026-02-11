@@ -22,7 +22,7 @@ import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useClusterStore } from '@/stores/clusterStore';
 import { applyManifest, CONFIRM_DESTRUCTIVE_HEADER, getDeploymentRolloutHistory, getEvents, postDeploymentRollback } from '@/services/backendApiClient';
-import { DeleteConfirmDialog, ScaleDialog, RolloutActionsDialog, UsageBar, parseCpu, parseMemory } from '@/components/resources';
+import { DeleteConfirmDialog, ScaleDialog, RolloutActionsDialog, UsageBar, parseCpu, parseMemory, calculatePodResourceMax } from '@/components/resources';
 import { ResourceCommandBar, ResourceExportDropdown, ListViewSegmentedControl } from '@/components/list';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
@@ -36,7 +36,18 @@ interface DeploymentResource extends KubernetesResource {
   spec: {
     replicas: number;
     strategy?: { type: string; rollingUpdate?: { maxSurge?: string; maxUnavailable?: string } };
-    template?: { spec?: { containers?: Array<{ name: string; image: string }> } };
+    template?: { 
+      spec?: { 
+        containers?: Array<{ 
+          name: string; 
+          image: string;
+          resources?: {
+            requests?: { cpu?: string; memory?: string };
+            limits?: { cpu?: string; memory?: string };
+          };
+        }> 
+      } 
+    };
   };
   status: { replicas?: number; readyReplicas?: number; updatedReplicas?: number; availableReplicas?: number; conditions?: Array<{ type: string; status: string }> };
   metadata: KubernetesResource['metadata'] & { annotations?: Record<string, string> };
@@ -255,6 +266,23 @@ export default function Deployments() {
     [itemsOnPage]
   );
   const { metricsMap } = useWorkloadMetricsMap('deployment', metricsEntries);
+
+  // Calculate resource max values from deployment pod template container limits/requests
+  const deploymentResourceMaxMap = useMemo(() => {
+    const m: Record<string, { cpuMax?: number; memoryMax?: number }> = {};
+    if (data?.items) {
+      data.items.forEach((deploymentResource) => {
+        const key = `${deploymentResource.metadata.namespace}/${deploymentResource.metadata.name}`;
+        const containers = deploymentResource.spec?.template?.spec?.containers || [];
+        const cpuMax = calculatePodResourceMax(containers, 'cpu');
+        const memoryMax = calculatePodResourceMax(containers, 'memory');
+        if (cpuMax !== undefined || memoryMax !== undefined) {
+          m[key] = { cpuMax, memoryMax };
+        }
+      });
+    }
+    return m;
+  }, [data?.items]);
 
   useEffect(() => {
     if (safePageIndex !== pageIndex) setPageIndex(safePageIndex);
@@ -562,12 +590,12 @@ spec:
                       <ResizableTableCell columnId="images" className="text-xs truncate max-w-[180px]" title={item.images.join(', ')}>{item.images.length ? item.images.join(', ') : '-'}</ResizableTableCell>
                       <ResizableTableCell columnId="cpu">
                         <div className="min-w-0 overflow-hidden">
-                          <UsageBar variant="sparkline" value={cpuVal} kind="cpu" dataPoints={cpuDataPoints} displayFormat="compact" width={56} />
+                          <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} max={deploymentResourceMaxMap[key]?.cpuMax} />
                         </div>
                       </ResizableTableCell>
                       <ResizableTableCell columnId="memory">
                         <div className="min-w-0 overflow-hidden">
-                          <UsageBar variant="sparkline" value={memVal} kind="memory" dataPoints={memDataPoints} displayFormat="compact" width={56} />
+                          <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={deploymentResourceMaxMap[key]?.memoryMax} />
                         </div>
                       </ResizableTableCell>
                       <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
@@ -628,12 +656,12 @@ spec:
                         <ResizableTableCell columnId="images" className="text-xs truncate max-w-[180px]" title={item.images.join(', ')}>{item.images.length ? item.images.join(', ') : '-'}</ResizableTableCell>
                         <ResizableTableCell columnId="cpu">
                           <div className="min-w-0 overflow-hidden">
-                            <UsageBar variant="sparkline" value={cpuVal} kind="cpu" dataPoints={cpuDataPoints} displayFormat="compact" width={56} />
+                            <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} />
                           </div>
                         </ResizableTableCell>
                         <ResizableTableCell columnId="memory">
                           <div className="min-w-0 overflow-hidden">
-                            <UsageBar variant="sparkline" value={memVal} kind="memory" dataPoints={memDataPoints} displayFormat="compact" width={56} />
+                            <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} />
                           </div>
                         </ResizableTableCell>
                         <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>

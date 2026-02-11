@@ -23,6 +23,6 @@ export { MetadataCard, type MetadataCardProps } from './MetadataCard';
 export { ActionsSection, type ActionItem, type ActionsSectionProps } from './ActionsSection';
 export { NodeDetailPopup, type ResourceDetail } from './NodeDetailPopup';
 export { Sparkline, LiveMetric, useLiveMetrics } from './PodSparkline';
-export { UsageBar, parseCpu, parseMemory, type UsageBarProps, type UsageBarKind, type UsageBarVariant } from './UsageBar';
+export { UsageBar, parseCpu, parseMemory, calculatePodResourceMax, type UsageBarProps, type UsageBarKind, type UsageBarVariant } from './UsageBar';
 export { PodComparisonView } from './PodComparisonView';
 export { TopologyMiniMap } from './TopologyMiniMap';

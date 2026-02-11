@@ -18,7 +18,7 @@ import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useClusterStore } from '@/stores/clusterStore';
 import { postJobRetry } from '@/services/backendApiClient';
-import { DeleteConfirmDialog, UsageBar, parseCpu, parseMemory } from '@/components/resources';
+import { DeleteConfirmDialog, UsageBar, parseCpu, parseMemory, calculatePodResourceMax } from '@/components/resources';
 import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, TableColumnHeaderWithFilterAndSort } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
 import { useWorkloadMetricsMap } from '@/hooks/useWorkloadMetricsMap';
@@ -30,7 +30,23 @@ import { JobIcon } from '@/components/icons/KubernetesIcons';
 
 interface JobResource extends KubernetesResource {
   metadata: KubernetesResource['metadata'] & { ownerReferences?: Array<{ kind: string; name: string }> };
-  spec: { completions?: number; parallelism?: number; backoffLimit?: number };
+  spec: { 
+    completions?: number; 
+    parallelism?: number; 
+    backoffLimit?: number;
+    template?: { 
+      spec?: { 
+        containers?: Array<{ 
+          name: string; 
+          image: string;
+          resources?: {
+            requests?: { cpu?: string; memory?: string };
+            limits?: { cpu?: string; memory?: string };
+          };
+        }> 
+      } 
+    };
+  };
   status: { succeeded?: number; failed?: number; active?: number; startTime?: string; completionTime?: string };
 }
 
@@ -224,6 +240,23 @@ export default function Jobs() {
     [itemsOnPage]
   );
   const { metricsMap } = useWorkloadMetricsMap('job', metricsEntries);
+
+  // Calculate resource max values from job pod template container limits/requests
+  const jobResourceMaxMap = useMemo(() => {
+    const m: Record<string, { cpuMax?: number; memoryMax?: number }> = {};
+    if (data?.items) {
+      data.items.forEach((jobResource) => {
+        const key = `${jobResource.metadata.namespace}/${jobResource.metadata.name}`;
+        const containers = jobResource.spec?.template?.spec?.containers || [];
+        const cpuMax = calculatePodResourceMax(containers, 'cpu');
+        const memoryMax = calculatePodResourceMax(containers, 'memory');
+        if (cpuMax !== undefined || memoryMax !== undefined) {
+          m[key] = { cpuMax, memoryMax };
+        }
+      });
+    }
+    return m;
+  }, [data?.items]);
 
   const groupedOnPage = useMemo(() => {
     if (listView !== 'byNamespace' || itemsOnPage.length === 0) return [];
@@ -511,12 +544,12 @@ spec:
                   </ResizableTableCell>
                   <ResizableTableCell columnId="cpu">
                     <div className="min-w-0 overflow-hidden">
-                      <UsageBar variant="sparkline" value={cpuVal} kind="cpu" dataPoints={cpuDataPoints} displayFormat="compact" width={56} />
+                      <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} max={jobResourceMaxMap[key]?.cpuMax} />
                     </div>
                   </ResizableTableCell>
                   <ResizableTableCell columnId="memory">
                     <div className="min-w-0 overflow-hidden">
-                      <UsageBar variant="sparkline" value={memVal} kind="memory" dataPoints={memDataPoints} displayFormat="compact" width={56} />
+                      <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={jobResourceMaxMap[key]?.memoryMax} />
                     </div>
                   </ResizableTableCell>
                   <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
@@ -584,12 +617,12 @@ spec:
                       </ResizableTableCell>
                       <ResizableTableCell columnId="cpu">
                         <div className="min-w-0 overflow-hidden">
-                          <UsageBar variant="sparkline" value={cpuVal} kind="cpu" dataPoints={cpuDataPoints} displayFormat="compact" width={56} />
+                          <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} max={jobResourceMaxMap[key]?.cpuMax} />
                         </div>
                       </ResizableTableCell>
                       <ResizableTableCell columnId="memory">
                         <div className="min-w-0 overflow-hidden">
-                          <UsageBar variant="sparkline" value={memVal} kind="memory" dataPoints={memDataPoints} displayFormat="compact" width={56} />
+                          <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={jobResourceMaxMap[key]?.memoryMax} />
                         </div>
                       </ResizableTableCell>
                       <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>

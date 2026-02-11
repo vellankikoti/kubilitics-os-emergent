@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils';
 import { Link, useNavigate } from 'react-router-dom';
 import { useK8sResourceList, useDeleteK8sResource, usePatchK8sResource, useCreateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
-import { DeleteConfirmDialog, ScaleDialog, RolloutActionsDialog, UsageBar, parseCpu, parseMemory } from '@/components/resources';
+import { DeleteConfirmDialog, ScaleDialog, RolloutActionsDialog, UsageBar, parseCpu, parseMemory, calculatePodResourceMax } from '@/components/resources';
 import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, TableColumnHeaderWithFilterAndSort } from '@/components/list';
 import type { StatusPillVariant } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
@@ -31,6 +31,18 @@ interface StatefulSetResource extends KubernetesResource {
     serviceName?: string;
     updateStrategy?: { type?: string; rollingUpdate?: { partition?: number } };
     volumeClaimTemplates?: Array<{ metadata?: { name?: string } }>;
+    template?: { 
+      spec?: { 
+        containers?: Array<{ 
+          name: string; 
+          image: string;
+          resources?: {
+            requests?: { cpu?: string; memory?: string };
+            limits?: { cpu?: string; memory?: string };
+          };
+        }> 
+      } 
+    };
   };
   status: { replicas?: number; readyReplicas?: number; currentReplicas?: number; updatedReplicas?: number };
 }
@@ -230,6 +242,23 @@ export default function StatefulSets() {
     [itemsOnPage]
   );
   const { metricsMap } = useWorkloadMetricsMap('statefulset', metricsEntries);
+
+  // Calculate resource max values from statefulset pod template container limits/requests
+  const statefulsetResourceMaxMap = useMemo(() => {
+    const m: Record<string, { cpuMax?: number; memoryMax?: number }> = {};
+    if (data?.items) {
+      data.items.forEach((ssResource) => {
+        const key = `${ssResource.metadata.namespace}/${ssResource.metadata.name}`;
+        const containers = ssResource.spec?.template?.spec?.containers || [];
+        const cpuMax = calculatePodResourceMax(containers, 'cpu');
+        const memoryMax = calculatePodResourceMax(containers, 'memory');
+        if (cpuMax !== undefined || memoryMax !== undefined) {
+          m[key] = { cpuMax, memoryMax };
+        }
+      });
+    }
+    return m;
+  }, [data?.items]);
 
   const groupedOnPage = useMemo(() => {
     if (listView !== 'byNamespace' || itemsOnPage.length === 0) return [];
@@ -591,12 +620,12 @@ spec:
                         <ResizableTableCell columnId="pvcCount" className="font-mono text-xs">{item.pvcCount}</ResizableTableCell>
                         <ResizableTableCell columnId="cpu">
                           <div className="min-w-0 overflow-hidden">
-                            <UsageBar variant="sparkline" value={cpuVal} kind="cpu" dataPoints={cpuDataPoints} displayFormat="compact" width={56} />
+                            <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} max={statefulsetResourceMaxMap[key]?.cpuMax} />
                           </div>
                         </ResizableTableCell>
                         <ResizableTableCell columnId="memory">
                           <div className="min-w-0 overflow-hidden">
-                            <UsageBar variant="sparkline" value={memVal} kind="memory" dataPoints={memDataPoints} displayFormat="compact" width={56} />
+                            <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={statefulsetResourceMaxMap[key]?.memoryMax} />
                           </div>
                         </ResizableTableCell>
                         <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>

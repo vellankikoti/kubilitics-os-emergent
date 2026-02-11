@@ -68,7 +68,7 @@ import { getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useBackendConfigStore } from '@/stores/backendConfigStore';
 import { getPodMetrics } from '@/services/backendApiClient';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { DeleteConfirmDialog, PortForwardDialog, UsageBar, PodComparisonView } from '@/components/resources';
+import { DeleteConfirmDialog, PortForwardDialog, UsageBar, PodComparisonView, calculatePodResourceMax } from '@/components/resources';
 import { NamespaceFilter, ResourceCommandBar, StatusPill, resourceTableRowClassName, ROW_MOTION, ListPagination, ListViewSegmentedControl, ListPageStatCard, TableColumnHeaderWithFilterAndSort, type StatusPillVariant } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
@@ -79,7 +79,15 @@ interface PodResource extends KubernetesResource {
   spec: {
     nodeName?: string;
     hostNetwork?: boolean;
-    containers: Array<{ name: string; image: string; ports?: Array<{ containerPort: number; name?: string; protocol?: string }> }>;
+    containers: Array<{ 
+      name: string; 
+      image: string; 
+      ports?: Array<{ containerPort: number; name?: string; protocol?: string }>;
+      resources?: {
+        requests?: { cpu?: string; memory?: string };
+        limits?: { cpu?: string; memory?: string };
+      };
+    }>;
   };
   status: {
     phase: string;
@@ -429,6 +437,23 @@ export default function Pods() {
     });
     return m;
   }, [metricsQueries, podsToFetch]);
+
+  // Calculate resource max values from pod container limits/requests
+  const podResourceMaxMap = useMemo(() => {
+    const m: Record<string, { cpuMax?: number; memoryMax?: number }> = {};
+    if (data?.items) {
+      data.items.forEach((podResource) => {
+        const key = `${podResource.metadata.namespace}/${podResource.metadata.name}`;
+        const containers = podResource.spec?.containers || [];
+        const cpuMax = calculatePodResourceMax(containers, 'cpu');
+        const memoryMax = calculatePodResourceMax(containers, 'memory');
+        if (cpuMax !== undefined || memoryMax !== undefined) {
+          m[key] = { cpuMax, memoryMax };
+        }
+      });
+    }
+    return m;
+  }, [data?.items]);
 
   
   const handleDelete = async () => {
@@ -1118,9 +1143,9 @@ ${pod.containers.map(c => `  - name: ${c.name}
                           variant="sparkline"
                           value={cpuVal}
                           kind="cpu"
-                          dataPoints={cpuDataPoints}
                           displayFormat="compact"
                           width={56}
+                          max={podResourceMaxMap[podKey]?.cpuMax}
                         />
                       </div>
                     </ResizableTableCell>
@@ -1130,9 +1155,9 @@ ${pod.containers.map(c => `  - name: ${c.name}
                           variant="sparkline"
                           value={memVal}
                           kind="memory"
-                          dataPoints={memDataPoints}
                           displayFormat="compact"
                           width={56}
+                          max={podResourceMaxMap[podKey]?.memoryMax}
                         />
                       </div>
                     </ResizableTableCell>
@@ -1307,9 +1332,9 @@ ${pod.containers.map(c => `  - name: ${c.name}
                           variant="sparkline"
                           value={cpuVal}
                           kind="cpu"
-                          dataPoints={cpuDataPoints}
                           displayFormat="compact"
                           width={56}
+                          max={podResourceMaxMap[podKey]?.cpuMax}
                         />
                       </div>
                     </ResizableTableCell>
@@ -1319,9 +1344,9 @@ ${pod.containers.map(c => `  - name: ${c.name}
                           variant="sparkline"
                           value={memVal}
                           kind="memory"
-                          dataPoints={memDataPoints}
                           displayFormat="compact"
                           width={56}
+                          max={podResourceMaxMap[podKey]?.memoryMax}
                         />
                       </div>
                     </ResizableTableCell>
