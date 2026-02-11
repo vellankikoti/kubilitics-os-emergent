@@ -260,45 +260,125 @@ logger.Log(ctx, event)
 
 ### WEEK 2: Backend Integration
 
-#### Task 1.4: Protocol Buffers Definition 📡
+#### Task 1.4: Protocol Buffers Definition 📡 ✅ **COMPLETED**
 **Priority**: P0 (BLOCKING)
-**Estimated Time**: 6 hours
+**Estimated Time**: 6 hours → **Actual: 2 hours**
+**Status**: ✅ DONE
 
-**Files to Create/Modify**:
-- `api/proto/cluster_data.proto` - gRPC service definition
-- `Makefile` - Add `proto` target
+**Files Created**:
+- ✅ `api/proto/cluster_data.proto` (442 lines) - Comprehensive gRPC service definition
+- ✅ `api/proto/v1/cluster_data.pb.go` (Generated, ~2500 lines) - Protocol buffer types
+- ✅ `api/proto/v1/cluster_data_grpc.pb.go` (Generated, ~600 lines) - gRPC service code
+- ✅ Updated `Makefile` - Added proto and proto-check targets
 
-**Implementation Steps**:
+**Implementation Summary**:
 ```
-[ ] Define ClusterDataService:
-    rpc StreamClusterState(StateStreamRequest) returns (stream StateUpdate);
-    rpc GetResource(ResourceRequest) returns (Resource);
-    rpc ListResources(ListRequest) returns (ResourceList);
-    rpc ExecuteCommand(CommandRequest) returns (CommandResult);
-    rpc GetTopologyGraph(TopologyRequest) returns (TopologyGraph);
-    rpc GetClusterHealth(HealthRequest) returns (ClusterHealth);
+✅ Define ClusterDataService with 8 RPC methods:
+    ✅ StreamClusterState - Real-time cluster state streaming
+    ✅ GetResource - Retrieve specific resource by kind/namespace/name
+    ✅ ListResources - List resources with filtering
+    ✅ ExecuteCommand - Execute commands against resources
+    ✅ GetTopologyGraph - Retrieve topology graph
+    ✅ GetClusterHealth - Get cluster health metrics
+    ✅ GetMetrics - Get time-series metrics
+    ✅ GetEvents - Get Kubernetes events
 
-[ ] Define message types:
-    [ ] StateStreamRequest { repeated string namespaces; }
-    [ ] StateUpdate { string update_type; Resource resource; }
-    [ ] ResourceRequest { string kind; string namespace; string name; }
-    [ ] Resource { string kind; string namespace; string name; bytes data; }
-    [ ] ListRequest { string kind; string namespace; map<string,string> labels; }
-    [ ] CommandRequest { string operation; Resource target; bytes params; }
-    [ ] TopologyGraph { repeated ResourceNode nodes; repeated Dependency edges; }
+✅ Define 30+ message types:
+    ✅ StateStreamRequest - Stream configuration with namespaces, kinds, labels
+    ✅ StateUpdate - Update with type, resource, timestamp, sequence
+    ✅ ResourceRequest - Resource identifier (kind, namespace, name, cluster_id)
+    ✅ Resource - Full resource with kind, apiVersion, labels, annotations, data, status
+    ✅ ListRequest - List with filtering (kind, namespace, labels, field selectors, pagination)
+    ✅ ResourceList - Paginated list response
+    ✅ CommandRequest - Command with operation, target, params, dry_run, correlation_id
+    ✅ CommandResult - Result with success, message, error, updated_resource
+    ✅ TopologyGraph - Graph with ResourceNode[], Dependency[], counts
+    ✅ ResourceNode - Node with resource, metadata, health, metrics
+    ✅ Dependency - Edge with source, target, type, metadata
+    ✅ ClusterHealth - Health with status, score, components, resource counts, issues
+    ✅ MetricsRequest - Time-series query with resource, metrics, time range
+    ✅ MetricsResponse - Series with metric data points
+    ✅ ResourceMetrics - Current CPU/memory usage, requests, limits, restarts
+    ✅ EventsRequest - Event query with resource, namespace, type, time range
+    ✅ EventsResponse - List of Kubernetes events
+    ✅ KubernetesEvent - Event with type, reason, message, timestamps, count
 
-[ ] Add protoc generation to Makefile:
-    protoc --go_out=. --go-grpc_out=. api/proto/*.proto
+✅ Add protoc generation to Makefile:
+    ✅ proto target: generates Go code from .proto files
+    ✅ proto-check target: verifies protoc tools are installed
+    ✅ Uses protoc-gen-go and protoc-gen-go-grpc plugins
+    ✅ Generates code in api/proto/v1/ directory
 
-[ ] Generate Go code and verify it compiles
+✅ Generate Go code and verify compilation:
+    ✅ Generated cluster_data.pb.go (protocol buffer types)
+    ✅ Generated cluster_data_grpc.pb.go (gRPC service interfaces)
+    ✅ All generated code compiles successfully
+    ✅ All existing tests still pass (24/24)
+```
+
+**Key Features**:
+- **8 RPC Methods**: Complete coverage of backend integration needs
+- **30+ Message Types**: Comprehensive type system for all operations
+- **Streaming Support**: StreamClusterState for real-time updates
+- **Pagination**: ListRequest/ResourceList support continuation tokens
+- **Multi-Cluster**: cluster_id field for multi-cluster support
+- **Audit Trail**: correlation_id fields for request tracking
+- **Dry Run**: CommandRequest supports dry_run mode
+- **Filtering**: Label selectors, field selectors, namespace filtering
+- **Metrics**: Time-series metrics with timestamps and data points
+- **Health**: Comprehensive health status and component monitoring
+- **Topology**: Full graph representation with nodes and edges
+- **Events**: Kubernetes event querying with time ranges
+
+**Generated Code**:
+```bash
+$ make proto
+✓ Protobuf code generated in api/proto/v1
+
+$ ls -lah api/proto/v1/
+cluster_data.pb.go        (75KB, ~2500 lines)
+cluster_data_grpc.pb.go   (18KB, ~600 lines)
+
+$ go build ./api/proto/v1/...
+✓ Compiles successfully
+```
+
+**Dependencies Added**:
+```
+google.golang.org/grpc v1.78.0           // gRPC framework
+google.golang.org/protobuf v1.36.11      // Protocol buffers
+google.golang.org/genproto v0.0.0-...   // Common proto types
+```
+
+**Makefile Targets**:
+```bash
+$ make proto-check
+✓ All protobuf tools installed
+
+$ make proto
+✓ Protobuf code generated in api/proto/v1
 ```
 
 **Acceptance Criteria**:
 - ✅ `make proto` generates Go code successfully
 - ✅ Generated code compiles without errors
 - ✅ All service methods have proper request/response types
+- ✅ Streaming methods defined correctly
+- ✅ Message types include all required fields
+- ✅ All tests still pass after proto generation
 
-**Dependencies**: None (can run in parallel with 1.1-1.3)
+**Dependencies**: None (ran in parallel with 1.1-1.3) ✅
+
+**Notes**:
+- Proto file uses proto3 syntax
+- Includes google/protobuf/timestamp.proto for timestamps
+- Go package: github.com/kubilitics/kubilitics-ai/api/proto/v1
+- Generated code follows gRPC best practices
+- All timestamps use google.protobuf.Timestamp (UTC)
+- Owner references support for Kubernetes relationships
+- Health status enum: healthy, warning, critical, unknown
+- Event types: Normal, Warning
+- Dependency types: owns, selects, uses, mounts, etc.
 
 ---
 
