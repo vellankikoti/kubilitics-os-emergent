@@ -60,15 +60,18 @@ interface NavItemProps {
   icon: React.ElementType;
   label: string;
   count?: number;
+  /** Optional callback when item is clicked to ensure parent section is expanded */
+  onNavigate?: () => void;
 }
 
-function NavItem({ to, icon: Icon, label, count }: NavItemProps) {
+function NavItem({ to, icon: Icon, label, count, onNavigate }: NavItemProps) {
   const location = useLocation();
   const isActive = location.pathname === to || location.pathname.startsWith(`${to}/`);
 
   return (
     <NavLink
       to={to}
+      onClick={onNavigate}
       className={cn(
         'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group relative overflow-hidden',
         isActive
@@ -102,20 +105,24 @@ function NavItem({ to, icon: Icon, label, count }: NavItemProps) {
 
 interface NavGroupProps {
   label: string;
+  sectionId: string;
   children: React.ReactNode;
-  defaultOpen?: boolean;
   icon: React.ElementType;
   /** When true, show the same blue gradient highlight as Dashboard/Topology/Settings */
   isSectionActive?: boolean;
+  /** Controlled: whether this section is currently open */
+  isOpen: boolean;
+  /** Callback when section header is clicked */
+  onToggle: (sectionId: string) => void;
 }
 
-function NavGroup({ label, children, defaultOpen = true, icon: Icon, isSectionActive = false }: NavGroupProps) {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
-
+function NavGroup({ label, sectionId, children, icon: Icon, isSectionActive = false, isOpen, onToggle }: NavGroupProps) {
   return (
     <div className="space-y-1">
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => onToggle(sectionId)}
+        aria-expanded={isOpen}
+        aria-controls={`nav-group-${sectionId}`}
         className={cn(
           "flex items-center justify-between w-full px-4 py-3 rounded-xl transition-all duration-300 group shadow-sm border",
           isSectionActive
@@ -147,6 +154,7 @@ function NavGroup({ label, children, defaultOpen = true, icon: Icon, isSectionAc
       <AnimatePresence initial={false}>
         {isOpen && (
           <motion.div
+            id={`nav-group-${sectionId}`}
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
@@ -202,6 +210,35 @@ const SCALING_PATHS = ['/horizontalpodautoscalers', '/verticalpodautoscalers', '
 const CRD_PATHS = ['/customresourcedefinitions', '/customresources'];
 const ADMISSION_PATHS = ['/mutatingwebhooks', '/validatingwebhooks'];
 
+// Section identifiers for accordion state management
+const SECTION_IDS = {
+  WORKLOADS: 'workloads',
+  NETWORKING: 'networking',
+  STORAGE: 'storage',
+  CLUSTER: 'cluster',
+  SECURITY: 'security',
+  RESOURCES: 'resources',
+  SCALING: 'scaling',
+  CRDS: 'crds',
+  ADMISSION: 'admission',
+} as const;
+
+type SectionId = typeof SECTION_IDS[keyof typeof SECTION_IDS] | null;
+
+// Map route paths to their parent section IDs
+function getSectionForPath(pathname: string): SectionId {
+  if (isPathIn(pathname, WORKLOAD_PATHS)) return SECTION_IDS.WORKLOADS;
+  if (isPathIn(pathname, NETWORKING_PATHS)) return SECTION_IDS.NETWORKING;
+  if (isPathIn(pathname, STORAGE_PATHS)) return SECTION_IDS.STORAGE;
+  if (isPathIn(pathname, CLUSTER_PATHS)) return SECTION_IDS.CLUSTER;
+  if (isPathIn(pathname, SECURITY_PATHS)) return SECTION_IDS.SECURITY;
+  if (isPathIn(pathname, RESOURCES_PATHS)) return SECTION_IDS.RESOURCES;
+  if (isPathIn(pathname, SCALING_PATHS)) return SECTION_IDS.SCALING;
+  if (isPathIn(pathname, CRD_PATHS)) return SECTION_IDS.CRDS;
+  if (isPathIn(pathname, ADMISSION_PATHS)) return SECTION_IDS.ADMISSION;
+  return null; // Dashboard, Topology, Settings, etc.
+}
+
 function SidebarContent({
   counts,
   isLoading,
@@ -214,6 +251,39 @@ function SidebarContent({
   const isDashboardActive = pathname === '/dashboard';
   const isTopologyActive = pathname.startsWith('/topology');
   const isSettingsActive = pathname.startsWith('/settings');
+
+  // Centralized state for accordion: track which section is currently open
+  const [openSection, setOpenSection] = useState<SectionId>(() => {
+    // Initialize based on current route
+    const sectionForPath = getSectionForPath(pathname);
+    return sectionForPath;
+  });
+
+  // Sync expansion state with route changes
+  useEffect(() => {
+    const sectionForPath = getSectionForPath(pathname);
+    // If on dashboard, close all sections; otherwise open the section for current route
+    setOpenSection(sectionForPath);
+  }, [pathname]);
+
+  // Handle section toggle: if clicking the same section, close it; otherwise open new and close others
+  const handleSectionToggle = (sectionId: string) => {
+    setOpenSection((current) => {
+      // If clicking the already-open section, close it
+      if (current === sectionId) {
+        return null;
+      }
+      // Otherwise, open the clicked section (this closes any other open section)
+      return sectionId as SectionId;
+    });
+  };
+
+  // Handle NavItem click: ensure parent section is expanded
+  const handleNavItemClick = (sectionId: SectionId) => {
+    if (sectionId && openSection !== sectionId) {
+      setOpenSection(sectionId);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6 pb-6 w-full">
@@ -255,78 +325,141 @@ function SidebarContent({
 
       <div className="space-y-5">
         {/* Workloads */}
-        <NavGroup label="Workloads" icon={Cpu} defaultOpen={true} isSectionActive={isPathIn(pathname, WORKLOAD_PATHS)}>
-          <NavItem to="/pods" icon={Box} label="Pods" count={counts.pods} />
-          <NavItem to="/deployments" icon={Container} label="Deployments" count={counts.deployments} />
-          <NavItem to="/replicasets" icon={Layers} label="ReplicaSets" count={counts.replicasets} />
-          <NavItem to="/statefulsets" icon={Layers} label="StatefulSets" count={counts.statefulsets} />
-          <NavItem to="/daemonsets" icon={Layers} label="DaemonSets" count={counts.daemonsets} />
-          <NavItem to="/jobs" icon={Activity} label="Jobs" count={counts.jobs} />
-          <NavItem to="/cronjobs" icon={Clock} label="CronJobs" count={counts.cronjobs} />
+        <NavGroup 
+          label="Workloads" 
+          sectionId={SECTION_IDS.WORKLOADS}
+          icon={Cpu} 
+          isOpen={openSection === SECTION_IDS.WORKLOADS}
+          onToggle={handleSectionToggle}
+          isSectionActive={isPathIn(pathname, WORKLOAD_PATHS)}
+        >
+          <NavItem to="/pods" icon={Box} label="Pods" count={counts.pods} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/deployments" icon={Container} label="Deployments" count={counts.deployments} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/replicasets" icon={Layers} label="ReplicaSets" count={counts.replicasets} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/statefulsets" icon={Layers} label="StatefulSets" count={counts.statefulsets} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/daemonsets" icon={Layers} label="DaemonSets" count={counts.daemonsets} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/jobs" icon={Activity} label="Jobs" count={counts.jobs} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/cronjobs" icon={Clock} label="CronJobs" count={counts.cronjobs} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
         </NavGroup>
 
         {/* Networking */}
-        <NavGroup label="Networking" icon={Globe} defaultOpen={false} isSectionActive={isPathIn(pathname, NETWORKING_PATHS)}>
-          <NavItem to="/services" icon={Globe} label="Services" count={counts.services} />
-          <NavItem to="/ingresses" icon={Globe} label="Ingresses" count={counts.ingresses} />
-          <NavItem to="/ingressclasses" icon={Route} label="Ingress Classes" count={counts.ingressclasses} />
-          <NavItem to="/endpoints" icon={Globe} label="Endpoints" count={counts.endpoints} />
-          <NavItem to="/endpointslices" icon={Network} label="Endpoint Slices" count={counts.endpointslices} />
-          <NavItem to="/networkpolicies" icon={Shield} label="Network Policies" count={counts.networkpolicies} />
+        <NavGroup 
+          label="Networking" 
+          sectionId={SECTION_IDS.NETWORKING}
+          icon={Globe} 
+          isOpen={openSection === SECTION_IDS.NETWORKING}
+          onToggle={handleSectionToggle}
+          isSectionActive={isPathIn(pathname, NETWORKING_PATHS)}
+        >
+          <NavItem to="/services" icon={Globe} label="Services" count={counts.services} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
+          <NavItem to="/ingresses" icon={Globe} label="Ingresses" count={counts.ingresses} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
+          <NavItem to="/ingressclasses" icon={Route} label="Ingress Classes" count={counts.ingressclasses} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
+          <NavItem to="/endpoints" icon={Globe} label="Endpoints" count={counts.endpoints} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
+          <NavItem to="/endpointslices" icon={Network} label="Endpoint Slices" count={counts.endpointslices} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
+          <NavItem to="/networkpolicies" icon={Shield} label="Network Policies" count={counts.networkpolicies} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
         </NavGroup>
 
         {/* Storage */}
-        <NavGroup label="Storage" icon={StorageIcon} defaultOpen={false} isSectionActive={isPathIn(pathname, STORAGE_PATHS)}>
-          <NavItem to="/configmaps" icon={Settings} label="ConfigMaps" count={counts.configmaps} />
-          <NavItem to="/secrets" icon={Key} label="Secrets" count={counts.secrets} />
-          <NavItem to="/persistentvolumes" icon={HardDrive} label="Persistent Volumes" count={counts.persistentvolumes} />
-          <NavItem to="/persistentvolumeclaims" icon={Database} label="PVCs" count={counts.persistentvolumeclaims} />
-          <NavItem to="/storageclasses" icon={Database} label="Storage Classes" count={counts.storageclasses} />
-          <NavItem to="/volumeattachments" icon={HardDrive} label="Volume Attachments" count={counts.volumeattachments} />
+        <NavGroup 
+          label="Storage" 
+          sectionId={SECTION_IDS.STORAGE}
+          icon={StorageIcon} 
+          isOpen={openSection === SECTION_IDS.STORAGE}
+          onToggle={handleSectionToggle}
+          isSectionActive={isPathIn(pathname, STORAGE_PATHS)}
+        >
+          <NavItem to="/configmaps" icon={Settings} label="ConfigMaps" count={counts.configmaps} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
+          <NavItem to="/secrets" icon={Key} label="Secrets" count={counts.secrets} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
+          <NavItem to="/persistentvolumes" icon={HardDrive} label="Persistent Volumes" count={counts.persistentvolumes} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
+          <NavItem to="/persistentvolumeclaims" icon={Database} label="PVCs" count={counts.persistentvolumeclaims} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
+          <NavItem to="/storageclasses" icon={Database} label="Storage Classes" count={counts.storageclasses} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
+          <NavItem to="/volumeattachments" icon={HardDrive} label="Volume Attachments" count={counts.volumeattachments} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
         </NavGroup>
 
         {/* Cluster */}
-        <NavGroup label="Cluster" icon={Server} defaultOpen={false} isSectionActive={isPathIn(pathname, CLUSTER_PATHS)}>
-          <NavItem to="/nodes" icon={Server} label="Nodes" count={counts.nodes} />
-          <NavItem to="/namespaces" icon={FileText} label="Namespaces" count={counts.namespaces} />
-          <NavItem to="/events" icon={Activity} label="Events" />
-          <NavItem to="/apiservices" icon={FileCode} label="API Services" count={counts.apiservices} />
-          <NavItem to="/leases" icon={Activity} label="Leases" count={counts.leases} />
+        <NavGroup 
+          label="Cluster" 
+          sectionId={SECTION_IDS.CLUSTER}
+          icon={Server} 
+          isOpen={openSection === SECTION_IDS.CLUSTER}
+          onToggle={handleSectionToggle}
+          isSectionActive={isPathIn(pathname, CLUSTER_PATHS)}
+        >
+          <NavItem to="/nodes" icon={Server} label="Nodes" count={counts.nodes} onNavigate={() => handleNavItemClick(SECTION_IDS.CLUSTER)} />
+          <NavItem to="/namespaces" icon={FileText} label="Namespaces" count={counts.namespaces} onNavigate={() => handleNavItemClick(SECTION_IDS.CLUSTER)} />
+          <NavItem to="/events" icon={Activity} label="Events" onNavigate={() => handleNavItemClick(SECTION_IDS.CLUSTER)} />
+          <NavItem to="/apiservices" icon={FileCode} label="API Services" count={counts.apiservices} onNavigate={() => handleNavItemClick(SECTION_IDS.CLUSTER)} />
+          <NavItem to="/leases" icon={Activity} label="Leases" count={counts.leases} onNavigate={() => handleNavItemClick(SECTION_IDS.CLUSTER)} />
         </NavGroup>
 
         {/* Security & Access */}
-        <NavGroup label="Security" icon={Lock} defaultOpen={false} isSectionActive={isPathIn(pathname, SECURITY_PATHS)}>
-          <NavItem to="/serviceaccounts" icon={Users} label="Service Accounts" count={counts.serviceaccounts} />
-          <NavItem to="/roles" icon={Shield} label="Roles" count={counts.roles} />
-          <NavItem to="/clusterroles" icon={Shield} label="Cluster Roles" count={counts.clusterroles} />
-          <NavItem to="/rolebindings" icon={Shield} label="Role Bindings" count={counts.rolebindings} />
-          <NavItem to="/clusterrolebindings" icon={Shield} label="Cluster Role Bindings" count={counts.clusterrolebindings} />
-          <NavItem to="/priorityclasses" icon={AlertTriangle} label="Priority Classes" count={counts.priorityclasses} />
+        <NavGroup 
+          label="Security" 
+          sectionId={SECTION_IDS.SECURITY}
+          icon={Lock} 
+          isOpen={openSection === SECTION_IDS.SECURITY}
+          onToggle={handleSectionToggle}
+          isSectionActive={isPathIn(pathname, SECURITY_PATHS)}
+        >
+          <NavItem to="/serviceaccounts" icon={Users} label="Service Accounts" count={counts.serviceaccounts} onNavigate={() => handleNavItemClick(SECTION_IDS.SECURITY)} />
+          <NavItem to="/roles" icon={Shield} label="Roles" count={counts.roles} onNavigate={() => handleNavItemClick(SECTION_IDS.SECURITY)} />
+          <NavItem to="/clusterroles" icon={Shield} label="Cluster Roles" count={counts.clusterroles} onNavigate={() => handleNavItemClick(SECTION_IDS.SECURITY)} />
+          <NavItem to="/rolebindings" icon={Shield} label="Role Bindings" count={counts.rolebindings} onNavigate={() => handleNavItemClick(SECTION_IDS.SECURITY)} />
+          <NavItem to="/clusterrolebindings" icon={Shield} label="Cluster Role Bindings" count={counts.clusterrolebindings} onNavigate={() => handleNavItemClick(SECTION_IDS.SECURITY)} />
+          <NavItem to="/priorityclasses" icon={AlertTriangle} label="Priority Classes" count={counts.priorityclasses} onNavigate={() => handleNavItemClick(SECTION_IDS.SECURITY)} />
         </NavGroup>
 
         {/* Resource Management */}
-        <NavGroup label="Resources" icon={Gauge} defaultOpen={false} isSectionActive={isPathIn(pathname, RESOURCES_PATHS)}>
-          <NavItem to="/resourcequotas" icon={Gauge} label="Resource Quotas" count={counts.resourcequotas} />
-          <NavItem to="/limitranges" icon={Scale} label="Limit Ranges" count={counts.limitranges} />
+        <NavGroup 
+          label="Resources" 
+          sectionId={SECTION_IDS.RESOURCES}
+          icon={Gauge} 
+          isOpen={openSection === SECTION_IDS.RESOURCES}
+          onToggle={handleSectionToggle}
+          isSectionActive={isPathIn(pathname, RESOURCES_PATHS)}
+        >
+          <NavItem to="/resourcequotas" icon={Gauge} label="Resource Quotas" count={counts.resourcequotas} onNavigate={() => handleNavItemClick(SECTION_IDS.RESOURCES)} />
+          <NavItem to="/limitranges" icon={Scale} label="Limit Ranges" count={counts.limitranges} onNavigate={() => handleNavItemClick(SECTION_IDS.RESOURCES)} />
         </NavGroup>
 
         {/* Scaling & Policies */}
-        <NavGroup label="Scaling" icon={Zap} defaultOpen={false} isSectionActive={isPathIn(pathname, SCALING_PATHS)}>
-          <NavItem to="/horizontalpodautoscalers" icon={Scale} label="HPAs" count={counts.horizontalpodautoscalers} />
-          <NavItem to="/verticalpodautoscalers" icon={Scale} label="VPAs" count={counts.verticalpodautoscalers} />
-          <NavItem to="/poddisruptionbudgets" icon={Shield} label="PDBs" count={counts.poddisruptionbudgets} />
+        <NavGroup 
+          label="Scaling" 
+          sectionId={SECTION_IDS.SCALING}
+          icon={Zap} 
+          isOpen={openSection === SECTION_IDS.SCALING}
+          onToggle={handleSectionToggle}
+          isSectionActive={isPathIn(pathname, SCALING_PATHS)}
+        >
+          <NavItem to="/horizontalpodautoscalers" icon={Scale} label="HPAs" count={counts.horizontalpodautoscalers} onNavigate={() => handleNavItemClick(SECTION_IDS.SCALING)} />
+          <NavItem to="/verticalpodautoscalers" icon={Scale} label="VPAs" count={counts.verticalpodautoscalers} onNavigate={() => handleNavItemClick(SECTION_IDS.SCALING)} />
+          <NavItem to="/poddisruptionbudgets" icon={Shield} label="PDBs" count={counts.poddisruptionbudgets} onNavigate={() => handleNavItemClick(SECTION_IDS.SCALING)} />
         </NavGroup>
 
         {/* Custom Resources */}
-        <NavGroup label="CRDs" icon={FileCode} defaultOpen={false} isSectionActive={isPathIn(pathname, CRD_PATHS)}>
-          <NavItem to="/customresourcedefinitions" icon={FileCode} label="Definitions" count={counts.customresourcedefinitions} />
-          <NavItem to="/customresources" icon={FileCode} label="Instances" />
+        <NavGroup 
+          label="CRDs" 
+          sectionId={SECTION_IDS.CRDS}
+          icon={FileCode} 
+          isOpen={openSection === SECTION_IDS.CRDS}
+          onToggle={handleSectionToggle}
+          isSectionActive={isPathIn(pathname, CRD_PATHS)}
+        >
+          <NavItem to="/customresourcedefinitions" icon={FileCode} label="Definitions" count={counts.customresourcedefinitions} onNavigate={() => handleNavItemClick(SECTION_IDS.CRDS)} />
+          <NavItem to="/customresources" icon={FileCode} label="Instances" onNavigate={() => handleNavItemClick(SECTION_IDS.CRDS)} />
         </NavGroup>
 
         {/* Admission Control */}
-        <NavGroup label="Admission" icon={Webhook} defaultOpen={false} isSectionActive={isPathIn(pathname, ADMISSION_PATHS)}>
-          <NavItem to="/mutatingwebhooks" icon={Webhook} label="Mutating Webhooks" count={counts.mutatingwebhookconfigurations} />
-          <NavItem to="/validatingwebhooks" icon={Webhook} label="Validating Webhooks" count={counts.validatingwebhookconfigurations} />
+        <NavGroup 
+          label="Admission" 
+          sectionId={SECTION_IDS.ADMISSION}
+          icon={Webhook} 
+          isOpen={openSection === SECTION_IDS.ADMISSION}
+          onToggle={handleSectionToggle}
+          isSectionActive={isPathIn(pathname, ADMISSION_PATHS)}
+        >
+          <NavItem to="/mutatingwebhooks" icon={Webhook} label="Mutating Webhooks" count={counts.mutatingwebhookconfigurations} onNavigate={() => handleNavItemClick(SECTION_IDS.ADMISSION)} />
+          <NavItem to="/validatingwebhooks" icon={Webhook} label="Validating Webhooks" count={counts.validatingwebhookconfigurations} onNavigate={() => handleNavItemClick(SECTION_IDS.ADMISSION)} />
         </NavGroup>
       </div>
 

@@ -25,7 +25,7 @@ import {
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useK8sResourceList, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { useNamespaceTopology } from '@/hooks/useNamespaceTopology';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 
@@ -94,12 +94,8 @@ export default function NamespaceDetail() {
   const resourceQuotas = useMemo(() => resourceQuotasList.data?.items ?? [], [resourceQuotasList.data?.items]);
   const hasQuota = resourceQuotas.length > 0;
 
-  const isBackendConfigured = !!clusterId;
-  const { nodes: topologyNodesResolved, edges: topologyEdgesResolved, isLoading: topologyLoading, error: topologyError } = useResourceTopology('namespaces', undefined, name ?? undefined);
-  const topologyNodes: TopologyNode[] = topologyNodesResolved.length > 0
-    ? topologyNodesResolved
-    : [{ id: 'ns', type: 'namespace', name: nsName, status: 'healthy', isCurrent: true }];
-  const topologyEdges: TopologyEdge[] = topologyEdgesResolved;
+  // Use namespace topology hook instead of resource topology (backend doesn't support namespace topology)
+  const { nodes: topologyNodes, edges: topologyEdges, isLoading: topologyLoading, error: topologyError } = useNamespaceTopology(nsName);
 
   const handleNodeClick = useCallback((node: TopologyNode) => {
     const resourceDetail: ResourceDetail = {

@@ -136,7 +136,7 @@ const resourceStyles: Record<ResourceType, { color: string; radius: number }> = 
   storageclass: { color: 'hsl(200, 50%, 50%)', radius: 28 },
   user: { color: 'hsl(240, 60%, 55%)', radius: 24 },
   group: { color: 'hsl(250, 60%, 55%)', radius: 26 },
-  cluster: { color: 'hsl(217, 91%, 60%)', radius: 40 },
+  cluster: { color: 'hsl(217, 91%, 60%)', radius: 50 }, // Larger radius for cluster node
 };
 
 const resourceIcons: Record<ResourceType, LucideIcon> = {
@@ -555,6 +555,22 @@ export function D3ForceTopology({
       .attr('opacity', 0.15)
       .attr('class', 'node-glow');
 
+    // Add special glow effect for cluster node
+    node.filter(d => d.type === 'cluster')
+      .append('circle')
+      .attr('r', d => d.radius + 12)
+      .attr('fill', d => d.color)
+      .attr('opacity', 0.2)
+      .attr('class', 'cluster-glow')
+      .style('filter', 'blur(8px)');
+    
+    node.filter(d => d.type === 'cluster')
+      .append('circle')
+      .attr('r', d => d.radius + 6)
+      .attr('fill', d => d.color)
+      .attr('opacity', 0.3)
+      .attr('class', 'cluster-glow-inner');
+
     // Add group indicator ring
     node.filter(d => d.isGroup)
       .append('circle')
@@ -569,9 +585,13 @@ export function D3ForceTopology({
     node.append('circle')
       .attr('r', d => d.radius)
       .attr('fill', d => d.color)
-      .attr('stroke', d => d.isCurrent ? 'hsl(var(--background))' : 'transparent')
-      .attr('stroke-width', 3)
+      .attr('stroke', d => {
+        if (d.type === 'cluster') return 'hsl(var(--background))';
+        return d.isCurrent ? 'hsl(var(--background))' : 'transparent';
+      })
+      .attr('stroke-width', d => d.type === 'cluster' ? 4 : 3)
       .attr('class', 'node-circle')
+      .style('filter', d => d.type === 'cluster' ? 'drop-shadow(0 4px 12px rgba(0,0,0,0.15))' : null)
       .on('mouseenter', function(event, d) {
         d3.select(this).transition().duration(200).attr('r', d.radius + 4);
         setHoveredNode(d.id);

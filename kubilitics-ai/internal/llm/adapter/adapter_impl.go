@@ -7,8 +7,7 @@ import (
 
 	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/anthropic"
 	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/openai"
-	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/ollama"
-	"github.com/kubilitics/kubilitics-ai/internal/llm/provider/custom"
+	"github.com/kubilitics/kubilitics-ai/internal/llm/types"
 )
 
 // Package adapter provides unified LLM interface supporting ANY provider.
@@ -113,22 +112,20 @@ func NewLLMAdapter(cfg *Config) (LLMAdapter, error) {
 		}
 
 	case ProviderOllama:
-		if cfg.BaseURL == "" {
-			cfg.BaseURL = "http://localhost:11434" // Default Ollama URL
-		}
-		client, err = ollama.NewOllamaClient(cfg.BaseURL, cfg.Model)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Ollama client: %w", err)
-		}
+		return nil, fmt.Errorf("Ollama provider not yet implemented")
+		// TODO: Implement Ollama provider
+		// if cfg.BaseURL == "" {
+		// 	cfg.BaseURL = "http://localhost:11434"
+		// }
+		// client, err = ollama.NewOllamaClient(cfg.BaseURL, cfg.Model)
 
 	case ProviderCustom:
-		if cfg.BaseURL == "" {
-			return nil, fmt.Errorf("custom provider requires base URL")
-		}
-		client, err = custom.NewCustomClient(cfg.BaseURL, cfg.APIKey, cfg.Model)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create custom client: %w", err)
-		}
+		return nil, fmt.Errorf("Custom provider not yet implemented")
+		// TODO: Implement Custom provider
+		// if cfg.BaseURL == "" {
+		// 	return nil, fmt.Errorf("custom provider requires base URL")
+		// }
+		// client, err = custom.NewCustomClient(cfg.BaseURL, cfg.APIKey, cfg.Model)
 
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
@@ -141,15 +138,14 @@ func NewLLMAdapter(cfg *Config) (LLMAdapter, error) {
 }
 
 // Complete delegates to provider-specific client
-func (a *llmAdapterImpl) Complete(ctx context.Context, messages []interface{}, tools []interface{}) (string, []interface{}, error) {
+func (a *llmAdapterImpl) Complete(ctx context.Context, messages []types.Message, tools []types.Tool) (string, []interface{}, error) {
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		return client.Complete(ctx, messages, tools)
-	case *openai.OpenAIClient:
-		return client.Complete(ctx, messages, tools)
-	case *ollama.OllamaClient:
-		return client.Complete(ctx, messages, tools)
-	case *custom.CustomClient:
+		// TODO: Update Anthropic client to use types.Message and types.Tool
+		_ = messages
+		_ = tools
+		return "", nil, fmt.Errorf("Anthropic provider not yet updated to new types")
+	case *openai.OpenAIClientImpl:
 		return client.Complete(ctx, messages, tools)
 	default:
 		return "", nil, fmt.Errorf("unknown client type")
@@ -157,15 +153,14 @@ func (a *llmAdapterImpl) Complete(ctx context.Context, messages []interface{}, t
 }
 
 // CompleteStream delegates to provider-specific client
-func (a *llmAdapterImpl) CompleteStream(ctx context.Context, messages []interface{}, tools []interface{}) (chan string, chan interface{}, error) {
+func (a *llmAdapterImpl) CompleteStream(ctx context.Context, messages []types.Message, tools []types.Tool) (chan string, chan interface{}, error) {
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		return client.CompleteStream(ctx, messages, tools)
-	case *openai.OpenAIClient:
-		return client.CompleteStream(ctx, messages, tools)
-	case *ollama.OllamaClient:
-		return client.CompleteStream(ctx, messages, tools)
-	case *custom.CustomClient:
+		// TODO: Update Anthropic client
+		_ = messages
+		_ = tools
+		return nil, nil, fmt.Errorf("Anthropic provider not yet updated to new types")
+	case *openai.OpenAIClientImpl:
 		return client.CompleteStream(ctx, messages, tools)
 	default:
 		return nil, nil, fmt.Errorf("unknown client type")
@@ -173,15 +168,13 @@ func (a *llmAdapterImpl) CompleteStream(ctx context.Context, messages []interfac
 }
 
 // CountTokens delegates to provider-specific client
-func (a *llmAdapterImpl) CountTokens(ctx context.Context, messages []interface{}, tools []interface{}) (int, error) {
+func (a *llmAdapterImpl) CountTokens(ctx context.Context, messages []types.Message, tools []types.Tool) (int, error) {
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		return client.CountTokens(ctx, messages, tools)
-	case *openai.OpenAIClient:
-		return client.CountTokens(ctx, messages, tools)
-	case *ollama.OllamaClient:
-		return client.CountTokens(ctx, messages, tools)
-	case *custom.CustomClient:
+		_ = messages
+		_ = tools
+		return 0, fmt.Errorf("Anthropic provider not yet updated to new types")
+	case *openai.OpenAIClientImpl:
 		return client.CountTokens(ctx, messages, tools)
 	default:
 		return 0, fmt.Errorf("unknown client type")
@@ -199,12 +192,8 @@ func (a *llmAdapterImpl) GetCapabilities(ctx context.Context) (interface{}, erro
 
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		caps, err = client.GetCapabilities(ctx)
-	case *openai.OpenAIClient:
-		caps, err = client.GetCapabilities(ctx)
-	case *ollama.OllamaClient:
-		caps, err = client.GetCapabilities(ctx)
-	case *custom.CustomClient:
+		return nil, fmt.Errorf("Anthropic provider not yet updated")
+	case *openai.OpenAIClientImpl:
 		caps, err = client.GetCapabilities(ctx)
 	default:
 		return nil, fmt.Errorf("unknown client type")
@@ -218,32 +207,12 @@ func (a *llmAdapterImpl) GetCapabilities(ctx context.Context) (interface{}, erro
 	return caps, nil
 }
 
-// ValidateToolCall delegates to provider-specific client
-func (a *llmAdapterImpl) ValidateToolCall(ctx context.Context, toolName string, args interface{}) error {
-	switch client := a.client.(type) {
-	case *anthropic.AnthropicClientImpl:
-		return client.ValidateToolCall(ctx, toolName, args)
-	case *openai.OpenAIClient:
-		return client.ValidateToolCall(ctx, toolName, args)
-	case *ollama.OllamaClient:
-		return client.ValidateToolCall(ctx, toolName, args)
-	case *custom.CustomClient:
-		return client.ValidateToolCall(ctx, toolName, args)
-	default:
-		return fmt.Errorf("unknown client type")
-	}
-}
-
 // NormalizeToolCall converts provider-specific format to standard
 func (a *llmAdapterImpl) NormalizeToolCall(ctx context.Context, toolCall interface{}) (map[string]interface{}, error) {
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		return client.NormalizeToolCall(ctx, toolCall)
-	case *openai.OpenAIClient:
-		return client.NormalizeToolCall(ctx, toolCall)
-	case *ollama.OllamaClient:
-		return client.NormalizeToolCall(ctx, toolCall)
-	case *custom.CustomClient:
+		return nil, fmt.Errorf("Anthropic provider not yet updated")
+	case *openai.OpenAIClientImpl:
 		return client.NormalizeToolCall(ctx, toolCall)
 	default:
 		return nil, fmt.Errorf("unknown client type")

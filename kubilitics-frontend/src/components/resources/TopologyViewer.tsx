@@ -1,12 +1,12 @@
 import { useState, useCallback, useMemo, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  Network, 
-  ZoomIn, 
-  ZoomOut, 
-  Maximize2, 
-  FileJson, 
-  FileSpreadsheet, 
+import {
+  Network,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  FileJson,
+  FileSpreadsheet,
   Image,
   Box,
   Server,
@@ -33,15 +33,15 @@ import { cn } from '@/lib/utils';
 import { D3ForceTopology } from './D3ForceTopology';
 
 // ResourceType is imported from D3ForceTopology - keeping local reference for styling
-type LocalResourceType = 
+type LocalResourceType =
   | 'cluster'
-  | 'pod' 
-  | 'deployment' 
-  | 'replicaset' 
-  | 'service' 
-  | 'node' 
-  | 'namespace' 
-  | 'configmap' 
+  | 'pod'
+  | 'deployment'
+  | 'replicaset'
+  | 'service'
+  | 'node'
+  | 'namespace'
+  | 'configmap'
   | 'secret'
   | 'ingress'
   | 'statefulset'
@@ -90,6 +90,10 @@ export interface TopologyViewerProps {
   layoutOptions?: LayoutOptions;
   /** Hide JSON/CSV/PNG in toolbar; parent shows a single consolidated export row */
   hideBuiltInExport?: boolean;
+  /** Expanded resources (namespaces, deployments, replicasets, nodes) - controls visibility of child resources */
+  expandedResources?: Set<string>;
+  /** Callback when resource expansion state changes */
+  onToggleExpansion?: (resourceId: string) => void;
 }
 
 export interface TopologyViewerRef {
@@ -100,155 +104,155 @@ export interface TopologyViewerRef {
 // Vibrant, distinct colors for each resource type - matching reference image
 const resourceStyles: Record<ResourceType, { bg: string; border: string; iconBg: string }> = {
   cluster: { bg: 'hsl(217 91% 60%)', border: 'hsl(217 91% 60%)', iconBg: 'hsl(217 91% 60%)' },
-  pod: { 
-    bg: 'hsl(199 89% 48%)', 
-    border: 'hsl(199 89% 48%)', 
-    iconBg: 'hsl(199 89% 48%)' 
+  pod: {
+    bg: 'hsl(199 89% 48%)',
+    border: 'hsl(199 89% 48%)',
+    iconBg: 'hsl(199 89% 48%)'
   },
-  deployment: { 
-    bg: 'hsl(25 95% 53%)', 
-    border: 'hsl(25 95% 53%)', 
-    iconBg: 'hsl(25 95% 53%)' 
+  deployment: {
+    bg: 'hsl(25 95% 53%)',
+    border: 'hsl(25 95% 53%)',
+    iconBg: 'hsl(25 95% 53%)'
   },
-  replicaset: { 
-    bg: 'hsl(262 83% 58%)', 
-    border: 'hsl(262 83% 58%)', 
-    iconBg: 'hsl(262 83% 58%)' 
+  replicaset: {
+    bg: 'hsl(262 83% 58%)',
+    border: 'hsl(262 83% 58%)',
+    iconBg: 'hsl(262 83% 58%)'
   },
-  service: { 
-    bg: 'hsl(142 76% 36%)', 
-    border: 'hsl(142 76% 36%)', 
-    iconBg: 'hsl(142 76% 36%)' 
+  service: {
+    bg: 'hsl(142 76% 36%)',
+    border: 'hsl(142 76% 36%)',
+    iconBg: 'hsl(142 76% 36%)'
   },
-  node: { 
-    bg: 'hsl(0 72% 51%)', 
-    border: 'hsl(0 72% 51%)', 
-    iconBg: 'hsl(0 72% 51%)' 
+  node: {
+    bg: 'hsl(0 72% 51%)',
+    border: 'hsl(0 72% 51%)',
+    iconBg: 'hsl(0 72% 51%)'
   },
-  namespace: { 
-    bg: 'hsl(280 87% 67%)', 
-    border: 'hsl(280 87% 67%)', 
-    iconBg: 'hsl(280 87% 67%)' 
+  namespace: {
+    bg: 'hsl(280 87% 67%)',
+    border: 'hsl(280 87% 67%)',
+    iconBg: 'hsl(280 87% 67%)'
   },
-  configmap: { 
-    bg: 'hsl(47 96% 53%)', 
-    border: 'hsl(47 96% 53%)', 
-    iconBg: 'hsl(47 96% 53%)' 
+  configmap: {
+    bg: 'hsl(47 96% 53%)',
+    border: 'hsl(47 96% 53%)',
+    iconBg: 'hsl(47 96% 53%)'
   },
-  secret: { 
-    bg: 'hsl(340 82% 52%)', 
-    border: 'hsl(340 82% 52%)', 
-    iconBg: 'hsl(340 82% 52%)' 
+  secret: {
+    bg: 'hsl(340 82% 52%)',
+    border: 'hsl(340 82% 52%)',
+    iconBg: 'hsl(340 82% 52%)'
   },
-  ingress: { 
-    bg: 'hsl(174 72% 40%)', 
-    border: 'hsl(174 72% 40%)', 
-    iconBg: 'hsl(174 72% 40%)' 
+  ingress: {
+    bg: 'hsl(174 72% 40%)',
+    border: 'hsl(174 72% 40%)',
+    iconBg: 'hsl(174 72% 40%)'
   },
-  statefulset: { 
-    bg: 'hsl(220 70% 50%)', 
-    border: 'hsl(220 70% 50%)', 
-    iconBg: 'hsl(220 70% 50%)' 
+  statefulset: {
+    bg: 'hsl(220 70% 50%)',
+    border: 'hsl(220 70% 50%)',
+    iconBg: 'hsl(220 70% 50%)'
   },
-  daemonset: { 
-    bg: 'hsl(280 70% 50%)', 
-    border: 'hsl(280 70% 50%)', 
-    iconBg: 'hsl(280 70% 50%)' 
+  daemonset: {
+    bg: 'hsl(280 70% 50%)',
+    border: 'hsl(280 70% 50%)',
+    iconBg: 'hsl(280 70% 50%)'
   },
-  job: { 
-    bg: 'hsl(45 93% 47%)', 
-    border: 'hsl(45 93% 47%)', 
-    iconBg: 'hsl(45 93% 47%)' 
+  job: {
+    bg: 'hsl(45 93% 47%)',
+    border: 'hsl(45 93% 47%)',
+    iconBg: 'hsl(45 93% 47%)'
   },
-  cronjob: { 
-    bg: 'hsl(36 100% 50%)', 
-    border: 'hsl(36 100% 50%)', 
-    iconBg: 'hsl(36 100% 50%)' 
+  cronjob: {
+    bg: 'hsl(36 100% 50%)',
+    border: 'hsl(36 100% 50%)',
+    iconBg: 'hsl(36 100% 50%)'
   },
-  pv: { 
-    bg: 'hsl(210 40% 50%)', 
-    border: 'hsl(210 40% 50%)', 
-    iconBg: 'hsl(210 40% 50%)' 
+  pv: {
+    bg: 'hsl(210 40% 50%)',
+    border: 'hsl(210 40% 50%)',
+    iconBg: 'hsl(210 40% 50%)'
   },
-  pvc: { 
-    bg: 'hsl(210 60% 45%)', 
-    border: 'hsl(210 60% 45%)', 
-    iconBg: 'hsl(210 60% 45%)' 
+  pvc: {
+    bg: 'hsl(210 60% 45%)',
+    border: 'hsl(210 60% 45%)',
+    iconBg: 'hsl(210 60% 45%)'
   },
-  hpa: { 
-    bg: 'hsl(160 60% 45%)', 
-    border: 'hsl(160 60% 45%)', 
-    iconBg: 'hsl(160 60% 45%)' 
+  hpa: {
+    bg: 'hsl(160 60% 45%)',
+    border: 'hsl(160 60% 45%)',
+    iconBg: 'hsl(160 60% 45%)'
   },
-  vpa: { 
-    bg: 'hsl(150 60% 45%)', 
-    border: 'hsl(150 60% 45%)', 
-    iconBg: 'hsl(150 60% 45%)' 
+  vpa: {
+    bg: 'hsl(150 60% 45%)',
+    border: 'hsl(150 60% 45%)',
+    iconBg: 'hsl(150 60% 45%)'
   },
-  pdb: { 
-    bg: 'hsl(350 60% 50%)', 
-    border: 'hsl(350 60% 50%)', 
-    iconBg: 'hsl(350 60% 50%)' 
+  pdb: {
+    bg: 'hsl(350 60% 50%)',
+    border: 'hsl(350 60% 50%)',
+    iconBg: 'hsl(350 60% 50%)'
   },
-  networkpolicy: { 
-    bg: 'hsl(200 70% 50%)', 
-    border: 'hsl(200 70% 50%)', 
-    iconBg: 'hsl(200 70% 50%)' 
+  networkpolicy: {
+    bg: 'hsl(200 70% 50%)',
+    border: 'hsl(200 70% 50%)',
+    iconBg: 'hsl(200 70% 50%)'
   },
-  serviceaccount: { 
-    bg: 'hsl(230 60% 55%)', 
-    border: 'hsl(230 60% 55%)', 
-    iconBg: 'hsl(230 60% 55%)' 
+  serviceaccount: {
+    bg: 'hsl(230 60% 55%)',
+    border: 'hsl(230 60% 55%)',
+    iconBg: 'hsl(230 60% 55%)'
   },
-  role: { 
-    bg: 'hsl(300 60% 50%)', 
-    border: 'hsl(300 60% 50%)', 
-    iconBg: 'hsl(300 60% 50%)' 
+  role: {
+    bg: 'hsl(300 60% 50%)',
+    border: 'hsl(300 60% 50%)',
+    iconBg: 'hsl(300 60% 50%)'
   },
-  clusterrole: { 
-    bg: 'hsl(320 70% 50%)', 
-    border: 'hsl(320 70% 50%)', 
-    iconBg: 'hsl(320 70% 50%)' 
+  clusterrole: {
+    bg: 'hsl(320 70% 50%)',
+    border: 'hsl(320 70% 50%)',
+    iconBg: 'hsl(320 70% 50%)'
   },
-  rolebinding: { 
-    bg: 'hsl(290 60% 50%)', 
-    border: 'hsl(290 60% 50%)', 
-    iconBg: 'hsl(290 60% 50%)' 
+  rolebinding: {
+    bg: 'hsl(290 60% 50%)',
+    border: 'hsl(290 60% 50%)',
+    iconBg: 'hsl(290 60% 50%)'
   },
-  clusterrolebinding: { 
-    bg: 'hsl(310 60% 50%)', 
-    border: 'hsl(310 60% 50%)', 
-    iconBg: 'hsl(310 60% 50%)' 
+  clusterrolebinding: {
+    bg: 'hsl(310 60% 50%)',
+    border: 'hsl(310 60% 50%)',
+    iconBg: 'hsl(310 60% 50%)'
   },
-  endpoint: { 
-    bg: 'hsl(180 60% 45%)', 
-    border: 'hsl(180 60% 45%)', 
-    iconBg: 'hsl(180 60% 45%)' 
+  endpoint: {
+    bg: 'hsl(180 60% 45%)',
+    border: 'hsl(180 60% 45%)',
+    iconBg: 'hsl(180 60% 45%)'
   },
-  endpointslice: { 
-    bg: 'hsl(190 60% 45%)', 
-    border: 'hsl(190 60% 45%)', 
-    iconBg: 'hsl(190 60% 45%)' 
+  endpointslice: {
+    bg: 'hsl(190 60% 45%)',
+    border: 'hsl(190 60% 45%)',
+    iconBg: 'hsl(190 60% 45%)'
   },
-  ingressclass: { 
-    bg: 'hsl(170 60% 45%)', 
-    border: 'hsl(170 60% 45%)', 
-    iconBg: 'hsl(170 60% 45%)' 
+  ingressclass: {
+    bg: 'hsl(170 60% 45%)',
+    border: 'hsl(170 60% 45%)',
+    iconBg: 'hsl(170 60% 45%)'
   },
-  storageclass: { 
-    bg: 'hsl(200 50% 50%)', 
-    border: 'hsl(200 50% 50%)', 
-    iconBg: 'hsl(200 50% 50%)' 
+  storageclass: {
+    bg: 'hsl(200 50% 50%)',
+    border: 'hsl(200 50% 50%)',
+    iconBg: 'hsl(200 50% 50%)'
   },
-  user: { 
-    bg: 'hsl(240 60% 55%)', 
-    border: 'hsl(240 60% 55%)', 
-    iconBg: 'hsl(240 60% 55%)' 
+  user: {
+    bg: 'hsl(240 60% 55%)',
+    border: 'hsl(240 60% 55%)',
+    iconBg: 'hsl(240 60% 55%)'
   },
-  group: { 
-    bg: 'hsl(250 60% 55%)', 
-    border: 'hsl(250 60% 55%)', 
-    iconBg: 'hsl(250 60% 55%)' 
+  group: {
+    bg: 'hsl(250 60% 55%)',
+    border: 'hsl(250 60% 55%)',
+    iconBg: 'hsl(250 60% 55%)'
   },
 };
 
@@ -328,7 +332,7 @@ interface NodePosition {
 const DEFAULT_LAYOUT: Required<LayoutOptions> = {
   nodeRadius: 28,
   verticalSpacing: 130,
-  horizontalSpacing: 150,
+  horizontalSpacing: 200, // Increased for better readability (namespaces spacing)
   canvasWidth: 600,
   startY: 80,
 };
@@ -347,9 +351,59 @@ const VIEWBOX_PADDING = 48;
  * Semantic display level: center resource is 0; negative = above (parents), positive = below (children).
  * Ensures "Viewing" resource is the central graph node with hierarchy above and below.
  */
+/**
+ * Get semantic level for cluster-centric hierarchy
+ * Level 0: Cluster (central root)
+ * Level 1: Worker Nodes
+ * Level 2: Namespaces
+ * Level 3: Workloads (Deployments, StatefulSets, etc.)
+ * Level 4: ReplicaSets
+ * Level 5: Pods
+ * Level 6: Supporting Resources (Services, ConfigMaps, Secrets, PVCs)
+ */
+/**
+ * New hierarchical structure:
+ * Level 0: Cluster (parent 1)
+ * Level 1: Cluster-scoped resources (child node 1) - Nodes, StorageClasses, PVs, IngressClasses
+ * Level 2: Namespaces (under cluster-scoped)
+ * Level 3: Namespace-scoped resources (under namespaces) - Deployments, Services, etc.
+ * Level 4: ReplicaSets (under deployments, when expanded)
+ * Level 5: Pods (under replicasets/statefulsets, when expanded)
+ */
+function getClusterSemanticLevel(nodeType: ResourceType): number {
+  switch (nodeType) {
+    case 'cluster': return 0;  // Parent 1: Cluster
+    // Cluster-scoped resources (child node 1)
+    case 'node':
+    case 'storageclass':
+    case 'pv':
+    case 'ingressclass': return 1;  // Cluster-scoped resources
+    case 'namespace': return 2;  // Namespaces under cluster-scoped
+    // Namespace-scoped resources
+    case 'deployment':
+    case 'statefulset':
+    case 'daemonset':
+    case 'job':
+    case 'cronjob':
+    case 'service':
+    case 'configmap':
+    case 'secret':
+    case 'persistentvolumeclaim':
+    case 'ingress':
+    case 'serviceaccount': return 3;  // Namespace-scoped resources
+    case 'replicaset': return 4;  // Under deployments (when expanded)
+    case 'pod': return 5;  // Under replicasets/statefulsets (when expanded)
+    default: return 6;
+  }
+}
+
 function getSemanticLevel(nodeType: ResourceType, centerType: string): number {
   const t = nodeType;
   const c = centerType;
+  // Cluster topology: cluster center, then nodes → namespaces → workloads → replicasets → pods → supporting
+  if (c === 'cluster') {
+    return getClusterSemanticLevel(t);
+  }
   // Node topology: node center, then namespaces → workloads → replicasets → pods → supporting
   if (c === 'node') {
     if (t === 'node') return 0;
@@ -421,10 +475,17 @@ function getSemanticLevel(nodeType: ResourceType, centerType: string): number {
   }
   if (c === 'namespace') {
     if (t === 'namespace') return 0;
-    if (['deployment', 'statefulset', 'daemonset', 'service'].includes(t)) return 1;
-    if (['replicaset', 'pod'].includes(t)) return 2;
-    if (['configmap', 'secret', 'serviceaccount', 'pvc'].includes(t)) return 3;
-    return 4;
+    // Cluster-scoped resources (Level 1) - shown alongside namespace
+    if (['node', 'storageclass', 'pv', 'ingressclass'].includes(t)) return 1;
+    // Workloads and Services (Level 2)
+    if (['deployment', 'statefulset', 'daemonset', 'job', 'cronjob', 'service', 'ingress'].includes(t)) return 2;
+    // ReplicaSets (Level 3)
+    if (t === 'replicaset') return 3;
+    // Pods (Level 4)
+    if (t === 'pod') return 4;
+    // Supporting resources (Level 5)
+    if (['configmap', 'secret', 'serviceaccount', 'pvc'].includes(t)) return 5;
+    return 6;
   }
   if (c === 'service') {
     if (t === 'service') return 0;
@@ -494,8 +555,10 @@ function getCardLayoutOptions(level1NodeCount: number): LayoutOptions & { canvas
 function calculateCleanLayout(
   nodes: TopologyNode[],
   edges: TopologyEdge[],
-  options: LayoutOptions & { canvasHeight?: number } = {}
+  options: LayoutOptions & { canvasHeight?: number; customLayout?: Map<string, NodePosition> } = {}
 ): Map<string, NodePosition> {
+  if (options.customLayout) return options.customLayout;
+
   const positions = new Map<string, NodePosition>();
   if (nodes.length === 0) return positions;
 
@@ -537,35 +600,231 @@ function calculateCleanLayout(
     if (!bfsLevels.has(n.id)) bfsLevels.set(n.id, 0);
   });
 
-  const centerNode = nodes.find(n => n.isCurrent) ?? rootNodes[0];
-  const centerType = centerNode?.type ?? 'node';
+  // Detect cluster-centric layout: check if cluster node exists
+  const clusterNode = nodes.find(n => n.type === 'cluster');
+  const isClusterCentric = !!clusterNode;
+
+  // Detect namespace-filtered mode: when all namespace-scoped resources share the same namespace
+  const namespaceNodes = nodes.filter(n => n.type === 'namespace');
+  const namespaceScopedNodes = nodes.filter(n => n.namespace && n.type !== 'namespace');
+  const uniqueNamespaces = new Set(namespaceScopedNodes.map(n => n.namespace).filter(Boolean));
+  // Consider it namespace-filtered if:
+  // 1. All namespace-scoped resources share one namespace, OR
+  // 2. There's exactly one namespace node and most resources are namespace-scoped
+  const isNamespaceFiltered = (uniqueNamespaces.size === 1 && namespaceScopedNodes.length > 0) ||
+    (namespaceNodes.length === 1 && namespaceScopedNodes.length > namespaceNodes.length);
+  const filteredNamespace = isNamespaceFiltered 
+    ? (uniqueNamespaces.size === 1 ? Array.from(uniqueNamespaces)[0] : namespaceNodes[0]?.name)
+    : null;
+  const namespaceNode = filteredNamespace 
+    ? namespaceNodes.find(n => n.name === filteredNamespace) || namespaceNodes[0]
+    : null;
+
+  // Determine center type: prioritize namespace-filtered mode, then isCurrent flag, then cluster, then node
+  const centerNode = nodes.find(n => n.isCurrent) ?? 
+    (isNamespaceFiltered && namespaceNode ? namespaceNode : 
+     (isClusterCentric ? clusterNode : rootNodes[0]));
+  let centerType: string = 'node'; // default
+  if (isNamespaceFiltered && namespaceNode) {
+    centerType = 'namespace';
+  } else if (centerNode) {
+    centerType = centerNode.type;
+  } else if (isClusterCentric) {
+    centerType = 'cluster';
+  } else if (nodes.find(n => n.type === 'node')) {
+    centerType = 'node';
+  }
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
+
+  // Namespace hierarchy spacing configuration (optimized for namespace-filtered views)
+  const NAMESPACE_HIERARCHY_SPACING: Record<number, number> = {
+    0: 0,      // Level 0 (namespace) - no spacing before
+    1: 180,    // Level 0-1 gap: Namespace to Cluster-scoped resources
+    2: 160,    // Level 1-2 gap: Cluster-scoped to Workloads
+    3: 140,    // Level 2-3 gap: Workloads to ReplicaSets
+    4: 120,    // Level 3-4 gap: ReplicaSets to Pods
+    5: 100,    // Level 4-5 gap: Pods to Supporting resources
+    6: 80,     // Level 5-6 gap: Additional levels
+  };
+
+  // Cluster hierarchy spacing configuration (Apple-grade spacing, increased for readability)
+  const CLUSTER_HIERARCHY_SPACING: Record<number, number> = {
+    0: 0,      // Level 0 (cluster) - no spacing before
+    1: 200,    // Level 0-1 gap: Cluster to Cluster-scoped resources
+    2: 180,    // Level 1-2 gap: Cluster-scoped to Namespaces
+    3: 150,    // Level 2-3 gap: Namespaces to Namespace-scoped resources
+    4: 120,    // Level 3-4 gap: Deployments to ReplicaSets (when expanded)
+    5: 100,    // Level 4-5 gap: ReplicaSets to Pods (when expanded)
+    6: 80,     // Level 5-6 gap: Additional levels
+  };
 
   const levelGroups = new Map<number, string[]>();
   nodes.forEach((n) => {
-    const semantic = getSemanticLevel(n.type, centerType);
-    const displayLevel = semantic > -999 ? semantic : (bfsLevels.get(n.id) ?? 0);
-    if (!levelGroups.has(displayLevel)) levelGroups.set(displayLevel, []);
-    levelGroups.get(displayLevel)!.push(n.id);
+    // For namespace-filtered views, ensure namespace node is at level 0
+    if (isNamespaceFiltered && n.type === 'namespace' && n.name === filteredNamespace) {
+      levelGroups.set(0, levelGroups.get(0) || []);
+      levelGroups.get(0)!.push(n.id);
+    } else {
+      const semantic = getSemanticLevel(n.type, centerType);
+      const displayLevel = semantic > -999 ? semantic : (bfsLevels.get(n.id) ?? 0);
+      if (!levelGroups.has(displayLevel)) levelGroups.set(displayLevel, []);
+      levelGroups.get(displayLevel)!.push(n.id);
+    }
   });
 
+  // Type ordering for namespace-centric layout (when namespace-filtered)
+  const namespaceTypeOrder: Record<string, number> = {
+    namespace: -1, // Namespace should be first
+    // Cluster-scoped resources (Level 1)
+    node: 0, storageclass: 1, pv: 2, ingressclass: 3,
+    // Workloads (Level 2)
+    deployment: 20, statefulset: 21, daemonset: 22, job: 23, cronjob: 24,
+    // Supporting resources (Level 2, after workloads)
+    service: 25, ingress: 26,
+    // Nested resources (Level 3+)
+    replicaset: 40, pod: 50,
+    // Config/Storage resources (Level 5)
+    configmap: 60, secret: 61, serviceaccount: 62, pvc: 63,
+  };
+
+  // Type ordering for cluster-centric layout: cluster-scoped first, then namespaces, then namespace-scoped
   const typeOrder: Record<string, number> = {
-    node: 0, namespace: 1, deployment: 2, replicaset: 3, statefulset: 4, daemonset: 5, job: 6, cronjob: 7,
-    service: 8, pod: 9, configmap: 10, secret: 11, serviceaccount: 12, pvc: 13, pv: 14,
+    cluster: -1, // Cluster should be first
+    // Cluster-scoped resources (Level 1)
+    node: 0, storageclass: 1, pv: 2, ingressclass: 3,
+    // Namespaces (Level 2)
+    namespace: 10,
+    // Namespace-scoped resources (Level 3)
+    deployment: 20, statefulset: 21, daemonset: 22, job: 23, cronjob: 24,
+    service: 25, configmap: 26, secret: 27, serviceaccount: 28, pvc: 29, ingress: 30,
+    // Nested resources (Level 4+)
+    replicaset: 40, pod: 50,
   };
 
   const sortedLevels = Array.from(levelGroups.keys()).sort((a, b) => a - b);
   let levelBaseY = startY;
 
-  sortedLevels.forEach((level) => {
+  sortedLevels.forEach((level, levelIndex) => {
     const ids = levelGroups.get(level)!;
-    const sorted = [...ids].sort((a, b) => {
-      const orderA = typeOrder[nodeById.get(a)?.type ?? ''] ?? 99;
-      const orderB = typeOrder[nodeById.get(b)?.type ?? ''] ?? 99;
+      const sorted = [...ids].sort((a, b) => {
+      const nodeA = nodeById.get(a);
+      const nodeB = nodeById.get(b);
+      const typeA = nodeA?.type ?? '';
+      const typeB = nodeB?.type ?? '';
+
+      // For namespace-filtered layout, use namespace-centric ordering
+      if (isNamespaceFiltered) {
+        // Level 0: Namespace node
+        if (level === 0) {
+          if (typeA === 'namespace') return -1;
+          if (typeB === 'namespace') return 1;
+        }
+        // Level 1: Cluster-scoped resources - order: node, storageclass, pv, ingressclass
+        if (level === 1) {
+          const clusterScopedOrder: Record<string, number> = { node: 0, storageclass: 1, pv: 2, ingressclass: 3 };
+          const orderA = clusterScopedOrder[typeA] ?? 99;
+          const orderB = clusterScopedOrder[typeB] ?? 99;
+          if (orderA !== orderB) return orderA - orderB;
+        }
+        // Level 2: Workloads first, then services/ingress
+        if (level === 2) {
+          const workloadTypes = ['deployment', 'statefulset', 'daemonset', 'job', 'cronjob'];
+          const aIsWorkload = workloadTypes.includes(typeA);
+          const bIsWorkload = workloadTypes.includes(typeB);
+          if (aIsWorkload && !bIsWorkload) return -1;
+          if (!aIsWorkload && bIsWorkload) return 1;
+        }
+        // Level 5: Supporting resources - order: configmap, secret, serviceaccount, pvc
+        if (level === 5) {
+          const supportingOrder: Record<string, number> = { configmap: 0, secret: 1, serviceaccount: 2, pvc: 3 };
+          const orderA = supportingOrder[typeA] ?? 99;
+          const orderB = supportingOrder[typeB] ?? 99;
+          if (orderA !== orderB) return orderA - orderB;
+        }
+        const orderA = namespaceTypeOrder[typeA] ?? 99;
+        const orderB = namespaceTypeOrder[typeB] ?? 99;
+        return orderA !== orderB ? orderA - orderB : a.localeCompare(b);
+      }
+
+      // For cluster-centric layout, ensure proper ordering at each level
+      if (isClusterCentric) {
+        // Level 1: Cluster-scoped resources - order: node, storageclass, pv, ingressclass
+        if (level === 1) {
+          const clusterScopedOrder: Record<string, number> = { node: 0, storageclass: 1, pv: 2, ingressclass: 3 };
+          const orderA = clusterScopedOrder[typeA] ?? 99;
+          const orderB = clusterScopedOrder[typeB] ?? 99;
+          if (orderA !== orderB) return orderA - orderB;
+        }
+        // Level 2: Namespaces only
+        if (level === 2) {
+          if (typeA === 'namespace' && typeB !== 'namespace') return -1;
+          if (typeA !== 'namespace' && typeB === 'namespace') return 1;
+        }
+        // Level 3: Namespace-scoped resources - order: workloads first, then supporting
+        if (level === 3) {
+          const workloadTypes = ['deployment', 'statefulset', 'daemonset', 'job', 'cronjob'];
+          const aIsWorkload = workloadTypes.includes(typeA);
+          const bIsWorkload = workloadTypes.includes(typeB);
+          if (aIsWorkload && !bIsWorkload) return -1;
+          if (!aIsWorkload && bIsWorkload) return 1;
+        }
+      }
+
+      const orderA = typeOrder[typeA] ?? 99;
+      const orderB = typeOrder[typeB] ?? 99;
       return orderA !== orderB ? orderA - orderB : a.localeCompare(b);
     });
 
-    const singleRowWidth = (sorted.length - 1) * horizontalSpacing;
+    // For namespace-filtered layout, use special spacing and positioning
+    if (isNamespaceFiltered && level === 0) {
+      // Namespace node: center it at top
+      const namespaceId = sorted.find(id => {
+        const node = nodeById.get(id);
+        return node?.type === 'namespace' && node?.name === filteredNamespace;
+      }) || sorted[0];
+      if (namespaceId) {
+        positions.set(namespaceId, {
+          x: canvasWidth / 2,
+          y: levelBaseY,
+        });
+        // Use namespace hierarchy spacing for next level
+        levelBaseY += (NAMESPACE_HIERARCHY_SPACING[1] || verticalSpacing);
+      }
+      // Remove namespace node from sorted list for remaining processing
+      const remainingIds = sorted.filter(id => id !== namespaceId);
+      if (remainingIds.length === 0) return;
+      sorted.length = 0;
+      sorted.push(...remainingIds);
+    }
+
+    // For cluster-centric layout, use special spacing and positioning
+    if (isClusterCentric && level === 0 && !isNamespaceFiltered) {
+      // Cluster node: center it at top
+      const clusterId = sorted[0];
+      if (clusterId) {
+        positions.set(clusterId, {
+          x: canvasWidth / 2,
+          y: levelBaseY,
+        });
+        // Use cluster hierarchy spacing for next level
+        levelBaseY += (CLUSTER_HIERARCHY_SPACING[1] || verticalSpacing);
+      }
+      return;
+    }
+
+    // Calculate spacing based on layout type
+    let levelSpacing = verticalSpacing;
+    if (isNamespaceFiltered && level > 0) {
+      levelSpacing = NAMESPACE_HIERARCHY_SPACING[level] || verticalSpacing;
+    } else if (isClusterCentric && level > 0) {
+      levelSpacing = CLUSTER_HIERARCHY_SPACING[level] || verticalSpacing;
+    }
+
+    // For namespace-filtered views, use slightly larger horizontal spacing to prevent overlap
+    const effectiveHorizontalSpacing = isNamespaceFiltered 
+      ? Math.max(horizontalSpacing, 120) 
+      : horizontalSpacing;
+    const singleRowWidth = (sorted.length - 1) * effectiveHorizontalSpacing;
     const useGrid =
       (level === 1 && level1GridCols != null && sorted.length > level1GridCols) ||
       sorted.length > MAX_NODES_PER_ROW ||
@@ -584,17 +843,17 @@ function calculateCleanLayout(
           y: levelBaseY + row * rowHeight,
         });
       });
-      levelBaseY += rows * rowHeight + verticalSpacing;
+      levelBaseY += rows * rowHeight + levelSpacing;
     } else {
-      const totalWidth = (sorted.length - 1) * horizontalSpacing;
+      const totalWidth = (sorted.length - 1) * effectiveHorizontalSpacing;
       const startX = Math.max(0, (canvasWidth - totalWidth) / 2);
       sorted.forEach((id, index) => {
         positions.set(id, {
-          x: startX + index * horizontalSpacing,
+          x: startX + index * effectiveHorizontalSpacing,
           y: levelBaseY,
         });
       });
-      levelBaseY += 2 * nodeRadius + verticalSpacing;
+      levelBaseY += 2 * nodeRadius + levelSpacing;
     }
   });
 
@@ -623,12 +882,53 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>(function TopologyViewer(
-  { nodes, edges, onNodeClick, className, variant = 'default', layoutOptions, hideBuiltInExport = false },
+  { nodes, edges, onNodeClick, className, variant = 'default', layoutOptions, hideBuiltInExport = false, expandedResources: externalExpandedResources, onToggleExpansion },
   ref
 ) {
   const [zoom, setZoom] = useState(60);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  // Internal expand/collapse state if not provided externally
+  // Default: expand all namespaces so namespace-scoped resources are visible
+  const [internalExpandedResources, setInternalExpandedResources] = useState<Set<string>>(new Set());
+  const hasInitializedExpansion = useRef(false);
+  
+  // Auto-expand all namespaces on first render (only for cluster topology)
+  useEffect(() => {
+    if (hasInitializedExpansion.current || externalExpandedResources !== undefined) return;
+    const isClusterTopology = nodes.some(n => n.type === 'cluster' || n.kind === 'Cluster');
+    if (isClusterTopology) {
+      const defaultExpanded = new Set<string>();
+      nodes.forEach(node => {
+        if (node.type === 'namespace') {
+          defaultExpanded.add(node.id);
+        }
+      });
+      if (defaultExpanded.size > 0) {
+        setInternalExpandedResources(defaultExpanded);
+        hasInitializedExpansion.current = true;
+      }
+    }
+  }, [nodes, externalExpandedResources]);
+  
+  const expandedResources = externalExpandedResources ?? internalExpandedResources;
+  
+  const toggleExpansion = useCallback((resourceId: string) => {
+    if (onToggleExpansion) {
+      onToggleExpansion(resourceId);
+    } else {
+      setInternalExpandedResources(prev => {
+        const next = new Set(prev);
+        if (next.has(resourceId)) {
+          next.delete(resourceId);
+        } else {
+          next.add(resourceId);
+        }
+        return next;
+      });
+    }
+  }, [onToggleExpansion]);
   const [useForceLayout, setUseForceLayout] = useState(false);
   const [dragOffsets, setDragOffsets] = useState<Record<string, { dx: number; dy: number }>>({});
   const [dragState, setDragState] = useState<{
@@ -644,6 +944,68 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number } | null>(null);
+
+  // Filter nodes based on expand/collapse state - ONLY for cluster topology
+  // For node/pod/deployment topologies, show all nodes (no expand/collapse filtering)
+  const visibleNodes = useMemo(() => {
+    // Check if this is cluster topology (has cluster node)
+    const isClusterTopology = nodes.some(n => n.type === 'cluster' || n.kind === 'Cluster');
+    
+    // For non-cluster topologies (node, pod, deployment), show all nodes
+    if (!isClusterTopology) {
+      return nodes;
+    }
+    
+    // Only apply expand/collapse filtering for cluster topology
+    return nodes.filter(node => {
+      // Always show cluster node and cluster-scoped resources
+      if (node.type === 'cluster' || node.kind === 'Cluster') return true;
+      if (['node', 'storageclass', 'pv', 'ingressclass'].includes(node.type)) return true;
+      
+      // Show namespaces only if not filtering by a specific namespace
+      // (Namespace filtering is handled at the data level, so if we see a namespace node here,
+      // it's either the selected one or we're in cluster view)
+      if (node.type === 'namespace') return true;
+      
+      // Namespace-scoped resources: only show if namespace is expanded
+      if (node.namespace && ['deployment', 'statefulset', 'daemonset', 'job', 'cronjob', 'service', 'configmap', 'secret', 'persistentvolumeclaim', 'ingress', 'serviceaccount'].includes(node.type)) {
+        const nsId = `Namespace/${node.namespace}`;
+        return expandedResources.has(nsId);
+      }
+      
+      // ReplicaSets: only show if parent deployment is expanded
+      if (node.type === 'replicaset' && node.namespace) {
+        // Find parent deployment from edges
+        const deploymentEdge = edges.find(e => e.to === node.id && e.label?.includes('owns'));
+        if (deploymentEdge) {
+          return expandedResources.has(deploymentEdge.from);
+        }
+        // If no deployment edge, show if namespace is expanded
+        const nsId = `Namespace/${node.namespace}`;
+        return expandedResources.has(nsId);
+      }
+      
+      // Pods: only show if parent replicaset/statefulset/daemonset/job is expanded
+      if (node.type === 'pod' && node.namespace) {
+        // Find parent from edges
+        const parentEdge = edges.find(e => e.to === node.id && (e.label?.includes('owns') || e.label?.includes('manages')));
+        if (parentEdge) {
+          return expandedResources.has(parentEdge.from);
+        }
+        // If no parent edge, show if namespace is expanded
+        const nsId = `Namespace/${node.namespace}`;
+        return expandedResources.has(nsId);
+      }
+      
+      return true;
+    });
+  }, [nodes, edges, expandedResources]);
+
+  // Edges filtering based on visible nodes
+  const visibleEdges = useMemo(() => {
+    const visibleIds = new Set(visibleNodes.map(n => n.id));
+    return edges.filter(e => visibleIds.has(e.from) && visibleIds.has(e.to));
+  }, [edges, visibleNodes]);
   const hasSetInitialZoomRef = useRef(false);
 
   const exportAsPng = useCallback(() => {
@@ -715,8 +1077,8 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
   }, []);
 
   const level1Count = useMemo(
-    () => nodes.filter((n) => n.type === 'node').length,
-    [nodes]
+    () => visibleNodes.filter((n) => n.type === 'node').length,
+    [visibleNodes]
   );
   const effectiveLayout = useMemo(() => {
     if (variant === 'card') {
@@ -730,8 +1092,8 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
     return base;
   }, [variant, level1Count, layoutOptions, containerWidth]);
   const positions = useMemo(
-    () => calculateCleanLayout(nodes, edges, effectiveLayout),
-    [nodes, edges, effectiveLayout]
+    () => calculateCleanLayout(visibleNodes, visibleEdges, effectiveLayout),
+    [visibleNodes, visibleEdges, effectiveLayout]
   );
   const effectivePositions = useMemo(() => {
     const m = new Map<string, { x: number; y: number }>();
@@ -741,7 +1103,6 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
     });
     return m;
   }, [positions, dragOffsets]);
-  const nodeRadius = effectiveLayout.nodeRadius ?? DEFAULT_LAYOUT.nodeRadius;
   const cardCanvasHeight = (effectiveLayout as { canvasHeight?: number }).canvasHeight;
 
   useEffect(() => {
@@ -777,24 +1138,34 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
   const handleReset = useCallback(() => setZoom(60), []);
 
   const handleExportGraphJson = useCallback(() => {
-    const payload = { nodes, edges };
+    const payload = { nodes: visibleNodes, edges: visibleEdges };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     downloadBlob(blob, `topology-graph-${Date.now()}.json`);
-  }, [nodes, edges]);
+  }, [visibleNodes, visibleEdges]);
 
   const handleExportGraphCsv = useCallback(() => {
-    const nodeRows = ['id,name,type,status', ...nodes.map((n) => [n.id, n.name, n.type, n.status ?? ''].map(escapeCsvCell).join(','))];
-    const edgeRows = ['from,to,label', ...edges.map((e) => [e.from, e.to, e.label ?? ''].map(escapeCsvCell).join(','))];
+    const nodeRows = ['id,name,type,status', ...visibleNodes.map((n) => [n.id, n.name, n.type, n.status ?? ''].map(escapeCsvCell).join(','))];
+    const edgeRows = ['from,to,label', ...visibleEdges.map((e) => [e.from, e.to, e.label ?? ''].map(escapeCsvCell).join(','))];
     const csv = nodeRows.join('\n') + '\n\n' + edgeRows.join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     downloadBlob(blob, `topology-graph-${Date.now()}.csv`);
-  }, [nodes, edges]);
+  }, [visibleNodes, visibleEdges]);
 
   const handleNodeClick = useCallback((node: TopologyNode) => {
     if (didDragRef.current) return;
     setSelectedNode(node.id);
+    
+    // Handle expand/collapse ONLY for cluster topology
+    const isClusterTopology = nodes.some(n => n.type === 'cluster' || n.kind === 'Cluster');
+    if (isClusterTopology) {
+      const expandableTypes = ['namespace', 'deployment', 'replicaset', 'statefulset', 'daemonset', 'job', 'node'];
+      if (expandableTypes.includes(node.type)) {
+        toggleExpansion(node.id);
+      }
+    }
+    
     onNodeClick?.(node);
-  }, [onNodeClick]);
+  }, [onNodeClick, toggleExpansion, nodes]);
 
   // If Interactive topology is enabled, render D3 component with traffic animation
   if (useForceLayout) {
@@ -822,20 +1193,24 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
   }
 
   const canvasWidth = effectiveLayout.canvasWidth ?? DEFAULT_LAYOUT.canvasWidth;
-  const maxY = Math.max(...Array.from(positions.values()).map(p => p.y), 100);
+  const nodeRadius = effectiveLayout.nodeRadius ?? DEFAULT_LAYOUT.nodeRadius;
+  // Calculate max Y position including node radius for proper height calculation
+  const maxY = Math.max(...Array.from(positions.values()).map(p => p.y + nodeRadius), 100);
   const viewBoxHeight =
     variant === 'card' && cardCanvasHeight != null
       ? cardCanvasHeight
-      : Math.max(maxY + nodeRadius + VIEWBOX_PADDING, variant === 'card' ? 260 : 350);
+      : Math.max(maxY + VIEWBOX_PADDING * 2, 400); // Ensure enough padding for scrolling
 
   useEffect(() => {
     if (variant !== 'default' || !canvasSize || nodes.length === 0 || hasSetInitialZoomRef.current) return;
     const padding = 48;
+    // Calculate zoom to fit content, but don't zoom out too much (min 40%)
     const scaleX = (canvasSize.width - padding) / canvasWidth;
     const scaleY = (canvasSize.height - padding) / viewBoxHeight;
     const scale = Math.min(1, scaleX, scaleY);
     if (scale <= 0) return;
-    const fitZoom = Math.round(Math.max(30, Math.min(100, scale * 100)));
+    // Set initial zoom to fit, but allow user to zoom in/out for scrolling
+    const fitZoom = Math.round(Math.max(40, Math.min(100, scale * 100)));
     setZoom(fitZoom);
     hasSetInitialZoomRef.current = true;
   }, [variant, canvasSize, canvasWidth, viewBoxHeight, nodes.length]);
@@ -843,115 +1218,120 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
   return (
     <div
       ref={containerRef}
-      className={cn(variant === 'card' ? 'overflow-hidden flex flex-col min-h-0' : 'rounded-xl border border-border bg-card overflow-hidden', className)}
+      className={cn(
+        variant === 'card' 
+          ? 'overflow-hidden flex flex-col min-h-0' 
+          : 'rounded-xl border border-border bg-card flex flex-col min-h-0', 
+        className
+      )}
     >
       {/* Toolbar - hidden in card variant */}
       {variant !== 'card' && (
-      <div className="flex items-center justify-between px-5 py-3.5 border-b border-border bg-muted/30">
-        <div className="flex items-center gap-2.5">
-          <div className="p-1.5 rounded-lg bg-primary/10">
-            <Network className="h-4 w-4 text-primary" />
-          </div>
-          <div className="flex flex-col gap-0.5">
-            <h3 className="font-medium text-sm">Resource Topology</h3>
-            {(() => {
-              const center = nodes.find(n => n.isCurrent);
-              if (!center) return null;
-              const typeLabel = resourceLabels[center.type] ?? center.type;
-              return (
-                <p className="text-xs text-muted-foreground" title="Current context — center of the graph">
-                  Viewing: <span className="font-medium text-foreground">{typeLabel}</span>
-                  {center.name && <span className="font-mono ml-1">{center.name}</span>}
-                </p>
-              );
-            })()}
-          </div>
-          
-          {/* Layout toggle */}
-          <TooltipProvider delayDuration={200}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => setUseForceLayout(true)}
-                >
-                  <Atom className="h-3.5 w-3.5" />
-                  Interactive topology
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Switch to interactive force-directed layout with traffic animation</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        </div>
-        
-        <div className="flex items-center gap-1.5">
-          {!hideBuiltInExport && (
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-border bg-muted/30">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 rounded-lg bg-primary/10">
+              <Network className="h-4 w-4 text-primary" />
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <h3 className="font-medium text-sm">Resource Topology</h3>
+              {(() => {
+                const center = nodes.find(n => n.isCurrent);
+                if (!center) return null;
+                const typeLabel = resourceLabels[center.type] ?? center.type;
+                return (
+                  <p className="text-xs text-muted-foreground" title="Current context — center of the graph">
+                    Viewing: <span className="font-medium text-foreground">{typeLabel}</span>
+                    {center.name && <span className="font-mono ml-1">{center.name}</span>}
+                  </p>
+                );
+              })()}
+            </div>
+
+            {/* Layout toggle */}
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={handleExportGraphJson}>
-                    <FileJson className="h-3.5 w-3.5" />
-                    JSON
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setUseForceLayout(true)}
+                  >
+                    <Atom className="h-3.5 w-3.5" />
+                    Interactive topology
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Export graph data as JSON</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={handleExportGraphCsv}>
-                    <FileSpreadsheet className="h-3.5 w-3.5" />
-                    CSV
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Export graph data as CSV</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={exportAsPng}>
-                    <Image className="h-3.5 w-3.5" />
-                    PNG
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Export graph as PNG image</TooltipContent>
+                <TooltipContent>Switch to interactive force-directed layout with traffic animation</TooltipContent>
               </Tooltip>
             </TooltipProvider>
-          )}
-          {!hideBuiltInExport && <div className="w-px h-4 bg-border mx-2" />}
-          
-          <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              className="h-7 w-7 rounded-md" 
-              onClick={handleZoomOut}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {!hideBuiltInExport && (
+              <TooltipProvider delayDuration={200}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={handleExportGraphJson}>
+                      <FileJson className="h-3.5 w-3.5" />
+                      JSON
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Export graph data as JSON</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={handleExportGraphCsv}>
+                      <FileSpreadsheet className="h-3.5 w-3.5" />
+                      CSV
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Export graph data as CSV</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={exportAsPng}>
+                      <Image className="h-3.5 w-3.5" />
+                      PNG
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Export graph as PNG image</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+            {!hideBuiltInExport && <div className="w-px h-4 bg-border mx-2" />}
+
+            <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 rounded-md"
+                onClick={handleZoomOut}
+              >
+                <ZoomOut className="h-3.5 w-3.5" />
+              </Button>
+              <span className="text-xs text-muted-foreground w-10 text-center font-medium">{zoom}%</span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 rounded-md"
+                onClick={handleZoomIn}
+              >
+                <ZoomIn className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={handleReset}
             >
-              <ZoomOut className="h-3.5 w-3.5" />
-            </Button>
-            <span className="text-xs text-muted-foreground w-10 text-center font-medium">{zoom}%</span>
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              className="h-7 w-7 rounded-md" 
-              onClick={handleZoomIn}
-            >
-              <ZoomIn className="h-3.5 w-3.5" />
+              <Maximize2 className="h-4 w-4" />
             </Button>
           </div>
-          
-          <Button 
-            variant="ghost" 
-            size="icon" 
-            className="h-8 w-8" 
-            onClick={handleReset}
-          >
-            <Maximize2 className="h-4 w-4" />
-          </Button>
         </div>
-      </div>
       )}
-      
+
       {/* Canvas */}
       <div
         ref={canvasWrapperRef}
@@ -959,27 +1339,35 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
           'relative',
           variant === 'card'
             ? 'flex-1 min-h-0 flex items-center justify-center bg-transparent'
-            : 'overflow-auto bg-gradient-to-b from-background to-muted/20 min-h-[60vh]'
+            : 'flex-1 min-h-0 overflow-auto bg-gradient-to-b from-background to-muted/20'
         )}
       >
         {variant !== 'card' && (
-        <Badge 
-          variant="secondary" 
-          className="absolute top-4 right-4 z-10 font-medium text-xs"
-        >
-          {nodes.length} Resources
-        </Badge>
+          <Badge
+            variant="secondary"
+            className="absolute top-4 right-4 z-10 font-medium text-xs"
+          >
+            {nodes.length} Resources
+          </Badge>
         )}
-        
+
+        {/* SVG with zoom - wrapper has scaled dimensions for proper scrolling */}
+        <div
+          style={{
+            width: variant === 'card' ? '100%' : `${(canvasWidth * zoom) / 100}px`,
+            height: variant === 'card' ? '100%' : `${(viewBoxHeight * zoom) / 100}px`,
+            position: 'relative',
+          }}
+        >
         <svg
           ref={svgRef}
           viewBox={`0 0 ${canvasWidth} ${viewBoxHeight}`}
           className={variant === 'card' ? 'w-full h-full max-h-full object-contain' : 'w-full'}
-          preserveAspectRatio="xMidYMid meet"
-          style={{ 
-            minHeight: variant === 'card' ? undefined : `${Math.max(viewBoxHeight * (zoom / 100), 350)}px`,
-            transform: variant === 'card' ? undefined : `scale(${zoom / 100})`,
-            transformOrigin: 'center top' 
+          preserveAspectRatio={variant === 'card' ? 'xMidYMid meet' : 'xMidYMin meet'}
+          style={{
+            width: `${(canvasWidth * zoom) / 100}px`,
+            height: `${(viewBoxHeight * zoom) / 100}px`,
+            display: 'block',
           }}
         >
           {/* Edges with relationship labels */}
@@ -991,55 +1379,74 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
             const toNode = nodes.find(n => n.id === edge.to);
             const fromR = (variant === 'card' && fromNode?.type === 'cluster') ? nodeRadius + 10 : nodeRadius;
             const toR = (variant === 'card' && toNode?.type === 'cluster') ? nodeRadius + 10 : nodeRadius;
-            
+
             const isHovered = hoveredNode === edge.from || hoveredNode === edge.to;
-            
+
             // Calculate edge points from circle borders
             const dx = toPos.x - fromPos.x;
             const dy = toPos.y - fromPos.y;
             const distance = Math.sqrt(dx * dx + dy * dy);
             const nx = distance > 0 ? dx / distance : 0;
             const ny = distance > 0 ? dy / distance : 0;
-            
+
             const x1 = fromPos.x + nx * fromR;
             const y1 = fromPos.y + ny * fromR;
             const x2 = toPos.x - nx * toR;
             const y2 = toPos.y - ny * toR;
-            
+
             // Midpoint for label
             const midX = (x1 + x2) / 2;
             const midY = (y1 + y2) / 2;
-            
+
             return (
               <g key={`edge-${i}`}>
-                {/* Edge line */}
+                {/* Edge line - improved visibility */}
                 <motion.line
                   initial={{ pathLength: 0, opacity: 0 }}
-                  animate={{ pathLength: 1, opacity: isHovered ? 0.6 : 0.35 }}
+                  animate={{ pathLength: 1, opacity: isHovered ? 0.6 : 0.4 }}
                   transition={{ delay: i * 0.03, duration: 0.4 }}
                   x1={x1}
                   y1={y1}
                   x2={x2}
                   y2={y2}
                   stroke="hsl(var(--muted-foreground))"
-                  strokeWidth={isHovered ? 1.5 : 1}
+                  strokeWidth={isHovered ? 2.5 : 1.5}
+                  // Use dashed only for specific relationship types (references, configures)
+                  strokeDasharray={
+                    edge.label?.toLowerCase().includes('references') ||
+                      edge.label?.toLowerCase().includes('configures')
+                      ? "4,4"
+                      : undefined
+                  }
                 />
-                
-                {/* Relationship label - in card variant only on hover to avoid overlap */}
-                {edge.label && (variant !== 'card' || isHovered) && (
+
+                {/* Relationship label - always visible but subtle */}
+                {edge.label && (
                   <motion.g
                     initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: variant === 'card' ? 0 : i * 0.03 + 0.2, duration: 0.2 }}
+                    animate={{ opacity: isHovered ? 0.95 : 0.6 }}
+                    transition={{ duration: 0.2 }}
                   >
+                    <rect
+                      x={midX - 25}
+                      y={midY - 9}
+                      width={50}
+                      height={18}
+                      fill="hsl(var(--background))"
+                      fillOpacity={isHovered ? 0.95 : 0.85}
+                      rx={4}
+                      stroke="hsl(var(--border))"
+                      strokeWidth={isHovered ? 1 : 0.5}
+                    />
                     <text
                       x={midX}
                       y={midY}
                       textAnchor="middle"
                       dominantBaseline="middle"
-                      fontSize={variant === 'card' ? 9 : 10}
-                      fill="hsl(var(--muted-foreground))"
-                      className="select-none font-medium"
+                      fontSize={11}
+                      fontWeight={isHovered ? "600" : "500"}
+                      fill="hsl(var(--foreground))"
+                      className="select-none"
                     >
                       {edge.label}
                     </text>
@@ -1048,12 +1455,12 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
               </g>
             );
           })}
-          
+
           {/* Nodes */}
           {nodes.map((node, i) => {
             const pos = effectivePositions.get(node.id);
             if (!pos) return null;
-            
+
             const style = resourceStyles[node.type];
             const IconComponent = resourceIcons[node.type];
             const label = resourceLabels[node.type];
@@ -1061,8 +1468,11 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
             const isSelected = selectedNode === node.id || node.isCurrent;
             const isDragging = dragState?.nodeId === node.id;
             // In card variant, make cluster (central node) larger so cluster name is prominent
-            const r = (variant === 'card' && node.type === 'cluster') ? nodeRadius + 10 : nodeRadius;
-            
+            // Cluster node gets larger radius for visual prominence
+            const r = node.type === 'cluster'
+              ? (variant === 'card' ? nodeRadius + 10 : 50)
+              : nodeRadius;
+
             return (
               <motion.g
                 key={node.id}
@@ -1086,6 +1496,31 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
                   });
                 }}
               >
+                {/* Cluster node glow effect */}
+                {node.type === 'cluster' && (
+                  <>
+                    <motion.circle
+                      initial={{ scale: 0, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 0.2 }}
+                      transition={{ delay: i * 0.05, duration: 0.4 }}
+                      cx={pos.x}
+                      cy={pos.y}
+                      r={r + 12}
+                      fill={style.bg}
+                      style={{ filter: 'blur(8px)' }}
+                    />
+                    <motion.circle
+                      initial={{ scale: 0, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 0.3 }}
+                      transition={{ delay: i * 0.05, duration: 0.4 }}
+                      cx={pos.x}
+                      cy={pos.y}
+                      r={r + 6}
+                      fill={style.bg}
+                    />
+                  </>
+                )}
+
                 {/* Outer ring for current/selected */}
                 {isSelected && (
                   <motion.circle
@@ -1097,7 +1532,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
                     fill={style.bg}
                   />
                 )}
-                
+
                 {/* Main circle - filled with vibrant color */}
                 <circle
                   cx={pos.x}
@@ -1105,11 +1540,15 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
                   r={isHovered ? r + 2 : r}
                   fill={style.bg}
                   className="transition-all duration-200"
+                  stroke={node.type === 'cluster' ? 'hsl(var(--background))' : 'transparent'}
+                  strokeWidth={node.type === 'cluster' ? 4 : 0}
                   style={{
-                    filter: isHovered ? 'brightness(1.1)' : 'none',
+                    filter: node.type === 'cluster'
+                      ? 'drop-shadow(0 4px 12px rgba(0,0,0,0.15))'
+                      : (isHovered ? 'brightness(1.1)' : 'none'),
                   }}
                 />
-                
+
                 {/* Status indicator dot */}
                 {node.status && (
                   <circle
@@ -1118,15 +1557,15 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
                     r="6"
                     fill={
                       node.status === 'healthy' ? 'hsl(142 76% 36%)' :
-                      node.status === 'warning' ? 'hsl(45 93% 47%)' :
-                      node.status === 'error' ? 'hsl(0 72% 51%)' :
-                      'hsl(var(--muted-foreground))'
+                        node.status === 'warning' ? 'hsl(45 93% 47%)' :
+                          node.status === 'error' ? 'hsl(0 72% 51%)' :
+                            'hsl(var(--muted-foreground))'
                     }
                     stroke="hsl(var(--background))"
                     strokeWidth="2"
                   />
                 )}
-                
+
                 {/* Icon */}
                 <foreignObject
                   x={pos.x - (variant === 'card' && node.type !== 'cluster' ? 8 : (variant === 'card' ? 10 : 11))}
@@ -1138,7 +1577,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
                     <IconComponent className={variant === 'card' && node.type === 'cluster' ? 'h-5 w-5 text-white' : (variant === 'card' ? 'h-4 w-4 text-white' : 'h-5 w-5 text-white')} />
                   </div>
                 </foreignObject>
-                
+
                 {/* Resource type label and name — cluster in card: generous gap so "Cluster" and name never overlap */}
                 {(() => {
                   const isClusterCard = variant === 'card' && node.type === 'cluster';
@@ -1176,6 +1615,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
             );
           })}
         </svg>
+        </div>
       </div>
     </div>
   );

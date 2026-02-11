@@ -490,6 +490,31 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
     }
   }, [selectedNodeId]);
 
+  // Handle centered node (for search navigation)
+  useEffect(() => {
+    if (!cyRef.current || !centeredNodeId || !isReady) return;
+
+    const cy = cyRef.current;
+    const node = cy.getElementById(centeredNodeId);
+    if (node.length > 0) {
+      // Center and zoom to the node
+      cy.animate({
+        center: { eles: node },
+        zoom: Math.min(cy.zoom() * 1.5, 2.0),
+      }, {
+        duration: 500,
+        easing: 'ease-out',
+      });
+      // Highlight the node
+      node.addClass('selected');
+      setSelectedNodeId(centeredNodeId);
+      if (onNodeSelect) {
+        const nodeData = node.data() as TopologyNode;
+        onNodeSelect(nodeData);
+      }
+    }
+  }, [centeredNodeId, isReady, onNodeSelect]);
+
   // Expose methods via ref
   useImperativeHandle(ref, () => ({
     zoomIn: () => {

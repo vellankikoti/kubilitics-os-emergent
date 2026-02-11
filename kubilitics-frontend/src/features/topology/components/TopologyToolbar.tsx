@@ -44,8 +44,7 @@ interface TopologyToolbarProps {
   onNamespaceChange: (ns: string) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
-  layoutDirection: 'TB' | 'LR';
-  onLayoutDirectionChange: (direction: 'TB' | 'LR') => void;
+  onSearchSubmit?: (query: string) => void;
   onExport: (format: 'png' | 'svg' | 'pdf') => void;
   onRefresh: () => void;
   isRefreshing?: boolean;
@@ -60,8 +59,7 @@ export const TopologyToolbar: FC<TopologyToolbarProps> = ({
   onNamespaceChange,
   searchQuery,
   onSearchChange,
-  layoutDirection,
-  onLayoutDirectionChange,
+  onSearchSubmit,
   onExport,
   onRefresh,
   isRefreshing = false,
@@ -115,6 +113,11 @@ export const TopologyToolbar: FC<TopologyToolbarProps> = ({
           placeholder="Search resources..."
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && onSearchSubmit) {
+              onSearchSubmit(searchQuery);
+            }
+          }}
           className="pl-9 h-9"
         />
       </div>

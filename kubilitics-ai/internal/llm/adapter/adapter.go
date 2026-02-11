@@ -1,6 +1,10 @@
 package adapter
 
-import "context"
+import (
+	"context"
+
+	"github.com/kubilitics/kubilitics-ai/internal/llm/types"
+)
 
 // Package adapter provides a unified interface for different LLM providers.
 //
@@ -53,33 +57,20 @@ type LLMAdapter interface {
 	// messages: list of {role: "user"|"assistant"|"system", content: "..."}
 	// tools: optional list of tool schemas the LLM can call
 	// Returns the completion text and any tool calls made
-	Complete(ctx context.Context, messages []interface{}, tools []interface{}) (string, []interface{}, error)
+	Complete(ctx context.Context, messages []types.Message, tools []types.Tool) (string, []interface{}, error)
 
 	// CompleteStream sends a prompt and streams a completion.
 	// Returns a channel of completion tokens and a channel for tool calls.
 	// Caller must consume both channels to completion.
-	CompleteStream(ctx context.Context, messages []interface{}, tools []interface{}) (chan string, chan interface{}, error)
+	CompleteStream(ctx context.Context, messages []types.Message, tools []types.Tool) (chan string, chan interface{}, error)
 
 	// CountTokens estimates token usage for messages and tools.
 	// Used for budget tracking and context window management.
-	CountTokens(ctx context.Context, messages []interface{}, tools []interface{}) (int, error)
+	CountTokens(ctx context.Context, messages []types.Message, tools []types.Tool) (int, error)
 
 	// GetCapabilities returns supported features and limits for this provider/model.
 	GetCapabilities(ctx context.Context) (interface{}, error)
 
-	// ValidateToolCall validates that a tool call matches the tool schema.
-	// Returns error if tool call is invalid.
-	ValidateToolCall(ctx context.Context, toolName string, args interface{}) error
-
 	// NormalizeToolCall converts provider-specific tool call format to standard format.
 	NormalizeToolCall(ctx context.Context, toolCall interface{}) (map[string]interface{}, error)
-}
-
-// NewLLMAdapter creates an LLM adapter for the configured provider.
-// Provider selection is based on configuration (KUBILITICS_LLM_PROVIDER environment variable or config file).
-func NewLLMAdapter() LLMAdapter {
-	// Read config to determine provider
-	// Create provider-specific client (OpenAI, Anthropic, Ollama, or Custom)
-	// Return adapter wrapping provider client
-	return nil
 }

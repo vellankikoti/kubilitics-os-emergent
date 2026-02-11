@@ -27,6 +27,8 @@ import {
   ArrowRightLeft,
   Container,
   Filter,
+  Zap,
+  Shield,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -93,8 +95,33 @@ interface TopologyFiltersProps {
   onHealthToggle: (status: HealthStatus | 'pending') => void;
   onClearAll: () => void;
   onSelectAll: () => void;
+  onPresetFilter?: (preset: 'workloads' | 'networking' | 'storage' | 'security') => void;
   className?: string;
 }
+
+// Quick filter presets
+const QUICK_FILTERS = {
+  workloads: {
+    label: 'Workloads Only',
+    icon: Boxes,
+    resources: new Set<KubernetesKind>(['Deployment', 'ReplicaSet', 'StatefulSet', 'DaemonSet', 'Pod', 'Job', 'CronJob']),
+  },
+  networking: {
+    label: 'Networking Only',
+    icon: Network,
+    resources: new Set<KubernetesKind>(['Service', 'Ingress', 'Endpoints', 'EndpointSlice', 'NetworkPolicy']),
+  },
+  storage: {
+    label: 'Storage Only',
+    icon: HardDrive,
+    resources: new Set<KubernetesKind>(['PersistentVolumeClaim', 'PersistentVolume', 'StorageClass']),
+  },
+  security: {
+    label: 'Security Only',
+    icon: Shield,
+    resources: new Set<KubernetesKind>(['ServiceAccount', 'Role', 'ClusterRole', 'RoleBinding', 'ClusterRoleBinding', 'NetworkPolicy', 'Secret']),
+  },
+} as const;
 
 export const TopologyFilters: FC<TopologyFiltersProps> = ({
   selectedResources,
@@ -105,8 +132,14 @@ export const TopologyFilters: FC<TopologyFiltersProps> = ({
   onHealthToggle,
   onClearAll,
   onSelectAll,
+  onPresetFilter,
   className,
 }) => {
+  const handlePresetFilter = (preset: keyof typeof QUICK_FILTERS) => {
+    if (onPresetFilter) {
+      onPresetFilter(preset);
+    }
+  };
   const getResourceIcon = (kind: KubernetesKind) => {
     switch (kind) {
       case 'Namespace': return Layers;
@@ -131,12 +164,43 @@ export const TopologyFilters: FC<TopologyFiltersProps> = ({
 
   return (
     <div className={cn('space-y-4', className)}>
+      {/* Quick Filter Presets */}
+      {onPresetFilter && (
+        <div className="space-y-2">
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+            <Zap className="h-3 w-3" />
+            Quick Filters
+          </span>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(QUICK_FILTERS).map(([key, preset]) => {
+              const Icon = preset.icon;
+              return (
+                <motion.button
+                  key={key}
+                  onClick={() => handlePresetFilter(key as keyof typeof QUICK_FILTERS)}
+                  whileTap={{ scale: 0.95 }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 border bg-background border-border text-foreground hover:bg-muted hover:border-primary/50"
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {preset.label}
+                </motion.button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Resource Type Filters */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
             <Filter className="h-3 w-3" />
             Show Resources
+            {selectedResources.size > 0 && (
+              <Badge variant="secondary" className="ml-1.5 h-4 px-1.5 text-xs">
+                {selectedResources.size}
+              </Badge>
+            )}
           </span>
           <div className="flex gap-1">
             <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={onSelectAll}>

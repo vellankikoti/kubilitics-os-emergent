@@ -14,20 +14,29 @@ import { Separator } from '@/components/ui/separator';
 import { useClusterStore } from '@/stores/clusterStore';
 import { useBackendConfigStore } from '@/stores/backendConfigStore';
 import { useTopologyFromBackend } from '@/hooks/useTopologyFromBackend';
+import { useClusterTopologyGraph } from '@/hooks/useClusterTopologyGraph';
 import {
-  TopologyCanvas,
   TopologyFilters,
   TopologyToolbar,
-  LayoutDirectionToggle,
   resourceTypes,
-  type TopologyCanvasRef,
 } from '@/features/topology';
+import { ClusterTopologyViewer, type ClusterTopologyViewerRef } from '@/components/topology/ClusterTopologyViewer';
+import { ClusterInsightsPanel } from '@/components/topology/ClusterInsightsPanel';
+import { ResourceDetailPanel } from '@/components/topology/ResourceDetailPanel';
+import { BlastRadiusVisualization } from '@/components/topology/BlastRadiusVisualization';
+import { NamespaceGroupedTopology } from '@/components/topology/NamespaceGroupedTopology';
+import { useTopologyMetrics } from '@/hooks/useTopologyMetrics';
+import { transformTopologyGraph } from '@/utils/topologyDataTransformer';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import type { TopologyGraph, TopologyNode, KubernetesKind, HealthStatus, RelationshipType } from '@/types/topology';
+import type { TopologyGraph, TopologyNode as BackendTopologyNode, KubernetesKind, HealthStatus, RelationshipType } from '@/types/topology';
+import type { TopologyNode } from '@/components/resources/D3ForceTopology';
 import { BackendApiError } from '@/services/backendApiClient';
 import { Loader2, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { parseSearchQuery, buildNavigationPath, findMatchingNode } from '@/utils/topologySearchParser';
+import { useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 // Comprehensive mock topology data
 const mockGraph: TopologyGraph = {
@@ -134,35 +143,66 @@ export default function Topology() {
   const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured());
   const currentClusterId = useBackendConfigStore((s) => s.currentClusterId);
   const clusterId = activeCluster?.id ?? currentClusterId;
-  const topologyFromBackend = useTopologyFromBackend(
-    isBackendConfigured ? clusterId : null,
-    { namespace: undefined }
-  );
-
+  
   const navigate = useNavigate();
-  const canvasRef = useRef<TopologyCanvasRef>(null);
+  const topologyViewerRef = useRef<ClusterTopologyViewerRef>(null);
+  const queryClient = useQueryClient();
+  const [selectedNodeForDetail, setSelectedNodeForDetail] = useState<TopologyNode | null>(null);
+  const [showBlastRadius, setShowBlastRadius] = useState(false);
 
-  // View state
+  // View state - MUST be declared before useMemo/useEffect that use them
   const [viewMode, setViewMode] = useState<'cluster' | 'namespace'>('cluster');
-  const [selectedNamespace, setSelectedNamespace] = useState('default');
+  const [selectedNamespace, setSelectedNamespace] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [layoutDirection, setLayoutDirection] = useState<'TB' | 'LR'>('TB');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [useDemoGraph, setUseDemoGraph] = useState(false);
+
+  // Determine namespace filter based on view mode
+  const namespaceFilter = useMemo(() => {
+    if (viewMode === 'namespace' && selectedNamespace && selectedNamespace !== 'all') {
+      return selectedNamespace;
+    }
+    return undefined;
+  }, [viewMode, selectedNamespace]);
+
+  // Backend topology (when available)
+  const topologyFromBackend = useTopologyFromBackend(
+    isBackendConfigured ? clusterId : null,
+    { namespace: namespaceFilter }
+  );
+
+  // Frontend-built topology (fallback when backend unavailable)
+  const frontendTopology = useClusterTopologyGraph(namespaceFilter);
 
   // Filter state
   const [selectedResources, setSelectedResources] = useState<Set<KubernetesKind>>(
     new Set(resourceTypes.map((r) => r.kind))
   );
   const [selectedRelationships, setSelectedRelationships] = useState<Set<RelationshipType>>(
-    new Set(['owns', 'selects', 'schedules', 'routes', 'configures', 'mounts', 'stores', 'contains'])
+    new Set(['owns', 'selects', 'schedules', 'routes', 'configures', 'mounts', 'stores', 'contains', 'references'])
   );
   const [selectedHealth, setSelectedHealth] = useState<Set<HealthStatus | 'pending'>>(
     new Set(['healthy', 'warning', 'critical', 'unknown'])
   );
 
-  // Selected node state
+  // Detect if only namespace filter is selected
+  const isNamespaceOnlyFilter = useMemo(() => {
+    return selectedResources.size === 1 && selectedResources.has('Namespace');
+  }, [selectedResources]);
+
+  // Convert selectedResources to Set<string> for ClusterTopologyViewer
+  const selectedResourcesSet = useMemo(() => {
+    return new Set(Array.from(selectedResources).map(k => k.toString()));
+  }, [selectedResources]);
+
+  // Convert selectedHealth to Set<string> for ClusterTopologyViewer
+  const selectedHealthSet = useMemo(() => {
+    return new Set(Array.from(selectedHealth).map(h => h.toString()));
+  }, [selectedHealth]);
+
+  // Selected node state (using TopologyNode from D3ForceTopology)
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null);
+  const [centeredNodeId, setCenteredNodeId] = useState<string | undefined>();
 
   // Graph: when backend is configured and clusterId set, use only backend data (no mock).
   // Mock is used only when backend is not configured (demo/offline).
@@ -175,19 +215,81 @@ export default function Topology() {
     }),
     []
   );
+  // Build final graph: prefer backend, fallback to frontend-built, then mock
   const graph: TopologyGraph = useMemo(() => {
     if (useDemoGraph && !isBackendConfigured) return mockGraph;
-    if (isBackendConfigured && clusterId && topologyFromBackend.data) return topologyFromBackend.data;
+    if (isBackendConfigured && clusterId && topologyFromBackend.data) {
+      return topologyFromBackend.data;
+    }
+    // Use frontend-built topology when backend unavailable
+    if (frontendTopology.nodes.length > 0 || frontendTopology.edges.length > 0) {
+      return {
+        schemaVersion: '1.0',
+        nodes: frontendTopology.nodes,
+        edges: frontendTopology.edges,
+        metadata: {
+          clusterId: clusterId || '',
+          generatedAt: new Date().toISOString(),
+          layoutSeed: `frontend-${Date.now()}`,
+          isComplete: true,
+          warnings: [],
+        },
+      };
+    }
     return emptyGraph;
-  }, [useDemoGraph, isBackendConfigured, clusterId, topologyFromBackend.data, emptyGraph]);
+  }, [
+    useDemoGraph,
+    isBackendConfigured,
+    clusterId,
+    topologyFromBackend.data,
+    frontendTopology.nodes,
+    frontendTopology.edges,
+    emptyGraph,
+  ]);
+
+  // Transform graph for TopologyViewer
+  const { nodes: transformedNodes, edges: transformedEdges } = useMemo(() => {
+    return transformTopologyGraph(graph, undefined, activeCluster?.name);
+  }, [graph, activeCluster?.name]);
+
+  // For namespace-grouped view, we need all nodes (not filtered by resource type)
+  // So we use transformedNodes directly instead of filtered nodes
+
+  // Fetch metrics
+  const { metrics, isLoading: metricsLoading } = useTopologyMetrics(transformedNodes, {
+    enabled: true,
+    refetchInterval: 30_000,
+  });
 
   const availableNamespaces = useMemo(() => {
     const nsSet = new Set<string>();
+    // Get namespaces from backend topology
+    if (topologyFromBackend.data?.nodes) {
+      topologyFromBackend.data.nodes.forEach((n) => {
+        if (n.namespace) nsSet.add(n.namespace);
+      });
+    }
+    // Get namespaces from frontend topology
+    frontendTopology.nodes.forEach((n) => {
+      if (n.namespace) nsSet.add(n.namespace);
+    });
+    // Get namespaces from current graph
     graph.nodes.forEach((n) => {
       if (n.namespace) nsSet.add(n.namespace);
     });
-    return Array.from(nsSet);
-  }, [graph.nodes]);
+    return Array.from(nsSet).sort();
+  }, [graph.nodes, topologyFromBackend.data, frontendTopology.nodes]);
+
+  // Update namespace when view mode changes
+  useEffect(() => {
+    if (viewMode === 'cluster' && selectedNamespace !== 'all') {
+      setSelectedNamespace('all');
+    } else if (viewMode === 'namespace' && selectedNamespace === 'all' && availableNamespaces.length > 0) {
+      // Auto-select first namespace when switching to namespace mode
+      setSelectedNamespace(availableNamespaces[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]); // Only react to viewMode changes
 
   const handleResourceToggle = useCallback((kind: KubernetesKind) => {
     setSelectedResources(prev => {
@@ -233,11 +335,30 @@ export default function Topology() {
     setSelectedResources(new Set());
   }, []);
 
-  const handleNodeSelect = useCallback((node: TopologyNode | null) => {
-    setSelectedNode(node);
+  const handlePresetFilter = useCallback((preset: 'workloads' | 'networking' | 'storage' | 'security') => {
+    const presetMap = {
+      workloads: new Set<KubernetesKind>(['Deployment', 'ReplicaSet', 'StatefulSet', 'DaemonSet', 'Pod', 'Job', 'CronJob']),
+      networking: new Set<KubernetesKind>(['Service', 'Ingress', 'Endpoints', 'EndpointSlice', 'NetworkPolicy']),
+      storage: new Set<KubernetesKind>(['PersistentVolumeClaim', 'PersistentVolume', 'StorageClass']),
+      security: new Set<KubernetesKind>(['ServiceAccount', 'Role', 'ClusterRole', 'RoleBinding', 'ClusterRoleBinding', 'NetworkPolicy', 'Secret']),
+    };
+    setSelectedResources(presetMap[preset]);
+    toast.success(`Applied ${preset} filter`);
   }, []);
 
+  const handleNodeSelect = useCallback((node: TopologyNode | null) => {
+    setSelectedNode(node);
+    setSelectedNodeForDetail(node);
+  }, []);
+
+  const handleNodeClick = useCallback((node: TopologyNode) => {
+    handleNodeSelect(node);
+  }, [handleNodeSelect]);
+
   const handleNodeDoubleClick = useCallback((node: TopologyNode) => {
+    const original = (node as any)._original as BackendTopologyNode | undefined;
+    if (!original) return;
+
     const routeMap: Record<string, string> = {
       Pod: 'pods',
       Deployment: 'deployments',
@@ -256,45 +377,109 @@ export default function Topology() {
       Job: 'jobs',
       CronJob: 'cronjobs',
     };
-    const route = routeMap[node.kind];
+    const route = routeMap[original.kind];
     if (route) {
-      if (node.namespace) {
-        navigate(`/${route}/${node.namespace}/${node.name}`);
+      if (original.namespace) {
+        navigate(`/${route}/${original.namespace}/${original.name}`);
       } else {
-        navigate(`/${route}/${node.name}`);
+        navigate(`/${route}/${original.name}`);
       }
     }
   }, [navigate]);
 
   const handleExport = useCallback((format: 'png' | 'svg' | 'pdf') => {
-    if (!canvasRef.current) return;
+    if (!topologyViewerRef.current) return;
     
-    const data = canvasRef.current.exportAsImage(format === 'pdf' ? 'png' : format);
-    if (data) {
-      // Create download link
-      const link = document.createElement('a');
-      link.download = `topology-${activeCluster?.name || 'cluster'}-${new Date().toISOString().slice(0, 10)}.${format}`;
-      link.href = data;
-      link.click();
-      toast.success(`Exported as ${format.toUpperCase()}`);
-    }
-  }, [activeCluster]);
+    topologyViewerRef.current.exportAsPng();
+    toast.success(`Exported as ${format.toUpperCase()}`);
+  }, []);
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    if (isBackendConfigured && clusterId) {
-      await topologyFromBackend.refetch();
+    try {
+      if (isBackendConfigured && clusterId) {
+        await topologyFromBackend.refetch();
+      } else {
+        // Invalidate all K8s resource queries to refresh frontend topology
+        queryClient.invalidateQueries({ queryKey: ['k8s'] });
+        queryClient.invalidateQueries({ queryKey: ['backend', 'resources', clusterId] });
+        // Wait a bit for queries to refetch
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
       toast.success('Topology refreshed');
-    } else {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      toast.success('Topology refreshed');
+    } catch (error) {
+      toast.error('Failed to refresh topology');
+    } finally {
+      setIsRefreshing(false);
     }
-    setIsRefreshing(false);
-  }, [isBackendConfigured, clusterId, topologyFromBackend]);
+  }, [isBackendConfigured, clusterId, topologyFromBackend, queryClient]);
 
-  const handleLayoutDirectionChange = useCallback((direction: 'TB' | 'LR') => {
-    setLayoutDirection(direction);
-    canvasRef.current?.relayout(direction);
+
+  // Search-based navigation handler
+  const handleSearchSubmit = useCallback((query: string) => {
+    if (!query.trim()) return;
+
+    const parsed = parseSearchQuery(query);
+    
+    // First, try to find matching node in current graph
+    const matchingNode = findMatchingNode(
+      graph.nodes.map(n => ({ id: n.id, kind: n.kind, name: n.name, namespace: n.namespace })),
+      parsed
+    );
+    if (matchingNode) {
+      // Center/highlight the node
+      const transformedNode = transformedNodes.find(n => n.id === matchingNode.id);
+      if (transformedNode) {
+        topologyViewerRef.current?.centerOnNode(matchingNode.id);
+        handleNodeClick(transformedNode);
+        toast.success(`Found ${matchingNode.kind}: ${matchingNode.name}`);
+      }
+      return;
+    }
+
+    // If no match in graph, try to navigate to resource detail page
+    const navPath = buildNavigationPath(parsed);
+    if (navPath) {
+      navigate(navPath);
+      toast.success(`Navigating to ${parsed.type || 'resource'}: ${parsed.name}`);
+    } else {
+      toast.info(`No matching resource found for "${query}"`);
+    }
+  }, [graph.nodes, navigate]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const inInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+      if (inInput) return;
+
+      // F - Focus search (would need search input ref, skip for now)
+      // R - Reset view
+      if (e.key === 'r' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        topologyViewerRef.current?.resetView();
+        return;
+      }
+      // Esc - Clear selection
+      if (e.key === 'Escape') {
+        setSelectedNode(null);
+        setSelectedNodeForDetail(null);
+        setShowBlastRadius(false);
+        return;
+      }
+      // B - Toggle blast radius
+      if (e.key === 'b' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        if (selectedNodeForDetail) {
+          setShowBlastRadius(!showBlastRadius);
+        }
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   return (
@@ -311,7 +496,9 @@ export default function Topology() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Cluster Topology</h1>
           <p className="text-sm text-muted-foreground">
-            Complete cluster view • {activeCluster?.name || 'docker-desktop'}
+            {viewMode === 'cluster' 
+              ? `Complete cluster view • ${activeCluster?.name || 'docker-desktop'}`
+              : `Namespace: ${selectedNamespace === 'all' ? 'All Namespaces' : selectedNamespace} • ${activeCluster?.name || 'docker-desktop'}`}
           </p>
         </div>
       </div>
@@ -325,8 +512,7 @@ export default function Topology() {
         onNamespaceChange={setSelectedNamespace}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        layoutDirection={layoutDirection}
-        onLayoutDirectionChange={handleLayoutDirectionChange}
+        onSearchSubmit={handleSearchSubmit}
         onExport={handleExport}
         onRefresh={handleRefresh}
         isRefreshing={isRefreshing}
@@ -343,18 +529,20 @@ export default function Topology() {
         onHealthToggle={handleHealthToggle}
         onSelectAll={handleSelectAllResources}
         onClearAll={handleClearAllResources}
+        onPresetFilter={handlePresetFilter}
         className="flex-shrink-0 bg-card/50 p-4 rounded-xl border border-border"
       />
 
-      {/* Backend topology loading / error */}
+      {/* Topology loading / error */}
+      {(isBackendConfigured && clusterId ? topologyFromBackend.isLoading : frontendTopology.isLoading) && 
+       !graph.nodes.length && (
+        <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
+          <Loader2 className="h-6 w-6 animate-spin" />
+          <span>Building topology…</span>
+        </div>
+      )}
       {isBackendConfigured && clusterId && (
         <>
-          {topologyFromBackend.isLoading && !topologyFromBackend.data && (
-            <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
-              <Loader2 className="h-6 w-6 animate-spin" />
-              <span>Building topology…</span>
-            </div>
-          )}
           {topologyFromBackend.error && (
             <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 flex flex-col gap-2">
               <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -395,11 +583,11 @@ export default function Topology() {
         </>
       )}
 
-      {/* Empty state when no backend/cluster or no topology data */}
-      {(!isBackendConfigured || !clusterId) && (
+      {/* Empty state when no cluster connection */}
+      {!activeCluster && !clusterId && (
         <div className="flex-1 flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed bg-muted/30 p-8 text-center">
           <Network className="h-12 w-12 text-muted-foreground" />
-          <p className="text-muted-foreground">Connect backend and select a cluster to view topology.</p>
+          <p className="text-muted-foreground">Connect to a cluster to view topology.</p>
           <Button asChild variant="outline" className="gap-2">
             <Link to="/setup/clusters">
               <ArrowLeft className="h-4 w-4" />
@@ -409,132 +597,96 @@ export default function Topology() {
         </div>
       )}
 
-      {/* Canvas Container — only when backend + cluster; hide until topology loaded */}
-      {isBackendConfigured && clusterId && (
-        <div className="flex-1 relative min-h-0">
-          {topologyFromBackend.isLoading && !topologyFromBackend.data ? null : (
-            <TopologyCanvas
-              ref={canvasRef}
-              graph={graph}
-              selectedResources={selectedResources}
-              selectedRelationships={selectedRelationships}
-              selectedHealth={selectedHealth}
-              searchQuery={searchQuery}
-              layoutDirection={layoutDirection}
-              onNodeSelect={handleNodeSelect}
-              onNodeDoubleClick={handleNodeDoubleClick}
-              className="h-full"
-            />
+      {/* Empty state when no topology data available */}
+      {activeCluster && graph.nodes.length === 0 && !frontendTopology.isLoading && !topologyFromBackend.isLoading && (
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed bg-muted/30 p-8 text-center">
+          <Network className="h-12 w-12 text-muted-foreground" />
+          <p className="text-muted-foreground">
+            {selectedResources.size === 0 
+              ? 'No resources selected. Use filters to show resources.'
+              : 'No topology data available for the current filters.'}
+          </p>
+          {selectedResources.size === 0 && (
+            <Button variant="outline" onClick={handleSelectAllResources}>
+              Show All Resources
+            </Button>
           )}
-          {/* C2.2: Large-graph notice — canvas handles 1K+ nodes; recommend scope for 10K+ */}
+        </div>
+      )}
+
+      {/* Canvas Container — show when we have cluster connection and topology data */}
+      {activeCluster && graph.nodes.length > 0 && (
+        <div className="flex-1 relative min-h-0">
+          {(isBackendConfigured && clusterId ? topologyFromBackend.isLoading : frontendTopology.isLoading) && 
+           !graph.nodes.length ? null : (
+            <>
+              {isNamespaceOnlyFilter ? (
+                // Namespace-grouped view when only namespace filter is selected
+                // Show all resources grouped by namespace (bypass resource filtering)
+                <NamespaceGroupedTopology
+                  nodes={transformedNodes}
+                  edges={transformedEdges}
+                  onNodeClick={(node) => {
+                    handleNodeClick(node);
+                    setSelectedNodeForDetail(node);
+                  }}
+                  className="h-full"
+                />
+              ) : (
+                // Standard hierarchical view
+                <ClusterTopologyViewer
+                  ref={topologyViewerRef}
+                  graph={graph}
+                  selectedResources={selectedResourcesSet}
+                  selectedHealth={selectedHealthSet}
+                  selectedRelationships={new Set(Array.from(selectedRelationships).map(r => r.toString()))}
+                  searchQuery={searchQuery}
+                  namespace={namespaceFilter} // Pass namespace filter
+                  onNodeClick={handleNodeClick}
+                  onNodeDoubleClick={handleNodeDoubleClick}
+                  showMetrics={true}
+                  showInsights={true}
+                  layoutMode="hierarchical" // Always use hierarchical for cluster-centric layout
+                  className="h-full"
+                />
+              )}
+            </>
+          )}
+          {/* Large-graph notice */}
           {graph.nodes.length > 1000 && (
-            <div className="absolute top-4 left-4 max-w-sm rounded-lg border border-border bg-card/95 backdrop-blur-sm px-3 py-2 text-xs text-muted-foreground shadow">
+            <div className="absolute top-4 left-4 max-w-sm rounded-lg border border-border bg-card/95 backdrop-blur-sm px-3 py-2 text-xs text-muted-foreground shadow z-30">
               Large graph: {graph.nodes.length} nodes. Use namespace or filters for smoother interaction.
             </div>
           )}
-          {/* Layout Direction Toggle - positioned over canvas */}
-          <LayoutDirectionToggle
-            direction={layoutDirection}
-            onChange={handleLayoutDirectionChange}
-            className="absolute top-4 right-4"
+          {/* Layout controls removed - handled by ClusterTopologyViewer */}
+          {/* Resource Detail Panel */}
+          <ResourceDetailPanel
+            node={selectedNodeForDetail}
+            edges={transformedEdges}
+            metrics={metrics}
+            onClose={() => {
+              setSelectedNodeForDetail(null);
+              setShowBlastRadius(false);
+            }}
+            onNavigate={(node) => {
+              handleNodeDoubleClick(node);
+            }}
+            onShowBlastRadius={() => {
+              if (selectedNodeForDetail) {
+                setShowBlastRadius(true);
+              }
+            }}
           />
-          {/* Zoom Controls - positioned over canvas */}
-          <div className="absolute bottom-4 right-4 flex items-center gap-1 p-1 bg-card/95 backdrop-blur-sm border border-border rounded-lg shadow-lg">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-8 w-8"
-                onClick={() => canvasRef.current?.zoomOut()}
-              >
-                <ZoomOut className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Zoom Out</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-8 w-8"
-                onClick={() => canvasRef.current?.zoomIn()}
-              >
-                <ZoomIn className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Zoom In</TooltipContent>
-          </Tooltip>
-          <Separator orientation="vertical" className="h-5 mx-1" />
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-8 w-8"
-                onClick={() => canvasRef.current?.fitToScreen()}
-              >
-                <Maximize className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Fit to Screen (F)</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-8 w-8"
-                onClick={() => canvasRef.current?.resetView()}
-              >
-                <RotateCcw className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Reset View (R)</TooltipContent>
-          </Tooltip>
-        </div>
 
-        {/* Selected Node Panel */}
-        {selectedNode && (
-          <motion.div
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="absolute top-4 left-4 w-72"
-          >
-            <Card className="p-4 bg-card/95 backdrop-blur-sm shadow-lg border-primary/30">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div 
-                    className="w-10 h-10 rounded-lg flex items-center justify-center text-white text-sm font-bold shrink-0"
-                    style={{ backgroundColor: resourceTypes.find(r => r.kind === selectedNode.kind)?.color || '#6b7280' }}
-                  >
-                    {selectedNode.kind[0]}
-                  </div>
-                  <div className="min-w-0">
-                    <h3 className="font-semibold truncate">{selectedNode.name}</h3>
-                    <p className="text-xs text-muted-foreground">
-                      {selectedNode.kind}
-                      {selectedNode.namespace && ` • ${selectedNode.namespace}`}
-                    </p>
-                  </div>
-                </div>
-              </div>
-              <div className="mt-3 pt-3 border-t border-border flex items-center justify-between">
-                <Badge variant={selectedNode.computed.health === 'healthy' ? 'default' : selectedNode.computed.health === 'warning' ? 'secondary' : 'destructive'}>
-                  {selectedNode.computed.health}
-                </Badge>
-                <Button 
-                  variant="outline" 
-                  size="sm"
-                  onClick={() => handleNodeDoubleClick(selectedNode)}
-                >
-                  View Details
-                </Button>
-              </div>
-            </Card>
-          </motion.div>
-        )}
+          {/* Blast Radius Visualization */}
+          {showBlastRadius && selectedNodeForDetail && (
+            <BlastRadiusVisualization
+              selectedNodeId={selectedNodeForDetail.id}
+              nodes={transformedNodes}
+              edges={transformedEdges}
+              onNodeClick={handleNodeClick}
+            />
+          )}
         </div>
       )}
     </motion.div>
