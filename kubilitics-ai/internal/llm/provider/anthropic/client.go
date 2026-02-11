@@ -1,6 +1,10 @@
 package anthropic
 
-import "context"
+import (
+	"context"
+
+	"github.com/kubilitics/kubilitics-ai/internal/llm/types"
+)
 
 // Package anthropic provides Anthropic provider implementation for LLM adapter.
 //
@@ -72,7 +76,7 @@ type AnthropicClient struct {
 // NewAnthropicClient is now implemented in client_impl.go
 
 // Complete implements LLMAdapter.Complete for Anthropic API.
-func (c *AnthropicClient) Complete(ctx context.Context, messages []interface{}, tools []interface{}) (string, []interface{}, error) {
+func (c *AnthropicClient) Complete(ctx context.Context, messages []types.Message, tools []types.Tool) (string, []interface{}, error) {
 	// Build Anthropic messages request
 	// Handle tool_use format for tools
 	// Call Anthropic API
@@ -82,7 +86,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, messages []interface{}, 
 }
 
 // CompleteStream implements LLMAdapter.CompleteStream for Anthropic API.
-func (c *AnthropicClient) CompleteStream(ctx context.Context, messages []interface{}, tools []interface{}) (chan string, chan interface{}, error) {
+func (c *AnthropicClient) CompleteStream(ctx context.Context, messages []types.Message, tools []types.Tool) (chan string, chan interface{}, error) {
 	// Build Anthropic messages request with stream=true
 	// Set up SSE stream parsing
 	// Return channels for tokens and tool_use blocks
@@ -91,7 +95,7 @@ func (c *AnthropicClient) CompleteStream(ctx context.Context, messages []interfa
 }
 
 // CountTokens uses Anthropic token counting API.
-func (c *AnthropicClient) CountTokens(ctx context.Context, messages []interface{}, tools []interface{}) (int, error) {
+func (c *AnthropicClient) CountTokens(ctx context.Context, messages []types.Message, tools []types.Tool) (int, error) {
 	// Call Anthropic token counting API for accuracy
 	// Cache results for identical inputs
 	// Return token count

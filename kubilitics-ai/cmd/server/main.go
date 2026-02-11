@@ -29,13 +29,49 @@ package main
 //   - Closes all HTTP listeners
 //   - Finalizes audit logs
 
+import (
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/kubilitics/kubilitics-ai/internal/server"
+)
+
 func main() {
-	// Initialize config from environment and files
-	// Establish gRPC client to kubilitics-backend
-	// Initialize World Model with streaming
-	// Start MCP Server
-	// Start REST API
-	// Start WebSocket handler
-	// Await shutdown signal
-	// Graceful cleanup
+	// Load configuration from environment variables
+	cfg, err := server.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create server with all components wired together
+	srv, err := server.NewServer(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create server: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Start server (HTTP/gRPC, LLM, Safety, Analytics, MCP)
+	if err := srv.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start server: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Setup signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Wait for shutdown signal (Ctrl+C or SIGTERM)
+	<-sigChan
+	fmt.Println("\nReceived shutdown signal...")
+
+	// Stop server gracefully
+	if err := srv.Stop(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error stopping server: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Shutdown complete")
 }
