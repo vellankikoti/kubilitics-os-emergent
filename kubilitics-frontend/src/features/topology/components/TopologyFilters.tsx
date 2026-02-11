@@ -27,8 +27,7 @@ import {
   ArrowRightLeft,
   Container,
   Filter,
-  Zap,
-  Shield,
+  LayoutGrid,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -95,33 +94,8 @@ interface TopologyFiltersProps {
   onHealthToggle: (status: HealthStatus | 'pending') => void;
   onClearAll: () => void;
   onSelectAll: () => void;
-  onPresetFilter?: (preset: 'workloads' | 'networking' | 'storage' | 'security') => void;
   className?: string;
 }
-
-// Quick filter presets
-const QUICK_FILTERS = {
-  workloads: {
-    label: 'Workloads Only',
-    icon: Boxes,
-    resources: new Set<KubernetesKind>(['Deployment', 'ReplicaSet', 'StatefulSet', 'DaemonSet', 'Pod', 'Job', 'CronJob']),
-  },
-  networking: {
-    label: 'Networking Only',
-    icon: Network,
-    resources: new Set<KubernetesKind>(['Service', 'Ingress', 'Endpoints', 'EndpointSlice', 'NetworkPolicy']),
-  },
-  storage: {
-    label: 'Storage Only',
-    icon: HardDrive,
-    resources: new Set<KubernetesKind>(['PersistentVolumeClaim', 'PersistentVolume', 'StorageClass']),
-  },
-  security: {
-    label: 'Security Only',
-    icon: Shield,
-    resources: new Set<KubernetesKind>(['ServiceAccount', 'Role', 'ClusterRole', 'RoleBinding', 'ClusterRoleBinding', 'NetworkPolicy', 'Secret']),
-  },
-} as const;
 
 export const TopologyFilters: FC<TopologyFiltersProps> = ({
   selectedResources,
@@ -132,14 +106,8 @@ export const TopologyFilters: FC<TopologyFiltersProps> = ({
   onHealthToggle,
   onClearAll,
   onSelectAll,
-  onPresetFilter,
   className,
 }) => {
-  const handlePresetFilter = (preset: keyof typeof QUICK_FILTERS) => {
-    if (onPresetFilter) {
-      onPresetFilter(preset);
-    }
-  };
   const getResourceIcon = (kind: KubernetesKind) => {
     switch (kind) {
       case 'Namespace': return Layers;
@@ -164,32 +132,6 @@ export const TopologyFilters: FC<TopologyFiltersProps> = ({
 
   return (
     <div className={cn('space-y-4', className)}>
-      {/* Quick Filter Presets */}
-      {onPresetFilter && (
-        <div className="space-y-2">
-          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-            <Zap className="h-3 w-3" />
-            Quick Filters
-          </span>
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(QUICK_FILTERS).map(([key, preset]) => {
-              const Icon = preset.icon;
-              return (
-                <motion.button
-                  key={key}
-                  onClick={() => handlePresetFilter(key as keyof typeof QUICK_FILTERS)}
-                  whileTap={{ scale: 0.95 }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 border bg-background border-border text-foreground hover:bg-muted hover:border-primary/50"
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {preset.label}
-                </motion.button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Resource Type Filters */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -202,16 +144,38 @@ export const TopologyFilters: FC<TopologyFiltersProps> = ({
               </Badge>
             )}
           </span>
-          <div className="flex gap-1">
-            <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={onSelectAll}>
-              All
-            </Button>
-            <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={onClearAll}>
-              None
-            </Button>
-          </div>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* All / None — prominent, pill-styled, at start of row */}
+          <div className="flex items-center gap-2 mr-2">
+            <motion.button
+              onClick={onSelectAll}
+              whileTap={{ scale: 0.95 }}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 border',
+                selectedResources.size === resourceTypes.length
+                  ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                  : 'bg-background border-border text-foreground hover:bg-muted hover:border-primary/50'
+              )}
+            >
+              <LayoutGrid className="h-3.5 w-3.5" />
+              All
+            </motion.button>
+            <motion.button
+              onClick={onClearAll}
+              whileTap={{ scale: 0.95 }}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 border',
+                selectedResources.size === 0
+                  ? 'bg-muted border-border text-muted-foreground'
+                  : 'bg-background border-border text-foreground hover:bg-muted hover:border-primary/50'
+              )}
+            >
+              <CircleOff className="h-3.5 w-3.5" />
+              None
+            </motion.button>
+          </div>
+          <span className="text-muted-foreground/60 text-xs">|</span>
           {resourceTypes.map((resource) => {
             const Icon = getResourceIcon(resource.kind);
             const isActive = selectedResources.has(resource.kind);

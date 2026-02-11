@@ -594,8 +594,10 @@ ${pod.containers.map(c => `  - name: ${c.name}
       toast.info('No pods to export');
       return;
     }
-    const headers = ['Name', 'Namespace', 'Status', 'Ready', 'Restarts', 'Internal IP', 'External IP', 'CPU', 'Memory', 'Age', 'Node'];
-    const rows = podsToExport.map(p => [
+    const prefix = activeCluster?.name ? `${activeCluster.name.replace(/[^a-zA-Z0-9_-]/g, '-')}-` : '';
+    const headers = ['S.No', 'Name', 'Namespace', 'Status', 'Ready', 'Restarts', 'Internal IP', 'External IP', 'CPU', 'Memory', 'Age', 'Node'];
+    const rows = podsToExport.map((p, i) => [
+      escapeCsvCell(i + 1),
       escapeCsvCell(p.name),
       escapeCsvCell(p.namespace),
       escapeCsvCell(p.status),
@@ -613,7 +615,7 @@ ${pod.containers.map(c => `  - name: ${c.name}
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'pods-export.csv';
+    a.download = `${prefix}pods-export.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success(`Exported ${podsToExport.length} pods as CSV`);

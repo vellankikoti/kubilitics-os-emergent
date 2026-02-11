@@ -30,6 +30,7 @@ import { useResourceDetail, useK8sEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useK8sResourceList, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
+import { useClusterStore } from '@/stores/clusterStore';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { getNodeMetrics, getPodMetrics, getResource } from '@/services/backendApiClient';
 
@@ -58,6 +59,7 @@ interface NodeResource extends KubernetesResource {
 export default function NodeDetail() {
   const { name } = useParams();
   const clusterId = useActiveClusterId();
+  const activeCluster = useClusterStore((s) => s.activeCluster);
   const navigate = useNavigate();
   const { isConnected } = useConnectionStatus();
   const [activeTab, setActiveTab] = useState('overview');
@@ -400,33 +402,34 @@ export default function NodeDetail() {
       edges: topologyEdgesResolved.map((e) => ({ from: e.from, to: e.to, relation: e.label })),
     };
 
+    const filePrefix = activeCluster?.name ? `${activeCluster.name.replace(/[^a-zA-Z0-9_-]/g, '-')}-` : '';
     if (format === 'json') {
       const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `node-topology-${nodeName}-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `${filePrefix}node-topology-${nodeName}-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success('Topology report (JSON) downloaded');
     } else {
-      const csvRows: string[] = ['Section,Key,Value', `Node,Name,${nodeName}`, `Node,Status,${report.node.status}`, `Node,Pods,${report.node.podsCount}/${report.node.podsCapacity}`, `Node,Version,${report.node.version}`, '', 'Type,Name,Namespace,CPU,Memory,Status'];
-      report.resources.forEach((r) => {
-        const row = [r.type ?? '', r.name ?? '', r.namespace ?? '', r.cpu ?? '', r.memory ?? '', r.status ?? ''];
-        csvRows.push(row.map((c) => (c.includes(',') || c.includes('"') ? `"${(c as string).replace(/"/g, '""')}"` : c)).join(','));
+      const csvRows: string[] = ['Section,Key,Value', `Node,Name,${nodeName}`, `Node,Status,${report.node.status}`, `Node,Pods,${report.node.podsCount}/${report.node.podsCapacity}`, `Node,Version,${report.node.version}`, '', 'S.No,Type,Name,Namespace,CPU,Memory,Status'];
+      report.resources.forEach((r, i) => {
+        const row = [i + 1, r.type ?? '', r.name ?? '', r.namespace ?? '', r.cpu ?? '', r.memory ?? '', r.status ?? ''];
+        csvRows.push(row.map((c) => (String(c).includes(',') || String(c).includes('"') ? `"${String(c).replace(/"/g, '""')}"` : c)).join(','));
       });
-      csvRows.push('', 'From,To,Relation');
-      report.edges.forEach((e) => csvRows.push(`${e.from},${e.to},${e.relation ?? ''}`));
+      csvRows.push('', 'S.No,From,To,Relation');
+      report.edges.forEach((e, i) => csvRows.push(`${i + 1},${e.from},${e.to},${e.relation ?? ''}`));
       const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `node-topology-${nodeName}-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.download = `${filePrefix}node-topology-${nodeName}-${new Date().toISOString().slice(0, 10)}.csv`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success('Topology report (CSV) downloaded');
     }
-  }, [nodeName, n, nodeMetricsQuery.data, runningPods, topologyNodesResolved, topologyEdgesResolved]);
+  }, [nodeName, n, nodeMetricsQuery.data, runningPods, topologyNodesResolved, topologyEdgesResolved, activeCluster?.name]);
 
   const yamlVersions: YamlVersion[] = yaml ? [{ id: 'current', label: 'Current Version', yaml, timestamp: 'now' }] : [];
 

@@ -14,7 +14,6 @@ import {
   type NodeMetrics,
 } from '@/utils/topologyDataTransformer';
 import { calculateLayoutConfig } from './layouts/ClusterLayoutEngine';
-import { ClusterInsightsPanel } from './ClusterInsightsPanel';
 import type { TopologyGraph } from '@/types/topology';
 import type { TopologyNode, TopologyEdge } from '@/components/resources/D3ForceTopology';
 import { cn } from '@/lib/utils';
@@ -44,6 +43,8 @@ export interface ClusterTopologyViewerProps {
   layoutMode?: 'hierarchical' | 'force-directed' | 'namespace-grouped';
   /** When true, topology expands to full size and page scrolls (like NodeDetail topology) */
   scrollWithPage?: boolean;
+  /** Cluster name for export filenames (e.g. "docker-desktop" -> "docker-desktop-topology-{timestamp}.png") */
+  clusterName?: string;
 }
 
 export const ClusterTopologyViewer = forwardRef<ClusterTopologyViewerRef, ClusterTopologyViewerProps>(
@@ -59,9 +60,10 @@ export const ClusterTopologyViewer = forwardRef<ClusterTopologyViewerRef, Cluste
       onNodeDoubleClick,
       className,
       showMetrics = true,
-      showInsights = true,
+      showInsights = false, // Health shown in toolbar instead
       layoutMode = 'hierarchical',
       scrollWithPage = false,
+      clusterName,
     },
     ref
   ) => {
@@ -140,16 +142,6 @@ export const ClusterTopologyViewer = forwardRef<ClusterTopologyViewerRef, Cluste
 
     return (
       <div className={cn(scrollWithPage ? 'relative w-full' : 'relative h-full w-full flex flex-col min-h-0', className)}>
-        {/* Insights Panel - Draggable, positioned top-right by default */}
-        {showInsights && (
-          <div className="absolute top-4 right-4 z-10">
-            <ClusterInsightsPanel
-              nodes={filteredNodes}
-              metrics={metrics}
-            />
-          </div>
-        )}
-
         {/* Topology Viewer */}
         <TopologyViewer
           ref={topologyViewerRef}
@@ -162,6 +154,7 @@ export const ClusterTopologyViewer = forwardRef<ClusterTopologyViewerRef, Cluste
           }}
           className={scrollWithPage ? 'w-full' : 'flex-1 min-h-0 w-full'}
           hideBuiltInExport={false}
+          exportFilenamePrefix={clusterName}
           scrollWithPage={scrollWithPage}
         />
 

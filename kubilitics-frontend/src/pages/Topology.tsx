@@ -24,12 +24,11 @@ import {
 } from '@/features/topology';
 import { ClusterTopologyViewer, type ClusterTopologyViewerRef } from '@/components/topology/ClusterTopologyViewer';
 import { TopologyViewer } from '@/components/resources';
-import { ClusterInsightsPanel } from '@/components/topology/ClusterInsightsPanel';
 import { ResourceDetailPanel } from '@/components/topology/ResourceDetailPanel';
 import { BlastRadiusVisualization } from '@/components/topology/BlastRadiusVisualization';
 import { NamespaceGroupedTopology } from '@/components/topology/NamespaceGroupedTopology';
 import { useTopologyMetrics } from '@/hooks/useTopologyMetrics';
-import { transformTopologyGraph } from '@/utils/topologyDataTransformer';
+import { transformTopologyGraph, filterTopologyData, calculateClusterHealth } from '@/utils/topologyDataTransformer';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import type { TopologyGraph, TopologyNode as BackendTopologyNode, KubernetesKind, HealthStatus, RelationshipType } from '@/types/topology';
@@ -37,7 +36,6 @@ import type { TopologyNode } from '@/components/resources/D3ForceTopology';
 import { BackendApiError } from '@/services/backendApiClient';
 import { Loader2, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { parseSearchQuery, buildNavigationPath, findMatchingNode } from '@/utils/topologySearchParser';
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -156,7 +154,6 @@ export default function Topology() {
   // View state - MUST be declared before useMemo/useEffect that use them
   const [selectedNamespace, setSelectedNamespace] = useState('all');
   const [selectedNodeFilter, setSelectedNodeFilter] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [useDemoGraph, setUseDemoGraph] = useState(false);
 
@@ -265,6 +262,17 @@ export default function Topology() {
     return transformTopologyGraph(graph, undefined, activeCluster?.name);
   }, [graph, activeCluster?.name]);
 
+  // Filtered nodes (same logic as ClusterTopologyViewer) for cluster health
+  const { nodes: filteredNodes } = useMemo(() => {
+    return filterTopologyData(transformedNodes, transformedEdges, {
+      selectedResources: selectedResourcesSet,
+      selectedHealth: selectedHealthSet,
+      namespace: selectedNamespace === 'all' ? undefined : selectedNamespace,
+    });
+  }, [transformedNodes, transformedEdges, selectedResourcesSet, selectedHealthSet, selectedNamespace]);
+
+  const clusterHealth = useMemo(() => calculateClusterHealth(filteredNodes), [filteredNodes]);
+
   // For namespace-grouped view, we need all nodes (not filtered by resource type)
   // So we use transformedNodes directly instead of filtered nodes
 
@@ -325,15 +333,25 @@ export default function Topology() {
     setSelectedResources(new Set());
   }, []);
 
-  const handlePresetFilter = useCallback((preset: 'workloads' | 'networking' | 'storage' | 'security') => {
-    const presetMap = {
-      workloads: new Set<KubernetesKind>(['Deployment', 'ReplicaSet', 'StatefulSet', 'DaemonSet', 'Pod', 'Job', 'CronJob']),
-      networking: new Set<KubernetesKind>(['Service', 'Ingress', 'Endpoints', 'EndpointSlice', 'NetworkPolicy']),
-      storage: new Set<KubernetesKind>(['PersistentVolumeClaim', 'PersistentVolume', 'StorageClass']),
-      security: new Set<KubernetesKind>(['ServiceAccount', 'Role', 'ClusterRole', 'RoleBinding', 'ClusterRoleBinding', 'NetworkPolicy', 'Secret']),
+  const handlePresetFilter = useCallback((preset: 'all' | 'none' | 'workloads' | 'networking' | 'storage' | 'security') => {
+    if (preset === 'all') {
+      setSelectedResources(new Set(resourceTypes.map((r) => r.kind)));
+      toast.success('Showing all resources');
+      return;
+    }
+    if (preset === 'none') {
+      setSelectedResources(new Set());
+      toast.success('Showing no resources');
+      return;
+    }
+    const presetMap: Record<string, Set<KubernetesKind>> = {
+      workloads: new Set(['Deployment', 'ReplicaSet', 'StatefulSet', 'DaemonSet', 'Pod', 'Job', 'CronJob']),
+      networking: new Set(['Service', 'Ingress', 'Endpoints', 'EndpointSlice', 'NetworkPolicy']),
+      storage: new Set(['PersistentVolumeClaim', 'PersistentVolume', 'StorageClass']),
+      security: new Set(['ServiceAccount', 'Role', 'ClusterRole', 'RoleBinding', 'ClusterRoleBinding', 'NetworkPolicy', 'Secret']),
     };
     setSelectedResources(presetMap[preset]);
-    toast.success(`Applied ${preset} filter`);
+    toast.success(`Showing ${preset} only`);
   }, []);
 
   const handleNodeSelect = useCallback((node: TopologyNode | null) => {
@@ -377,13 +395,6 @@ export default function Topology() {
     }
   }, [navigate]);
 
-  const handleExport = useCallback((format: 'png' | 'svg' | 'pdf') => {
-    if (!topologyViewerRef.current) return;
-    
-    topologyViewerRef.current.exportAsPng();
-    toast.success(`Exported as ${format.toUpperCase()}`);
-  }, []);
-
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
@@ -403,39 +414,6 @@ export default function Topology() {
       setIsRefreshing(false);
     }
   }, [isBackendConfigured, clusterId, topologyFromBackend, queryClient]);
-
-
-  // Search-based navigation handler
-  const handleSearchSubmit = useCallback((query: string) => {
-    if (!query.trim()) return;
-
-    const parsed = parseSearchQuery(query);
-    
-    // First, try to find matching node in current graph
-    const matchingNode = findMatchingNode(
-      graph.nodes.map(n => ({ id: n.id, kind: n.kind, name: n.name, namespace: n.namespace })),
-      parsed
-    );
-    if (matchingNode) {
-      // Center/highlight the node
-      const transformedNode = transformedNodes.find(n => n.id === matchingNode.id);
-      if (transformedNode) {
-        topologyViewerRef.current?.centerOnNode(matchingNode.id);
-        handleNodeClick(transformedNode);
-        toast.success(`Found ${matchingNode.kind}: ${matchingNode.name}`);
-      }
-      return;
-    }
-
-    // If no match in graph, try to navigate to resource detail page
-    const navPath = buildNavigationPath(parsed);
-    if (navPath) {
-      navigate(navPath);
-      toast.success(`Navigating to ${parsed.type || 'resource'}: ${parsed.name}`);
-    } else {
-      toast.info(`No matching resource found for "${query}"`);
-    }
-  }, [graph.nodes, navigate]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -497,16 +475,21 @@ export default function Topology() {
       <TopologyToolbar
         selectedNamespace={selectedNamespace}
         namespaces={availableNamespaces}
-        onNamespaceChange={setSelectedNamespace}
+        onNamespaceChange={(ns) => {
+          setSelectedNamespace(ns);
+          if (ns !== 'all') setSelectedNodeFilter('');
+        }}
         selectedNode={selectedNodeFilter}
         nodes={availableNodes}
-        onNodeChange={setSelectedNodeFilter}
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        onSearchSubmit={handleSearchSubmit}
-        onExport={handleExport}
+        onNodeChange={(node) => {
+          setSelectedNodeFilter(node);
+          if (node) setSelectedNamespace('all');
+        }}
         onRefresh={handleRefresh}
         isRefreshing={isRefreshing}
+        selectedResources={selectedResources}
+        clusterHealth={clusterHealth}
+        onPresetFilter={handlePresetFilter}
         className="flex-shrink-0"
       />
 
@@ -520,7 +503,6 @@ export default function Topology() {
         onHealthToggle={handleHealthToggle}
         onSelectAll={handleSelectAllResources}
         onClearAll={handleClearAllResources}
-        onPresetFilter={handlePresetFilter}
         className="flex-shrink-0 bg-card/50 p-4 rounded-xl border border-border"
       />
 
@@ -628,6 +610,7 @@ export default function Topology() {
                       handleNodeClick(node);
                       setSelectedNodeForDetail(node);
                     }}
+                    exportFilenamePrefix={activeCluster?.name ? `${activeCluster.name}-node-${selectedNodeFilter}` : undefined}
                     scrollWithPage={true}
                     className="w-full rounded-xl border border-border bg-card"
                   />
@@ -653,15 +636,16 @@ export default function Topology() {
                     <ClusterTopologyViewer
                       ref={topologyViewerRef}
                       graph={graph}
+                      clusterName={activeCluster?.name}
                       selectedResources={selectedResourcesSet}
                       selectedHealth={selectedHealthSet}
                       selectedRelationships={new Set(Array.from(selectedRelationships).map(r => r.toString()))}
-                      searchQuery={searchQuery}
+                      searchQuery=""
                       namespace={namespaceFilter}
                       onNodeClick={handleNodeClick}
                       onNodeDoubleClick={handleNodeDoubleClick}
                       showMetrics={true}
-                      showInsights={true}
+                      showInsights={false}
                       layoutMode="hierarchical"
                       scrollWithPage={true}
                       className="w-full"

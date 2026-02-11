@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { motion } from 'framer-motion';
+import { toBlob } from 'html-to-image';
 import {
   Network,
   ZoomIn,
@@ -30,6 +31,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 import { D3ForceTopology } from './D3ForceTopology';
 
 // ResourceType is imported from D3ForceTopology - keeping local reference for styling
@@ -90,6 +92,8 @@ export interface TopologyViewerProps {
   layoutOptions?: LayoutOptions;
   /** Hide JSON/CSV/PNG in toolbar; parent shows a single consolidated export row */
   hideBuiltInExport?: boolean;
+  /** Prefix for export filenames (e.g. cluster name). Prepended as `{prefix}-topology-{timestamp}.{ext}` */
+  exportFilenamePrefix?: string;
   /** When true, topology expands to full content size and page scrolls (like NodeDetail). When false, scroll happens inside the card. */
   scrollWithPage?: boolean;
   /** Expanded resources (namespaces, deployments, replicasets, nodes) - controls visibility of child resources */
@@ -883,10 +887,15 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+function sanitizeFilenamePrefix(s: string): string {
+  return s.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'topology';
+}
+
 export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>(function TopologyViewer(
-  { nodes, edges, onNodeClick, className, variant = 'default', layoutOptions, hideBuiltInExport = false, scrollWithPage = false, expandedResources: externalExpandedResources, onToggleExpansion },
+  { nodes, edges, onNodeClick, className, variant = 'default', layoutOptions, hideBuiltInExport = false, exportFilenamePrefix, scrollWithPage = false, expandedResources: externalExpandedResources, onToggleExpansion },
   ref
 ) {
+  const filePrefix = exportFilenamePrefix ? sanitizeFilenamePrefix(exportFilenamePrefix) : 'topology';
   const [zoom, setZoom] = useState(() => (scrollWithPage ? 100 : 60));
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
@@ -944,6 +953,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
+  const canvasContentRef = useRef<HTMLDivElement>(null); // Wrapper around SVG for WYSIWYG export
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number } | null>(null);
 
@@ -1010,42 +1020,30 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
   }, [edges, visibleNodes]);
   const hasSetInitialZoomRef = useRef(false);
 
-  const exportAsPng = useCallback(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const vb = svg.viewBox.baseVal;
-    const w = vb.width || 800;
-    const h = vb.height || 600;
-    const clone = svg.cloneNode(true) as SVGSVGElement;
-    clone.setAttribute('width', String(w));
-    clone.setAttribute('height', String(h));
-    clone.style.transform = '';
-    const svgString = new XMLSerializer().serializeToString(clone);
-    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const scale = 2;
-      const canvas = document.createElement('canvas');
-      canvas.width = w * scale;
-      canvas.height = h * scale;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.scale(scale, scale);
-      ctx.drawImage(img, 0, 0, w, h);
-      canvas.toBlob(
-        (pngBlob) => {
-          if (!pngBlob) return;
-          downloadBlob(pngBlob, `topology-${Date.now()}.png`);
-        },
-        'image/png',
-        1
-      );
-    };
-    img.onerror = () => URL.revokeObjectURL(url);
-    img.src = url;
-  }, []);
+  const exportAsPng = useCallback(async () => {
+    const el = canvasContentRef.current ?? canvasWrapperRef.current;
+    if (!el) {
+      toast.error('Export failed: topology not ready');
+      return;
+    }
+    try {
+      const pngBlob = await toBlob(el, {
+        backgroundColor: '#ffffff',
+        pixelRatio: 2,
+        cacheBust: true,
+        preferCurrentStyle: true,
+        includeQueryParams: false,
+      });
+      if (!pngBlob) {
+        toast.error('Export failed: could not generate PNG');
+        return;
+      }
+      downloadBlob(pngBlob, `${filePrefix}-topology-${Date.now()}.png`);
+      toast.success('Topology exported as PNG');
+    } catch (err) {
+      toast.error('Export failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    }
+  }, [filePrefix]);
 
   useImperativeHandle(ref, () => ({ exportAsPng }), [exportAsPng]);
 
@@ -1145,16 +1143,16 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
   const handleExportGraphJson = useCallback(() => {
     const payload = { nodes: visibleNodes, edges: visibleEdges };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    downloadBlob(blob, `topology-graph-${Date.now()}.json`);
-  }, [visibleNodes, visibleEdges]);
+    downloadBlob(blob, `${filePrefix}-topology-${Date.now()}.json`);
+  }, [visibleNodes, visibleEdges, filePrefix]);
 
   const handleExportGraphCsv = useCallback(() => {
-    const nodeRows = ['id,name,type,status', ...visibleNodes.map((n) => [n.id, n.name, n.type, n.status ?? ''].map(escapeCsvCell).join(','))];
-    const edgeRows = ['from,to,label', ...visibleEdges.map((e) => [e.from, e.to, e.label ?? ''].map(escapeCsvCell).join(','))];
+    const nodeRows = ['S.No,id,name,type,status', ...visibleNodes.map((n, i) => [i + 1, n.id, n.name, n.type, n.status ?? ''].map(escapeCsvCell).join(','))];
+    const edgeRows = ['S.No,from,to,label', ...visibleEdges.map((e, i) => [i + 1, e.from, e.to, e.label ?? ''].map(escapeCsvCell).join(','))];
     const csv = nodeRows.join('\n') + '\n\n' + edgeRows.join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    downloadBlob(blob, `topology-graph-${Date.now()}.csv`);
-  }, [visibleNodes, visibleEdges]);
+    downloadBlob(blob, `${filePrefix}-topology-${Date.now()}.csv`);
+  }, [visibleNodes, visibleEdges, filePrefix]);
 
   const handleNodeClick = useCallback((node: TopologyNode) => {
     if (didDragRef.current) return;
@@ -1365,6 +1363,7 @@ export const TopologyViewer = forwardRef<TopologyViewerRef, TopologyViewerProps>
 
           {/* SVG with zoom - wrapper has scaled dimensions; when scrollWithPage, content at full size */}
           <div
+            ref={canvasContentRef}
             style={{
               width: variant === 'card' ? '100%' : `${(canvasWidth * zoom) / 100}px`,
               height: variant === 'card' ? '100%' : `${(viewBoxHeight * zoom) / 100}px`,

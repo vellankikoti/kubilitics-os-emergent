@@ -1,5 +1,6 @@
 import { Download, FileText, FileSpreadsheet, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useClusterStore } from '@/stores/clusterStore';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -43,7 +44,13 @@ export interface ResourceExportDropdownProps<T> {
   onToast: (message: string, type?: 'success' | 'info') => void;
   /** Optional trigger label override, e.g. "Export (5)" */
   triggerLabel?: string;
+  /** Cluster name for export filenames (e.g. "docker-desktop-pods-export.csv") */
+  clusterName?: string;
   className?: string;
+}
+
+function sanitizeClusterName(s: string): string {
+  return s.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || '';
 }
 
 export function ResourceExportDropdown<T>({
@@ -54,8 +61,12 @@ export function ResourceExportDropdown<T>({
   selectionLabel,
   onToast,
   triggerLabel,
+  clusterName: clusterNameProp,
   className,
 }: ResourceExportDropdownProps<T>) {
+  const activeCluster = useClusterStore((s) => s.activeCluster);
+  const clusterName = clusterNameProp ?? activeCluster?.name;
+  const filenamePrefix = clusterName ? `${sanitizeClusterName(clusterName)}-${config.filenamePrefix}` : config.filenamePrefix;
   const itemsToExport =
     selectedKeys.size > 0
       ? items.filter((i) => selectedKeys.has(getKey(i)))
@@ -70,7 +81,7 @@ export function ResourceExportDropdown<T>({
     const blob = new Blob([JSON.stringify(data, null, 2)], {
       type: 'application/json',
     });
-    downloadBlob(blob, `${config.filenamePrefix}-export.json`);
+    downloadBlob(blob, `${filenamePrefix}-export.json`);
     onToast(`Exported ${data.length} ${config.resourceLabel}`);
   };
 
@@ -82,7 +93,7 @@ export function ResourceExportDropdown<T>({
     }
     const yaml = objectsToYaml(data);
     const blob = new Blob([yaml], { type: 'text/yaml' });
-    downloadBlob(blob, `${config.filenamePrefix}-export.yaml`);
+    downloadBlob(blob, `${filenamePrefix}-export.yaml`);
     onToast(`Exported ${data.length} ${config.resourceLabel} as YAML`);
   };
 
@@ -91,13 +102,13 @@ export function ResourceExportDropdown<T>({
       onToast('No items to export', 'info');
       return;
     }
-    const headers = config.csvColumns.map((c) => c.label);
-    const rows = itemsToExport.map((item) =>
-      config.csvColumns.map((col) => escapeCsvCell(col.getValue(item)))
+    const headers = ['S.No', ...config.csvColumns.map((c) => c.label)];
+    const rows = itemsToExport.map((item, index) =>
+      [escapeCsvCell(index + 1), ...config.csvColumns.map((col) => escapeCsvCell(col.getValue(item)))]
     );
     const csv = buildCsv(headers, rows);
     const blob = new Blob([csv], { type: 'text/csv' });
-    downloadBlob(blob, `${config.filenamePrefix}-export.csv`);
+    downloadBlob(blob, `${filenamePrefix}-export.csv`);
     onToast(`Exported ${itemsToExport.length} ${config.resourceLabel} as CSV`);
   };
 
@@ -109,7 +120,7 @@ export function ResourceExportDropdown<T>({
     if (!config.toK8sYaml) return;
     const yamls = itemsToExport.map((item) => config.toK8sYaml!(item)).join('\n');
     const blob = new Blob([yamls], { type: 'text/yaml' });
-    downloadBlob(blob, `${config.filenamePrefix}.yaml`);
+    downloadBlob(blob, `${filenamePrefix}.yaml`);
     onToast(`Exported ${itemsToExport.length} ${config.resourceLabel} YAMLs`);
   };
 
