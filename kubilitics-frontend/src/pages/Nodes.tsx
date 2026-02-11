@@ -525,26 +525,40 @@ export default function Nodes() {
                       </ResizableTableCell>
                       <ResizableTableCell columnId="cpu">
                         <div className="min-w-0 overflow-hidden">
-                          <UsageBar
-                            variant="sparkline"
-                            value={item.cpuRaw}
-                            kind="cpu"
-                            displayFormat="compact"
-                            width={56}
-                            max={parseCpuCapacityToMilli(item.cpuCapacity) ?? undefined}
-                          />
+                          {(() => {
+                            const cpuNum = parseCpuUsageToMilli(item.cpuRaw);
+                            const cpuDataPoints = cpuNum != null ? Array(12).fill(cpuNum) : undefined;
+                            return (
+                              <UsageBar
+                                variant="sparkline"
+                                value={item.cpuRaw}
+                                kind="cpu"
+                                dataPoints={cpuDataPoints}
+                                displayFormat="compact"
+                                width={56}
+                                max={parseCpuCapacityToMilli(item.cpuCapacity) ?? undefined}
+                              />
+                            );
+                          })()}
                         </div>
                       </ResizableTableCell>
                       <ResizableTableCell columnId="memory">
                         <div className="min-w-0 overflow-hidden">
-                          <UsageBar
-                            variant="sparkline"
-                            value={item.memoryRaw}
-                            kind="memory"
-                            displayFormat="compact"
-                            width={56}
-                            max={parseMemoryCapacityToMi(item.memoryCapacity) ?? undefined}
-                          />
+                          {(() => {
+                            const memNum = parseMemoryUsageToMi(item.memoryRaw);
+                            const memDataPoints = memNum != null ? Array(12).fill(memNum) : undefined;
+                            return (
+                              <UsageBar
+                                variant="sparkline"
+                                value={item.memoryRaw}
+                                kind="memory"
+                                dataPoints={memDataPoints}
+                                displayFormat="compact"
+                                width={56}
+                                max={parseMemoryCapacityToMi(item.memoryCapacity) ?? undefined}
+                              />
+                            );
+                          })()}
                         </div>
                       </ResizableTableCell>
                       <ResizableTableCell columnId="pods" className="font-mono text-sm">{item.pods}</ResizableTableCell>
