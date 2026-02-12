@@ -1,7 +1,5 @@
 export { ResourceStatusCard, ResourceStatusCards, type ResourceStatusCardProps, type ResourceStatusCardsProps } from './ResourceStatusCard';
 export { ResourceTabs, type TabConfig, type ResourceTabsProps } from './ResourceTabs';
-export { TopologyViewer, type TopologyViewerProps, type TopologyViewerRef } from './TopologyViewer';
-export { D3ForceTopology, type D3ForceTopologyProps, type TopologyNode, type TopologyEdge, type ResourceType } from './D3ForceTopology';
 export { LogViewer, type LogEntry, type LogViewerProps } from './LogViewer';
 export { TerminalViewer, type TerminalLine, type TerminalViewerProps } from './TerminalViewer';
 export { DeleteConfirmDialog, type DeleteConfirmDialogProps } from './DeleteConfirmDialog';
@@ -25,4 +23,4 @@ export { NodeDetailPopup, type ResourceDetail } from './NodeDetailPopup';
 export { Sparkline, LiveMetric, useLiveMetrics } from './PodSparkline';
 export { UsageBar, parseCpu, parseMemory, calculatePodResourceMax, type UsageBarProps, type UsageBarKind, type UsageBarVariant } from './UsageBar';
 export { PodComparisonView } from './PodComparisonView';
-export { TopologyMiniMap } from './TopologyMiniMap';
+export { ResourceTopologyView, type ResourceTopologyViewProps } from './ResourceTopologyView';

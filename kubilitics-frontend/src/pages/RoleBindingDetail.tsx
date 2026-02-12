@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Link2, Clock, Download, Trash2, Edit, Shield, UserCircle, RefreshCw } from 'lucide-react';
+import { Link2, Clock, Download, Trash2, Edit, Shield, UserCircle, RefreshCw, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -12,11 +12,13 @@ import {
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { toast } from 'sonner';
 
@@ -202,6 +204,20 @@ export default function RoleBindingDetail() {
     { id: 'events', label: 'Events', content: <EventsSection events={events} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={rbName} /> },
     { id: 'compare', label: 'Compare', content: <YamlCompareViewer versions={yamlVersions} resourceName={rbName} /> },
+    {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('RoleBinding')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="RoleBinding"
+          sourceResourceName={resource?.metadata?.name ?? name ?? ''}
+        />
+      ),
+    },
     {
       id: 'actions',
       label: 'Actions',

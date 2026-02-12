@@ -8,20 +8,18 @@ import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
   SectionCard,
-  TopologyViewer,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
 import { useDeleteK8sResource, useUpdateK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { useClusterStore } from '@/stores/clusterStore';
 import { useBackendConfigStore } from '@/stores/backendConfigStore';
@@ -65,7 +63,6 @@ export default function VolumeAttachmentDetail() {
     undefined as unknown as K8sVolumeAttachment
   );
   const { events, refetch: refetchEvents } = useResourceEvents('VolumeAttachment', '', name ?? undefined);
-  const { nodes: topologyNodes, edges: topologyEdges, refetch: refetchTopology, isLoading: topologyLoading, error: topologyError } = useResourceTopology('volumeattachments', '', name ?? undefined);
   const deleteVA = useDeleteK8sResource('volumeattachments');
   const updateVA = useUpdateK8sResource('volumeattachments');
 
@@ -76,7 +73,6 @@ export default function VolumeAttachmentDetail() {
   const handleRefresh = () => {
     refetch();
     refetchEvents();
-    refetchTopology();
   };
 
   const handleDownloadYaml = useCallback(() => {
@@ -150,10 +146,6 @@ export default function VolumeAttachmentDetail() {
     }
   };
 
-  const handleNodeClick = (node: TopologyNode) => {
-    if (node.type === 'pv' && node.name !== vaName) navigate(`/persistentvolumes/${node.name}`);
-    else if (node.type === 'node') navigate(`/nodes/${node.name}`);
-  };
 
   const tabs = [
     {
@@ -194,27 +186,14 @@ export default function VolumeAttachmentDetail() {
       id: 'topology',
       label: 'Topology',
       icon: Network,
-      content: !isBackendConfigured() || !clusterId ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">Connect to the Kubilitics backend (Settings → Connect) and select a cluster to view resource topology.</p>
-        </div>
-      ) : topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      ) : topologyError ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <p className="text-destructive text-sm">Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}</p>
-          <Button variant="outline" size="sm" className="mt-2" onClick={() => refetchTopology()}>Retry</Button>
-        </div>
-      ) : (topologyNodes.length === 0 && topologyEdges.length === 0) ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">No related resources in topology for this VolumeAttachment.</p>
-        </div>
-      ) : (
-        <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('VolumeAttachment')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="VolumeAttachment"
+          sourceResourceName={va?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

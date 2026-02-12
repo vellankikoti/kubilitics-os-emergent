@@ -32,7 +32,6 @@ import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
   ContainersSection,
   YamlViewer,
   YamlCompareViewer,
@@ -40,22 +39,19 @@ import {
   MetadataCard,
   ActionsSection,
   MetricsDashboard,
-  NodeDetailPopup,
   ScaleDialog,
   DeleteConfirmDialog,
   LogViewer,
   TerminalViewer,
   SectionCard,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type ContainerInfo,
   type YamlVersion,
-  type ResourceDetail,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useUpdateK8sResource, usePatchK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useClusterStore } from '@/stores/clusterStore';
@@ -93,7 +89,6 @@ export default function ReplicaSetDetail() {
   const [activeTab, setActiveTab] = useState('overview');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showScaleDialog, setShowScaleDialog] = useState(false);
-  const [selectedNode, setSelectedNode] = useState<ResourceDetail | null>(null);
   const [selectedLogPod, setSelectedLogPod] = useState<string>('');
   const [selectedLogContainer, setSelectedLogContainer] = useState<string>('');
   const [selectedTerminalPod, setSelectedTerminalPod] = useState<string>('');
@@ -113,15 +108,6 @@ export default function ReplicaSetDetail() {
   const deleteReplicaSet = useDeleteK8sResource('replicasets');
   const updateReplicaSet = useUpdateK8sResource('replicasets');
   const patchReplicaSet = usePatchK8sResource('replicasets');
-  const resourceTopology = useResourceTopology('replicasets', namespace ?? undefined, name ?? undefined);
-  const topologyNodes = useMemo(
-    () =>
-      resourceTopology.nodes.map((n) => ({
-        ...n,
-        isCurrent: n.type === 'replicaset' && n.name === name && n.namespace === namespace,
-      })),
-    [resourceTopology.nodes, name, namespace]
-  );
 
   const status: ResourceStatus = replicaSet.status?.readyReplicas === replicaSet.spec?.replicas ? 'Running' : 
     replicaSet.status?.readyReplicas ? 'Pending' : 'Failed';
@@ -160,16 +146,6 @@ export default function ReplicaSetDetail() {
 
   const ownerRef = replicaSet.metadata?.ownerReferences?.[0];
 
-  const handleNodeClick = useCallback((node: TopologyNode) => {
-    const resourceDetail: ResourceDetail = {
-      id: node.id,
-      type: node.type as any,
-      name: node.name,
-      namespace: node.namespace,
-      status: node.status,
-    };
-    setSelectedNode(resourceDetail);
-  }, []);
 
   const handleDownloadYaml = useCallback(() => {
     const blob = new Blob([yaml], { type: 'text/yaml' });
@@ -518,23 +494,13 @@ export default function ReplicaSetDetail() {
       label: 'Topology',
       icon: Network,
       content: (
-        <>
-          {resourceTopology.isLoading ? (
-            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">Loading topology...</div>
-          ) : resourceTopology.error ? (
-            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">
-              Topology unavailable: {resourceTopology.error instanceof Error ? resourceTopology.error.message : String(resourceTopology.error)}
-            </div>
-          ) : (
-            <TopologyViewer nodes={topologyNodes} edges={resourceTopology.edges} onNodeClick={handleNodeClick} />
-          )}
-          <NodeDetailPopup
-            resource={selectedNode}
-            onClose={() => setSelectedNode(null)}
-            sourceResourceType="ReplicaSet"
-            sourceResourceName={replicaSet?.metadata?.name ?? name ?? ''}
-          />
-        </>
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('ReplicaSet')}
+          namespace={namespace || replicaSet?.metadata?.namespace || ''}
+          name={name || replicaSet?.metadata?.name || ''}
+          sourceResourceType="ReplicaSet"
+          sourceResourceName={replicaSet?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

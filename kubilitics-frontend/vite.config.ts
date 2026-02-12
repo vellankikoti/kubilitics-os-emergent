@@ -51,7 +51,7 @@ export default defineConfig(({ mode }) => ({
         manualChunks: {
           "vendor-react": ["react", "react-dom", "react-router-dom"],
           "vendor-query": ["@tanstack/react-query"],
-          "vendor-graph": ["cytoscape", "cytoscape-dagre", "cytoscape-cola"],
+          "vendor-graph": ["cytoscape", "cytoscape-dagre", "cytoscape-cola", "cytoscape-elk", "elkjs"],
           "vendor-ui": ["@radix-ui/react-dialog", "@radix-ui/react-tabs"],
         },
       },

@@ -9,12 +9,13 @@ import {
     ArrowDown,
     Minus,
     FolderKanban,
-    Database,
+    Shield,
+    FileText,
     KeyRound,
-    Copy,
+    Timer,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ResponsiveContainer, LineChart, Line } from "recharts";
+import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import { useResourceCounts } from "@/hooks/useResourceCounts";
 
 const sparklineData = [
@@ -30,123 +31,143 @@ const sparklineData = [
 export const MetricCardsGrid = () => {
     const { counts } = useResourceCounts();
 
-    const cardConfigs = [
-        {
-            title: "Nodes",
-            value: counts.nodes,
-            href: "/nodes",
-            trend: "+2",
-            trendDir: "up" as const,
-            icon: Server,
-            accent: "from-blue-600 to-blue-400",
-            borderClass: "border-l-blue-500",
-            bgClass: "bg-gradient-to-br from-blue-500/8 via-transparent to-transparent",
-            iconBg: "bg-blue-500/15",
-            iconColor: "text-blue-600",
-            chartColor: "#2563EB",
-        },
-        {
-            title: "Pods",
-            value: counts.pods,
-            href: "/pods",
-            trend: "+12",
-            trendDir: "up" as const,
-            icon: Activity,
-            accent: "from-violet-600 to-purple-400",
-            borderClass: "border-l-violet-500",
-            bgClass: "bg-gradient-to-br from-violet-500/8 via-transparent to-transparent",
-            iconBg: "bg-violet-500/15",
-            iconColor: "text-violet-600",
-            chartColor: "#7C3AED",
-        },
-        {
-            title: "Deployments",
-            value: counts.deployments,
-            href: "/workloads/deployments",
-            trend: "0",
-            trendDir: "neutral" as const,
-            icon: Layers,
-            accent: "from-indigo-600 to-indigo-400",
-            borderClass: "border-l-indigo-500",
-            bgClass: "bg-gradient-to-br from-indigo-500/8 via-transparent to-transparent",
-            iconBg: "bg-indigo-500/15",
-            iconColor: "text-indigo-600",
-            chartColor: "#4F46E5",
-        },
-        {
-            title: "Services",
-            value: counts.services,
-            href: "/network/services",
-            trend: "+1",
-            trendDir: "up" as const,
-            icon: Globe,
-            accent: "from-cyan-600 to-sky-400",
-            borderClass: "border-l-cyan-500",
-            bgClass: "bg-gradient-to-br from-cyan-500/8 via-transparent to-transparent",
-            iconBg: "bg-cyan-500/15",
-            iconColor: "text-cyan-600",
-            chartColor: "#0891B2",
-        },
-        {
-            title: "Namespaces",
-            value: counts.namespaces,
-            href: "/namespaces",
-            trend: "+1",
-            trendDir: "up" as const,
-            icon: FolderKanban,
-            accent: "from-emerald-600 to-teal-400",
-            borderClass: "border-l-emerald-500",
-            bgClass: "bg-gradient-to-br from-emerald-500/8 via-transparent to-transparent",
-            iconBg: "bg-emerald-500/15",
-            iconColor: "text-emerald-600",
-            chartColor: "#059669",
-        },
-        {
-            title: "Ingresses",
-            value: counts.ingresses,
-            href: "/network/ingresses",
-            trend: "0",
-            trendDir: "neutral" as const,
-            icon: Globe,
-            accent: "from-fuchsia-600 to-pink-400",
-            borderClass: "border-l-fuchsia-500",
-            bgClass: "bg-gradient-to-br from-fuchsia-500/8 via-transparent to-transparent",
-            iconBg: "bg-fuchsia-500/15",
-            iconColor: "text-fuchsia-600",
-            chartColor: "#C026D3",
-        },
-        {
-            title: "PVCs",
-            value: counts.persistentvolumeclaims,
-            href: "/storage/persistentvolumeclaims",
-            trend: "0",
-            trendDir: "neutral" as const,
-            icon: Database,
-            accent: "from-orange-600 to-amber-400",
-            borderClass: "border-l-orange-500",
-            bgClass: "bg-gradient-to-br from-orange-500/8 via-transparent to-transparent",
-            iconBg: "bg-orange-500/15",
-            iconColor: "text-orange-600",
-            chartColor: "#EA580C",
-        },
-        {
-            title: "StatefulSets",
-            value: counts.statefulsets,
-            href: "/workloads/statefulsets",
-            trend: "0",
-            trendDir: "neutral" as const,
-            icon: Layers,
-            accent: "from-slate-600 to-slate-500",
-            borderClass: "border-l-slate-500",
-            bgClass: "bg-gradient-to-br from-slate-500/8 via-transparent to-transparent",
-            iconBg: "bg-slate-500/15",
-            iconColor: "text-slate-700",
-            chartColor: "#475569",
-        },
-    ];
+    const cardConfigs: Array<{
+        title: string;
+        value: number;
+        href: string;
+        trend: string;
+        trendDir: "up" | "down" | "neutral";
+        icon: typeof Server;
+        borderClass: string;
+        bgClass: string;
+        iconBg: string;
+        iconColor: string;
+        chartColor: string;
+    }> = [
+            // — Infrastructure —
+            {
+                title: "Nodes",
+                value: counts.nodes,
+                href: "/nodes",
+                trend: "+2",
+                trendDir: "up" as const,
+                icon: Server,
+                borderClass: "border-l-blue-500",
+                bgClass: "bg-gradient-to-br from-blue-500/8 via-transparent to-transparent",
+                iconBg: "bg-blue-500/15",
+                iconColor: "text-blue-600",
+                chartColor: "#2563EB",
+            },
+            {
+                title: "Pods",
+                value: counts.pods,
+                href: "/pods",
+                trend: "+12",
+                trendDir: "up" as const,
+                icon: Activity,
+                borderClass: "border-l-violet-500",
+                bgClass: "bg-gradient-to-br from-violet-500/8 via-transparent to-transparent",
+                iconBg: "bg-violet-500/15",
+                iconColor: "text-violet-600",
+                chartColor: "#7C3AED",
+            },
+            {
+                title: "Deployments",
+                value: counts.deployments,
+                href: "/workloads/deployments",
+                trend: "0",
+                trendDir: "neutral" as const,
+                icon: Layers,
+                borderClass: "border-l-indigo-500",
+                bgClass: "bg-gradient-to-br from-indigo-500/8 via-transparent to-transparent",
+                iconBg: "bg-indigo-500/15",
+                iconColor: "text-indigo-600",
+                chartColor: "#4F46E5",
+            },
+            // — Networking & Organization —
+            {
+                title: "Services",
+                value: counts.services,
+                href: "/network/services",
+                trend: "+1",
+                trendDir: "up" as const,
+                icon: Globe,
+                borderClass: "border-l-cyan-500",
+                bgClass: "bg-gradient-to-br from-cyan-500/8 via-transparent to-transparent",
+                iconBg: "bg-cyan-500/15",
+                iconColor: "text-cyan-600",
+                chartColor: "#0891B2",
+            },
+            {
+                title: "DaemonSets",
+                value: counts.daemonsets,
+                href: "/workloads/daemonsets",
+                trend: "0",
+                trendDir: "neutral" as const,
+                icon: Shield,
+                borderClass: "border-l-rose-500",
+                bgClass: "bg-gradient-to-br from-rose-500/8 via-transparent to-transparent",
+                iconBg: "bg-rose-500/15",
+                iconColor: "text-rose-600",
+                chartColor: "#E11D48",
+            },
+            {
+                title: "Namespaces",
+                value: counts.namespaces,
+                href: "/namespaces",
+                trend: "+1",
+                trendDir: "up" as const,
+                icon: FolderKanban,
+                borderClass: "border-l-emerald-500",
+                bgClass: "bg-gradient-to-br from-emerald-500/8 via-transparent to-transparent",
+                iconBg: "bg-emerald-500/15",
+                iconColor: "text-emerald-600",
+                chartColor: "#059669",
+            },
+            // — Configuration & Security —
+            {
+                title: "ConfigMaps",
+                value: counts.configmaps,
+                href: "/configuration/configmaps",
+                trend: "+3",
+                trendDir: "up" as const,
+                icon: FileText,
+                borderClass: "border-l-amber-500",
+                bgClass: "bg-gradient-to-br from-amber-500/8 via-transparent to-transparent",
+                iconBg: "bg-amber-500/15",
+                iconColor: "text-amber-600",
+                chartColor: "#D97706",
+            },
+            {
+                title: "Secrets",
+                value: counts.secrets,
+                href: "/configuration/secrets",
+                trend: "0",
+                trendDir: "neutral" as const,
+                icon: KeyRound,
+                borderClass: "border-l-fuchsia-500",
+                bgClass: "bg-gradient-to-br from-fuchsia-500/8 via-transparent to-transparent",
+                iconBg: "bg-fuchsia-500/15",
+                iconColor: "text-fuchsia-600",
+                chartColor: "#C026D3",
+            },
+            {
+                title: "CronJobs",
+                value: counts.cronjobs,
+                href: "/workloads/cronjobs",
+                trend: "+1",
+                trendDir: "up" as const,
+                icon: Timer,
+                borderClass: "border-l-orange-500",
+                bgClass: "bg-gradient-to-br from-orange-500/8 via-transparent to-transparent",
+                iconBg: "bg-orange-500/15",
+                iconColor: "text-orange-600",
+                chartColor: "#EA580C",
+            },
+        ];
 
     return (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-fr h-full">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 auto-rows-fr h-full">
             {cardConfigs.map((metric) => (
                 <Link key={metric.title} to={metric.href} className="block h-full group hover:no-underline">
                     <Card
@@ -157,36 +178,43 @@ export const MetricCardsGrid = () => {
                             className={`absolute inset-0 pointer-events-none ${metric.bgClass}`}
                             aria-hidden
                         />
-                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 pt-4 px-4 z-10 relative">
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 pt-5 px-5 z-10 relative">
                             <CardTitle className="text-sm font-bold text-foreground tracking-tight">
                                 {metric.title}
                             </CardTitle>
                             <div
                                 className={`p-2 rounded-xl ${metric.iconBg} ${metric.iconColor} shadow-sm transition-transform group-hover:scale-110 duration-300`}
                             >
-                                <metric.icon className="h-4 w-4" />
+                                <metric.icon className="h-4.5 w-4.5" />
                             </div>
                         </CardHeader>
-                        <CardContent className="z-10 relative px-4 pb-4">
+                        <CardContent className="z-10 relative px-5 pb-5">
                             <div className="flex items-baseline justify-between gap-2">
-                                <div className="text-2xl font-bold tracking-tight text-foreground tabular-nums">
+                                <div className="text-3xl font-bold tracking-tight text-foreground tabular-nums">
                                     {metric.value}
                                 </div>
-                                <div className="h-8 w-20 shrink-0">
+                                <div className="h-10 w-24 shrink-0">
                                     <ResponsiveContainer width="100%" height="100%">
-                                        <LineChart data={sparklineData}>
-                                            <Line
+                                        <AreaChart data={sparklineData}>
+                                            <defs>
+                                                <linearGradient id={`gradient-${metric.title}`} x1="0" y1="0" x2="0" y2="1">
+                                                    <stop offset="0%" stopColor={metric.chartColor} stopOpacity={0.4} />
+                                                    <stop offset="100%" stopColor={metric.chartColor} stopOpacity={0} />
+                                                </linearGradient>
+                                            </defs>
+                                            <Area
                                                 type="monotone"
                                                 dataKey="value"
                                                 stroke={metric.chartColor}
                                                 strokeWidth={2}
-                                                dot={false}
+                                                fill={`url(#gradient-${metric.title})`}
+                                                isAnimationActive={false}
                                             />
-                                        </LineChart>
+                                        </AreaChart>
                                     </ResponsiveContainer>
                                 </div>
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1 flex-wrap">
+                            <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1 flex-wrap">
                                 {metric.trendDir === "up" && (
                                     <ArrowUp className="w-3 h-3 text-emerald-600 shrink-0" />
                                 )}

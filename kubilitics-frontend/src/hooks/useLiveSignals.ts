@@ -64,7 +64,7 @@ export function useLiveSignals(): LiveSignals {
   const eventsQuery = useQuery({
     queryKey: ['backend', 'events', activeCluster?.id, 'dashboard'],
     queryFn: () => getEvents(backendBaseUrl, activeCluster!.id, { limit: 100 }),
-    enabled: !!activeCluster?.id && isBackendConfigured(),
+    enabled: !!activeCluster?.id && isBackendConfigured,
     staleTime: 10000,
     refetchInterval: 20000,
   });

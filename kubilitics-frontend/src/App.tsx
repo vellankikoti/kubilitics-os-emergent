@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useClusterStore } from "@/stores/clusterStore";
+import { AIAssistant } from "@/components/AIAssistant";
 
 // Pages - Entry & Setup
 import ClusterConnect from "./pages/ClusterConnect";
@@ -15,7 +16,6 @@ import DashboardPage from "./pages/DashboardPage";
 // Workloads
 import Pods from "./pages/Pods";
 import PodDetail from "./pages/PodDetail";
-import Topology from "./pages/Topology";
 import NotFound from "./pages/NotFound";
 import Deployments from "./pages/Deployments";
 import DeploymentDetail from "./pages/DeploymentDetail";
@@ -117,6 +117,12 @@ import Settings from "./pages/Settings";
 // Layout
 import { AppLayout } from "./components/layout/AppLayout";
 
+// Analytics Dashboards
+import { AnalyticsOverview } from "./pages/AnalyticsOverview";
+import { SecurityDashboard } from "./pages/SecurityDashboard";
+import { MLAnalyticsDashboard } from "./pages/MLAnalyticsDashboard";
+import { CostDashboard } from "./pages/CostDashboard";
+
 const queryClient = new QueryClient();
 
 // Protected route wrapper - requires active cluster connection.
@@ -132,6 +138,7 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
+        <AIAssistant />
         <Routes>
           {/* Entry Point - Cluster Connection (replaces SaaS auth flows) */}
           <Route path="/" element={<ClusterConnect />} />
@@ -151,8 +158,13 @@ const App = () => (
             }
           >
             <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/topology" element={<Topology />} />
             <Route path="/settings" element={<Settings />} />
+
+            {/* Analytics Dashboards */}
+            <Route path="/analytics" element={<AnalyticsOverview />} />
+            <Route path="/security" element={<SecurityDashboard />} />
+            <Route path="/ml-analytics" element={<MLAnalyticsDashboard />} />
+            <Route path="/cost" element={<CostDashboard />} />
 
             {/* Workloads */}
             <Route path="/pods" element={<Pods />} />

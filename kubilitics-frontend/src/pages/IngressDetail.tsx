@@ -1,13 +1,12 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { Globe, Clock, Download, Trash2, Lock, ExternalLink, RefreshCw, Activity, Shield, Route, Server } from 'lucide-react';
+import { Globe, Clock, Download, Trash2, Lock, ExternalLink, RefreshCw, Activity, Shield, Route, Server, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
@@ -15,15 +14,14 @@ import {
   DeleteConfirmDialog,
   SectionCard,
   DetailRow,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
   type EventInfo,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useUpdateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { toast } from 'sonner';
 
@@ -51,10 +49,8 @@ interface IngressResource extends KubernetesResource {
   };
 }
 
-const fallbackTopologyNodes: TopologyNode[] = [];
-const fallbackTopologyEdges: TopologyEdge[] = [];
 
-const VALID_TAB_IDS = new Set(['overview', 'routing', 'tls', 'traffic', 'backends', 'events', 'metrics', 'yaml', 'compare', 'topology', 'controller', 'waf', 'actions']);
+const VALID_TAB_IDS = new Set(['overview', 'routing', 'tls', 'traffic', 'backends', 'events', 'metrics', 'yaml', 'compare', 'controller', 'waf', 'actions']);
 
 export default function IngressDetail() {
   const { namespace: nsParam, name } = useParams();
@@ -84,12 +80,6 @@ export default function IngressDetail() {
   const deleteIngress = useDeleteK8sResource('ingresses');
   const updateIngress = useUpdateK8sResource('ingresses');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const resourceTopology = useResourceTopology('ingresses', namespace, name ?? undefined);
-  const useBackendTopology = isBackendConfigured && !!clusterId;
-  const topologyNodesFromBackend = useBackendTopology ? resourceTopology.nodes : fallbackTopologyNodes;
-  const topologyEdgesFromBackend = useBackendTopology ? resourceTopology.edges : fallbackTopologyEdges;
-  const topologyLoading = useBackendTopology ? resourceTopology.isLoading : false;
-  const topologyError = useBackendTopology ? resourceTopology.error : null;
 
   const ingName = ing.metadata?.name || '';
   const ingNamespace = ing.metadata?.namespace || '';
@@ -135,12 +125,6 @@ export default function IngressDetail() {
     }
   }, [isConnected, name, namespace, updateIngress, refetch]);
 
-  const handleNodeClick = (node: TopologyNode) => {
-    const ns = node.namespace ?? namespace ?? '';
-    if (node.type === 'service') navigate(`/services/${ns}/${node.name}`);
-    else if (node.type === 'secret') navigate(`/secrets/${ns}/${node.name}`);
-    else if (node.type === 'ingressclass') navigate(`/ingressclasses/${node.name}`);
-  };
 
   const handleTabChange = useCallback((tabId: string) => {
     setActiveTab(tabId);
@@ -430,21 +414,15 @@ export default function IngressDetail() {
     {
       id: 'topology',
       label: 'Topology',
-      content: !useBackendTopology ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-muted-foreground text-sm">
-          <p>Connect to the Kubilitics backend (Settings → Connect) and select a cluster to view resource topology.</p>
-        </div>
-      ) : topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]"><Skeleton className="h-8 w-8" /></div>
-      ) : topologyError ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-sm">
-          <p className="text-destructive">Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}</p>
-          <Button variant="outline" size="sm" className="mt-2" onClick={() => resourceTopology.refetch()}>Retry</Button>
-        </div>
-      ) : (topologyNodesFromBackend.length === 0 && topologyEdgesFromBackend.length === 0) ? (
-        <div className="flex items-center justify-center min-h-[400px] text-muted-foreground text-sm">No related resources in topology for this ingress.</div>
-      ) : (
-        <TopologyViewer nodes={topologyNodesFromBackend} edges={topologyEdgesFromBackend} onNodeClick={handleNodeClick} />
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('Ingress')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="Ingress"
+          sourceResourceName={ing?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     { id: 'controller', label: 'Controller Status', content: <SectionCard title="Controller status" icon={Globe}><p className="text-muted-foreground text-sm">Placeholder for ingress controller status.</p></SectionCard> },

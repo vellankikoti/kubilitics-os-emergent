@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Scale, Clock, Cpu, HardDrive, Download, Trash2, RefreshCw } from 'lucide-react';
+import { Scale, Clock, Cpu, HardDrive, Download, Trash2, RefreshCw, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -13,11 +13,13 @@ import {
   ActionsSection,
   DeleteConfirmDialog,
   MetadataCard,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 
 interface LimitRangeItemSpec {
@@ -202,6 +204,20 @@ export default function LimitRangeDetail() {
     { id: 'events', label: 'Events', content: <EventsSection events={events} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={lrName} /> },
     { id: 'compare', label: 'Compare', content: <YamlCompareViewer versions={yamlVersions} resourceName={lrName} /> },
+    {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('LimitRange')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="LimitRange"
+          sourceResourceName={resource?.metadata?.name ?? name ?? ''}
+        />
+      ),
+    },
     {
       id: 'actions',
       label: 'Actions',

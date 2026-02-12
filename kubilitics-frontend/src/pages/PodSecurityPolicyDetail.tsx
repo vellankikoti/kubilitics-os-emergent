@@ -1,15 +1,17 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Shield, Clock, Lock, Download, Trash2, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Shield, Clock, Lock, Download, Trash2, AlertTriangle, RefreshCw, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import {
   ResourceDetailLayout,
   YamlViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
+  ResourceTopologyView,
   type ResourceStatus,
   type EventInfo,
 } from '@/components/resources';
@@ -168,6 +170,20 @@ export default function PodSecurityPolicyDetail() {
     },
     { id: 'events', label: 'Events', content: <EventsSection events={mockEvents} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={psp.name} /> },
+    {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('PodSecurityPolicy')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="PodSecurityPolicy"
+          sourceResourceName={psp.name ?? name ?? ''}
+        />
+      ),
+    },
     {
       id: 'actions',
       label: 'Actions',

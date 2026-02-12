@@ -1,28 +1,29 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { Shield, Clock, Download, Trash2, ArrowDownToLine, ArrowUpFromLine, RefreshCw, Activity } from 'lucide-react';
+import { Shield, Clock, Download, Trash2, ArrowDownToLine, ArrowUpFromLine, RefreshCw, Activity, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
+  
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
   SectionCard,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
+  
+  
   type ResourceStatus,
   type EventInfo,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useUpdateK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { toast } from 'sonner';
 
@@ -41,10 +42,8 @@ interface NetworkPolicyResource extends KubernetesResource {
   };
 }
 
-const fallbackTopologyNodes: TopologyNode[] = [];
-const fallbackTopologyEdges: TopologyEdge[] = [];
 
-const VALID_TAB_IDS = new Set(['overview', 'visualization', 'simulation', 'pods', 'coverage', 'events', 'metrics', 'yaml', 'compare', 'topology', 'audit', 'actions']);
+const VALID_TAB_IDS = new Set(['overview', 'visualization', 'simulation', 'pods', 'coverage', 'events', 'metrics', 'yaml', 'compare', 'audit', 'actions']);
 
 export default function NetworkPolicyDetail() {
   const { namespace: nsParam, name } = useParams();
@@ -84,12 +83,6 @@ export default function NetworkPolicyDetail() {
 
   const deleteNetworkPolicy = useDeleteK8sResource('networkpolicies');
   const updateNetworkPolicy = useUpdateK8sResource('networkpolicies');
-  const resourceTopology = useResourceTopology('networkpolicies', namespace, name ?? undefined);
-  const useBackendTopology = isBackendConfigured && !!clusterId;
-  const topologyNodesFromBackend = useBackendTopology ? resourceTopology.nodes : fallbackTopologyNodes;
-  const topologyEdgesFromBackend = useBackendTopology ? resourceTopology.edges : fallbackTopologyEdges;
-  const topologyLoading = useBackendTopology ? resourceTopology.isLoading : false;
-  const topologyError = useBackendTopology ? resourceTopology.error : null;
 
   const podsInNs = useK8sResourceList<KubernetesResource>('pods', namespace, { enabled: !!namespace });
   const podSelector = np.spec?.podSelector?.matchLabels ?? {};
@@ -134,11 +127,6 @@ export default function NetworkPolicyDetail() {
     }
   }, [isConnected, name, namespace, updateNetworkPolicy, refetch]);
 
-  const handleNodeClick = (node: TopologyNode) => {
-    const ns = node.namespace ?? namespace ?? '';
-    if (node.type === 'pod') navigate(`/pods/${ns}/${node.name}`);
-    else if (node.type === 'namespace') navigate(`/namespaces/${node.name}`);
-  };
 
   const yamlVersions: YamlVersion[] = useMemo(() => [{ id: 'current', label: 'Current Version', yaml, timestamp: 'now' }], [yaml]);
 
@@ -341,21 +329,15 @@ export default function NetworkPolicyDetail() {
     {
       id: 'topology',
       label: 'Topology',
-      content: !useBackendTopology ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-muted-foreground text-sm">
-          <p>Connect to the Kubilitics backend (Settings → Connect) and select a cluster to view resource topology.</p>
-        </div>
-      ) : topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]"><Skeleton className="h-8 w-8" /></div>
-      ) : topologyError ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-sm">
-          <p className="text-destructive">Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}</p>
-          <Button variant="outline" size="sm" className="mt-2" onClick={() => resourceTopology.refetch()}>Retry</Button>
-        </div>
-      ) : (topologyNodesFromBackend.length === 0 && topologyEdgesFromBackend.length === 0) ? (
-        <div className="flex items-center justify-center min-h-[400px] text-muted-foreground text-sm">No related resources in topology for this network policy.</div>
-      ) : (
-        <TopologyViewer nodes={topologyNodesFromBackend} edges={topologyEdgesFromBackend} onNodeClick={handleNodeClick} />
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('NetworkPolicy')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="NetworkPolicy"
+          sourceResourceName={np?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     { id: 'audit', label: 'Audit Trail', content: <SectionCard title="Audit trail" icon={Shield}><p className="text-muted-foreground text-sm">Placeholder for event history / audit.</p></SectionCard> },

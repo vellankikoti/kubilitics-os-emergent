@@ -54,7 +54,7 @@ export function useHealthScore(): HealthScore {
   const eventsQuery = useQuery({
     queryKey: ['backend', 'events', activeCluster?.id, 'health'],
     queryFn: () => getEvents(backendBaseUrl, activeCluster!.id, { namespace: 'default', limit: 100 }),
-    enabled: !!activeCluster?.id && isBackendConfigured(),
+    enabled: !!activeCluster?.id && isBackendConfigured,
     staleTime: 15000,
   });
 

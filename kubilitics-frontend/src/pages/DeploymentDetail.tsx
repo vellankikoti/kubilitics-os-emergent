@@ -40,7 +40,6 @@ import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
   SectionCard,
-  TopologyViewer,
   ContainersSection,
   YamlViewer,
   YamlCompareViewer,
@@ -48,30 +47,26 @@ import {
   MetadataCard,
   ActionsSection,
   MetricsDashboard,
-  NodeDetailPopup,
   ScaleDialog,
   LogViewer,
   TerminalViewer,
   RolloutActionsDialog,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type ContainerInfo,
   type YamlVersion,
-  type ResourceDetail,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useUpdateK8sResource, usePatchK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
-import { useBackendConfigStore } from '@/stores/backendConfigStore';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
+import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { useClusterStore } from '@/stores/clusterStore';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getDeploymentRolloutHistory, postDeploymentRollback, BackendApiError } from '@/services/backendApiClient';
-import { getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 
 interface DeploymentResource extends KubernetesResource {
   spec?: {
@@ -119,7 +114,6 @@ export default function DeploymentDetail() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showScaleDialog, setShowScaleDialog] = useState(false);
   const [showRolloutDialog, setShowRolloutDialog] = useState(false);
-  const [selectedNode, setSelectedNode] = useState<ResourceDetail | null>(null);
   const [selectedLogPod, setSelectedLogPod] = useState<string>('');
   const [selectedLogContainer, setSelectedLogContainer] = useState<string>('');
   const [selectedTerminalPod, setSelectedTerminalPod] = useState<string>('');
@@ -149,19 +143,6 @@ export default function DeploymentDetail() {
   const updateDeployment = useUpdateK8sResource('deployments');
   const patchDeployment = usePatchK8sResource('deployments');
 
-  const useBackendTopology = isBackendConfigured() && !!clusterId;
-  const resourceTopology = useResourceTopology('deployments', namespace ?? undefined, name ?? undefined);
-  const topologyNodesFromBackend = useMemo(
-    () =>
-      resourceTopology.nodes.map((n) => ({
-        ...n,
-        isCurrent: n.type === 'deployment' && n.name === name && n.namespace === namespace,
-      })),
-    [resourceTopology.nodes, name, namespace]
-  );
-  const topologyEdgesFromBackend = resourceTopology.edges;
-  const topologyLoading = useBackendTopology ? resourceTopology.isLoading : false;
-  const topologyError = resourceTopology.error;
 
   const status: ResourceStatus = deployment.status?.readyReplicas === deployment.spec?.replicas ? 'Running' : 
     deployment.status?.readyReplicas ? 'Pending' : 'Failed';
@@ -193,16 +174,6 @@ export default function DeploymentDetail() {
     return Object.entries(matchLabels).every(([k, v]) => labels[k] === v);
   });
 
-  const handleNodeClick = useCallback((node: TopologyNode) => {
-    const resourceDetail: ResourceDetail = {
-      id: node.id,
-      type: node.type as any,
-      name: node.name,
-      namespace: node.namespace,
-      status: node.status,
-    };
-    setSelectedNode(resourceDetail);
-  }, []);
 
   const handleDownloadYaml = useCallback(() => {
     const blob = new Blob([yaml], { type: 'text/yaml' });
@@ -802,25 +773,13 @@ export default function DeploymentDetail() {
       label: 'Topology',
       icon: Network,
       content: (
-        <>
-          {topologyLoading ? (
-            <div className="flex items-center justify-center min-h-[400px]">
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : topologyError ? (
-            <div className="flex items-center justify-center min-h-[400px] text-muted-foreground text-sm">
-              Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}
-            </div>
-          ) : (
-            <TopologyViewer nodes={topologyNodesFromBackend} edges={topologyEdgesFromBackend} onNodeClick={handleNodeClick} />
-          )}
-          <NodeDetailPopup
-            resource={selectedNode}
-            onClose={() => setSelectedNode(null)}
-            sourceResourceType="Deployment"
-            sourceResourceName={deployment?.metadata?.name ?? name ?? ''}
-          />
-        </>
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('Deployment')}
+          namespace={namespace || deployment?.metadata?.namespace || ''}
+          name={name || deployment?.metadata?.name || ''}
+          sourceResourceType="Deployment"
+          sourceResourceName={deployment?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

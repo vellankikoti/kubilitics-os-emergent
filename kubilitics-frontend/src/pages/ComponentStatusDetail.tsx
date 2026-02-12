@@ -1,15 +1,17 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Activity, Clock, CheckCircle, AlertTriangle, Download, Trash2, RefreshCw } from 'lucide-react';
+import { Activity, Clock, CheckCircle, AlertTriangle, Download, Trash2, RefreshCw, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import {
   ResourceDetailLayout,
   YamlViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
+  ResourceTopologyView,
   type ResourceStatus,
   type EventInfo,
 } from '@/components/resources';
@@ -117,6 +119,20 @@ export default function ComponentStatusDetail() {
     },
     { id: 'events', label: 'Events', content: <EventsSection events={mockEvents} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={cs.name} /> },
+    {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('ComponentStatus')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="ComponentStatus"
+          sourceResourceName={cs.name ?? name ?? ''}
+        />
+      ),
+    },
     {
       id: 'actions',
       label: 'Actions',

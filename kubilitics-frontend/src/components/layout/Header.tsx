@@ -220,7 +220,14 @@ export function Header() {
                       >
                         <span className={cn('w-2 h-2 rounded-full shrink-0', statusColors[cluster.status])} />
                         <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium truncate">{cluster.name}</div>
+                          <div className="text-sm font-medium truncate flex items-center gap-2">
+                            {cluster.name}
+                            {cluster.provider && (
+                              <span className="text-[10px] text-muted-foreground font-normal">
+                                {cluster.provider.replace(/-/g, ' ')}
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs text-muted-foreground">{cluster.region} · {cluster.version}</div>
                         </div>
                         {cluster.id === activeCluster.id && (

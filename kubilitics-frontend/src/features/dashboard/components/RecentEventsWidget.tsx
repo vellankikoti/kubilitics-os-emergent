@@ -1,7 +1,9 @@
 import React from "react";
+import { Link } from "react-router-dom";
 import { CheckCircle2, AlertTriangle, Info, Clock, ChevronRight, StopCircle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { EventActivityChart } from "./EventActivityChart";
 
 const events = [
     {
@@ -56,31 +58,38 @@ const events = [
 
 export const RecentEventsWidget = () => {
     return (
-        <Card className="min-h-[20rem] flex flex-col shadow-sm border-none ring-1 ring-border bg-card overflow-hidden">
+        <Card className="min-h-[20rem] flex flex-col border-none glass-panel overflow-hidden relative">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-primary to-blue-500" />
             <CardHeader className="flex flex-row items-center justify-between pb-2 shrink-0">
                 <div className="space-y-1">
                     <CardTitle className="text-base font-semibold">Recent Events</CardTitle>
                     <CardDescription>Latest cluster activity</CardDescription>
                 </div>
-                <Button variant="ghost" size="sm" className="text-xs text-primary hover:text-primary/80 h-8">
-                    View all <ChevronRight className="w-3 h-3 ml-1" />
+                <Button variant="ghost" size="sm" className="text-xs text-primary hover:text-primary/80 h-8" asChild>
+                    <Link to="/events">View all <ChevronRight className="w-3 h-3 ml-1" /></Link>
                 </Button>
             </CardHeader>
-            <CardContent className="pt-2 flex-1 min-h-0 overflow-y-auto">
-                <div className="space-y-5">
-                    {events.map((event, idx) => (
+
+            {/* Activity Visualization */}
+            <div className="h-16 px-6 pb-2 shrink-0 border-b border-border/40">
+                <EventActivityChart />
+            </div>
+
+            <CardContent className="pt-4 flex-1 min-h-0 overflow-y-auto">
+                <div className="space-y-6">
+                    {events.slice(0, 5).map((event, idx) => (
                         <div key={idx} className="flex gap-4 group">
-                            <div className={`mt-0.5 p-1.5 rounded-full h-fit flex-shrink-0 ${event.color}`}>
-                                <event.icon className="w-3.5 h-3.5" />
+                            <div className={`mt-1 p-2 rounded-full h-fit flex-shrink-0 ${event.color}`}>
+                                <event.icon className="w-4 h-4" />
                             </div>
-                            <div className="flex-1 min-w-0 space-y-1">
+                            <div className="flex-1 min-w-0 space-y-1.5">
                                 <div className="flex items-center justify-between">
-                                    <p className="text-sm font-medium text-foreground leading-none">{event.title}</p>
-                                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                                        <Clock className="w-3 h-3" /> {event.time}
+                                    <p className="text-base font-semibold text-foreground leading-none">{event.title}</p>
+                                    <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                        <Clock className="w-3.5 h-3.5" /> {event.time}
                                     </span>
                                 </div>
-                                <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+                                <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">
                                     {event.message}
                                 </p>
                             </div>

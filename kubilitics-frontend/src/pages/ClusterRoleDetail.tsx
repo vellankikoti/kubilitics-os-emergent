@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ShieldCheck, Clock, Download, Trash2, Edit, Users, RefreshCw, Globe } from 'lucide-react';
+import { ShieldCheck, Clock, Download, Trash2, Edit, Users, RefreshCw, Globe, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -15,21 +15,22 @@ import {
 } from '@/components/ui/table';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
+  
   MetadataCard,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
+  
+  
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
 import { useDeleteK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { toast } from 'sonner';
 
@@ -86,7 +87,6 @@ export default function ClusterRoleDetail() {
     undefined as unknown as ClusterRoleResource
   );
   const { events, refetch: refetchEvents } = useResourceEvents('ClusterRole', undefined, name ?? undefined);
-  const { nodes: topologyNodesResolved, edges: topologyEdgesResolved, refetch: refetchTopology, isLoading: topologyLoading } = useResourceTopology('clusterroles', undefined, name ?? undefined);
   const deleteResource = useDeleteK8sResource('clusterroles');
 
   const crName = resource?.metadata?.name ?? name ?? '';
@@ -100,7 +100,6 @@ export default function ClusterRoleDetail() {
   const handleRefresh = () => {
     refetch();
     refetchEvents();
-    refetchTopology();
   };
 
   const handleDownloadYaml = useCallback(() => {
@@ -122,15 +121,6 @@ export default function ClusterRoleDetail() {
     { label: 'Aggregation', value: aggregationRule ? 'Yes' : 'No', icon: ShieldCheck, iconColor: 'muted' as const },
     { label: 'Scope', value: 'Cluster-wide', icon: Globe, iconColor: 'info' as const },
   ];
-
-  const topologyNodes: TopologyNode[] = topologyNodesResolved.length > 0
-    ? topologyNodesResolved
-    : [{ id: 'cr', type: 'pod', name: crName, status: 'healthy', isCurrent: true }];
-  const topologyEdges: TopologyEdge[] = topologyEdgesResolved;
-
-  const handleNodeClick = (node: TopologyNode) => {
-    if (node.type === 'clusterrolebinding') navigate(`/clusterrolebindings/${node.name}`);
-  };
 
   if (isLoading) {
     return (
@@ -330,10 +320,15 @@ export default function ClusterRoleDetail() {
     {
       id: 'topology',
       label: 'Topology',
-      content: topologyLoading ? (
-        <Skeleton className="h-64 w-full" />
-      ) : (
-        <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('ClusterRole')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="ClusterRole"
+          sourceResourceName={resource?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
@@ -15,15 +14,14 @@ import {
   DeleteConfirmDialog,
   SectionCard,
   DetailRow,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type EventInfo,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useUpdateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { toast } from 'sonner';
 
@@ -35,8 +33,6 @@ interface EndpointsResource extends KubernetesResource {
   }>;
 }
 
-const fallbackTopologyNodes: TopologyNode[] = [];
-const fallbackTopologyEdges: TopologyEdge[] = [];
 
 export default function EndpointDetail() {
   const { namespace: nsParam, name } = useParams();
@@ -59,12 +55,6 @@ export default function EndpointDetail() {
 
   const deleteEndpoints = useDeleteK8sResource('endpoints');
   const updateEndpoints = useUpdateK8sResource('endpoints');
-  const resourceTopology = useResourceTopology('endpoints', namespace, name ?? undefined);
-  const useBackendTopology = isBackendConfigured && !!clusterId;
-  const topologyNodesFromBackend = useBackendTopology ? resourceTopology.nodes : fallbackTopologyNodes;
-  const topologyEdgesFromBackend = useBackendTopology ? resourceTopology.edges : fallbackTopologyEdges;
-  const topologyLoading = useBackendTopology ? resourceTopology.isLoading : false;
-  const topologyError = useBackendTopology ? resourceTopology.error : null;
 
   const epName = ep.metadata?.name || '';
   const epNamespace = ep.metadata?.namespace || '';
@@ -100,11 +90,6 @@ export default function EndpointDetail() {
     }
   }, [isConnected, name, namespace, updateEndpoints, refetch]);
 
-  const handleNodeClick = (node: TopologyNode) => {
-    const ns = node.namespace ?? namespace ?? '';
-    if (node.type === 'pod') navigate(`/pods/${ns}/${node.name}`);
-    else if (node.type === 'service') navigate(`/services/${ns}/${node.name}`);
-  };
 
   const yamlVersions: YamlVersion[] = useMemo(() => [{ id: 'current', label: 'Current Version', yaml, timestamp: 'now' }], [yaml]);
 
@@ -228,21 +213,15 @@ export default function EndpointDetail() {
     {
       id: 'topology',
       label: 'Topology',
-      content: !useBackendTopology ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-muted-foreground text-sm">
-          <p>Connect to the Kubilitics backend (Settings → Connect) and select a cluster to view resource topology.</p>
-        </div>
-      ) : topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]"><Skeleton className="h-8 w-8" /></div>
-      ) : topologyError ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-sm">
-          <p className="text-destructive">Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}</p>
-          <Button variant="outline" size="sm" className="mt-2" onClick={() => resourceTopology.refetch()}>Retry</Button>
-        </div>
-      ) : (topologyNodesFromBackend.length === 0 && topologyEdgesFromBackend.length === 0) ? (
-        <div className="flex items-center justify-center min-h-[400px] text-muted-foreground text-sm">No related resources in topology for this endpoint.</div>
-      ) : (
-        <TopologyViewer nodes={topologyNodesFromBackend} edges={topologyEdgesFromBackend} onNodeClick={handleNodeClick} />
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('Endpoints')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="Endpoints"
+          sourceResourceName={ep?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

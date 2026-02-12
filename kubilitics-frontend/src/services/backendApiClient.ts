@@ -3,7 +3,8 @@
  * Base URL + /api/v1/clusters and /api/v1/clusters/{clusterId}/...
  * Per TASKS A3.1: client for Kubilitics backend; used by topology and cluster list.
  */
-import type { TopologyGraph } from '@/types/topology';
+import type { TopologyGraph } from '@/topology-engine';
+import { adaptTopologyGraph, validateTopologyGraph } from '@/topology-engine';
 
 const API_PREFIX = '/api/v1';
 
@@ -17,6 +18,7 @@ export interface BackendCluster {
   server?: string;
   version?: string;
   status?: string;
+  provider?: string; // EKS, GKE, AKS, OpenShift, Rancher, k3s, Kind, Minikube, Docker Desktop, on-prem
   last_connected?: string;
   created_at?: string;
   updated_at?: string;
@@ -172,7 +174,33 @@ export async function getTopology(
     params.resource_types.forEach((t) => search.append('resource_types', t));
   const query = search.toString();
   const path = `clusters/${encodeURIComponent(clusterId)}/topology${query ? `?${query}` : ''}`;
-  return backendRequest<TopologyGraph>(baseUrl, path);
+  
+  try {
+    const result = await backendRequest<any>(baseUrl, path);
+    
+    if (!result) {
+      throw new Error('Empty response from topology API');
+    }
+
+    // Transform backend format to frontend format
+    const transformedGraph = adaptTopologyGraph(result);
+
+    // Validate transformed graph
+    const validation = validateTopologyGraph(transformedGraph);
+    if (!validation.valid) {
+      console.error('Topology graph validation failed:', validation.errors);
+    }
+
+    return transformedGraph;
+  } catch (error) {
+    console.error('Error fetching topology:', {
+      baseUrl,
+      clusterId,
+      params,
+      error,
+    });
+    throw error;
+  }
 }
 
 /**
@@ -188,7 +216,23 @@ export async function getResourceTopology(
 ): Promise<TopologyGraph> {
   const ns = namespace === '' ? '-' : namespace;
   const path = `clusters/${encodeURIComponent(clusterId)}/topology/resource/${encodeURIComponent(kind)}/${encodeURIComponent(ns)}/${encodeURIComponent(name)}`;
-  return backendRequest<TopologyGraph>(baseUrl, path);
+
+  try {
+    const result = await backendRequest<any>(baseUrl, path);
+    if (!result) throw new Error('Empty response from topology API');
+
+    const transformedGraph = adaptTopologyGraph(result);
+
+    const validation = validateTopologyGraph(transformedGraph);
+    if (!validation.valid) {
+      console.error('[getResourceTopology] Graph validation errors:', validation.errors);
+    }
+
+    return transformedGraph;
+  } catch (error) {
+    console.error('[getResourceTopology] Failed:', { kind, namespace: ns, name, error });
+    throw error;
+  }
 }
 
 /**

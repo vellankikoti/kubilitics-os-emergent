@@ -108,7 +108,7 @@ interface NavGroupProps {
   sectionId: string;
   children: React.ReactNode;
   icon: React.ElementType;
-  /** When true, show the same blue gradient highlight as Dashboard/Topology/Settings */
+  /** When true, show the same blue gradient highlight as Dashboard/Settings */
   isSectionActive?: boolean;
   /** Controlled: whether this section is currently open */
   isOpen: boolean;
@@ -171,7 +171,18 @@ function NavGroup({ label, sectionId, children, icon: Icon, isSectionActive = fa
   );
 }
 
-function NavItemIconOnly({ to, icon: Icon, label }: { to: string; icon: React.ElementType; label: string }) {
+function NavItemIconOnly({
+  to,
+  icon: Icon,
+  label,
+  iconColor,
+}: {
+  to: string;
+  icon: React.ElementType;
+  label: string;
+  /** Tailwind class for icon color when inactive (e.g. text-blue-600) */
+  iconColor?: string;
+}) {
   const location = useLocation();
   const isActive = location.pathname === to || location.pathname.startsWith(`${to}/`);
   return (
@@ -181,12 +192,20 @@ function NavItemIconOnly({ to, icon: Icon, label }: { to: string; icon: React.El
         'flex items-center justify-center w-11 h-11 rounded-xl transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:scale-105 active:scale-95 group relative border',
         isActive
           ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/30 border-transparent'
-          : 'text-foreground hover:bg-muted border-transparent hover:border-border/50'
+          : 'hover:bg-muted/80 border-transparent hover:border-border/50'
       )}
       title={label}
       aria-label={label}
     >
-      <Icon className={cn("h-6 w-6", isActive && "fill-primary-foreground/20")} aria-hidden />
+      <Icon
+        className={cn(
+          'h-6 w-6 transition-colors',
+          isActive
+            ? 'text-primary-foreground fill-primary-foreground/20'
+            : iconColor || 'text-foreground group-hover:text-foreground'
+        )}
+        aria-hidden
+      />
 
       {/* Tooltip-like label on hover for icon-only mode */}
       <span className="absolute left-full ml-3 px-3 py-1.5 bg-popover text-popover-foreground text-sm font-medium rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 border border-border">
@@ -236,7 +255,7 @@ function getSectionForPath(pathname: string): SectionId {
   if (isPathIn(pathname, SCALING_PATHS)) return SECTION_IDS.SCALING;
   if (isPathIn(pathname, CRD_PATHS)) return SECTION_IDS.CRDS;
   if (isPathIn(pathname, ADMISSION_PATHS)) return SECTION_IDS.ADMISSION;
-  return null; // Dashboard, Topology, Settings, etc.
+  return null; // Dashboard, Settings, etc.
 }
 
 function SidebarContent({
@@ -249,8 +268,6 @@ function SidebarContent({
   const location = useLocation();
   const pathname = location.pathname;
   const isDashboardActive = pathname === '/dashboard';
-  const isTopologyActive = pathname.startsWith('/topology');
-  const isSettingsActive = pathname.startsWith('/settings');
 
   // Centralized state for accordion: track which section is currently open
   const [openSection, setOpenSection] = useState<SectionId>(() => {
@@ -299,19 +316,6 @@ function SidebarContent({
         >
           <LayoutDashboard className="h-6 w-6" />
           <span className="font-normal text-base">Dashboard</span>
-        </NavLink>
-
-        <NavLink
-          to="/topology"
-          className={cn(
-            "flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group border shadow-sm",
-            isTopologyActive
-              ? "bg-gradient-to-r from-primary to-blue-600 text-primary-foreground shadow-lg shadow-blue-500/20 border-transparent"
-              : "bg-card text-foreground hover:bg-muted/50 border-transparent hover:border-border/50"
-          )}
-        >
-          <Network className="h-6 w-6" />
-          <span className="font-normal text-base">Topology</span>
         </NavLink>
       </div>
 
@@ -462,8 +466,24 @@ function SidebarContent({
           <NavItem to="/validatingwebhooks" icon={Webhook} label="Validating Webhooks" count={counts.validatingwebhookconfigurations} onNavigate={() => handleNavItemClick(SECTION_IDS.ADMISSION)} />
         </NavGroup>
       </div>
+    </div>
+  );
+}
 
-      <div className="pt-4 mt-auto border-t border-border space-y-1.5">
+export function Sidebar() {
+  const { counts, isLoading } = useResourceCounts();
+  const [collapsed, setCollapsed] = useSidebarCollapsed();
+  const [flyoutOpen, setFlyoutOpen] = useState(false);
+  const location = useLocation();
+  const isSettingsActive = location.pathname.startsWith('/settings');
+
+  const fullContent = (
+    <div className="flex flex-col flex-1 min-h-0 bg-sidebar/30">
+      <div className="flex-1 min-h-0 overflow-y-auto px-5 py-6 scrollbar-thin scrollbar-thumb-border/40 hover:scrollbar-thumb-border/80">
+        <SidebarContent counts={counts} isLoading={isLoading} />
+      </div>
+      {/* Fixed footer: Settings + Collapse — always visible at bottom */}
+      <div className="shrink-0 px-5 pb-4 pt-2 border-t border-border/60 space-y-1.5">
         <NavLink
           to="/settings"
           className={cn(
@@ -476,20 +496,20 @@ function SidebarContent({
           <Settings className={cn("h-6 w-6 transition-colors shrink-0", isSettingsActive ? "text-primary-foreground" : "text-foreground/80 group-hover:text-foreground")} />
           <span className="font-normal text-base">Settings</span>
         </NavLink>
-      </div>
-    </div>
-  );
-}
-
-export function Sidebar() {
-  const { counts, isLoading } = useResourceCounts();
-  const [collapsed, setCollapsed] = useSidebarCollapsed();
-  const [flyoutOpen, setFlyoutOpen] = useState(false);
-
-  const fullContent = (
-    <div className="flex flex-col h-full bg-sidebar/30">
-      <div className="flex-1 overflow-y-auto px-5 py-6 scrollbar-thin scrollbar-thumb-border/40 hover:scrollbar-thumb-border/80">
-        <SidebarContent counts={counts} isLoading={isLoading} />
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={() => setCollapsed(true)}
+            className={cn(
+              "flex items-center justify-start gap-3 w-full px-4 py-3.5 rounded-xl border shadow-sm transition-all duration-200 group",
+              "bg-card text-foreground hover:bg-muted/50 border-transparent hover:border-border/50"
+            )}
+            aria-label="Collapse sidebar"
+          >
+            <ChevronLeft className="h-6 w-6 transition-transform group-hover:-translate-x-0.5 shrink-0" aria-hidden />
+            <span className="font-normal text-base">Collapse Sidebar</span>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -503,21 +523,20 @@ export function Sidebar() {
           onMouseLeave={() => setFlyoutOpen(false)}
           aria-label="Navigation rail"
         >
-          <NavItemIconOnly to="/dashboard" icon={LayoutDashboard} label="Dashboard" />
-          <NavItemIconOnly to="/topology" icon={Network} label="Topology" />
+          <NavItemIconOnly to="/dashboard" icon={LayoutDashboard} label="Dashboard" iconColor="text-blue-600 group-hover:text-blue-700" />
           <div className="w-12 h-px bg-border/50 my-2" />
-          <NavItemIconOnly to="/pods" icon={Box} label="Pods" />
-          <NavItemIconOnly to="/nodes" icon={Server} label="Nodes" />
-          <NavItemIconOnly to="/services" icon={Globe} label="Services" />
-          <NavItemIconOnly to="/events" icon={Activity} label="Events" />
+          <NavItemIconOnly to="/pods" icon={Box} label="Pods" iconColor="text-emerald-600 group-hover:text-emerald-700" />
+          <NavItemIconOnly to="/nodes" icon={Server} label="Nodes" iconColor="text-sky-600 group-hover:text-sky-700" />
+          <NavItemIconOnly to="/services" icon={Globe} label="Services" iconColor="text-cyan-600 group-hover:text-cyan-700" />
+          <NavItemIconOnly to="/events" icon={Activity} label="Events" iconColor="text-amber-600 group-hover:text-amber-700" />
 
           <div className="flex-1" />
 
-          <NavItemIconOnly to="/settings" icon={Settings} label="Settings" />
+          <NavItemIconOnly to="/settings" icon={Settings} label="Settings" iconColor="text-slate-600 group-hover:text-slate-700" />
           <button
             type="button"
             onClick={() => setCollapsed(false)}
-            className="flex items-center justify-center w-11 h-11 rounded-xl text-foreground/90 hover:text-foreground hover:bg-muted transition-colors mb-2"
+            className="flex items-center justify-center w-11 h-11 rounded-xl text-blue-600 hover:text-blue-700 hover:bg-blue-50/80 transition-colors mb-2"
             title="Expand sidebar"
             aria-label="Expand sidebar"
           >
@@ -547,19 +566,6 @@ export function Sidebar() {
   return (
     <aside className="w-72 h-[calc(100vh-5rem)] flex flex-col border-r border-border/60 bg-sidebar/95 backdrop-blur supports-[backdrop-filter]:bg-sidebar/60 shrink-0 transition-all duration-300">
       {fullContent}
-
-      {/* Collapse Footer — same visual weight as Dashboard/Topology/Settings */}
-      <div className="p-4 border-t border-border/60 bg-sidebar/50">
-        <button
-          type="button"
-          onClick={() => setCollapsed(true)}
-          className="flex items-center justify-center gap-3 w-full px-4 py-3.5 rounded-xl border shadow-sm bg-card text-foreground hover:bg-muted/50 border-transparent hover:border-border/50 transition-all duration-200 group"
-          aria-label="Collapse sidebar"
-        >
-          <ChevronLeft className="h-6 w-6 transition-transform group-hover:-translate-x-0.5 shrink-0" aria-hidden />
-          <span className="font-normal text-base">Collapse Sidebar</span>
-        </button>
-      </div>
     </aside>
   );
 }

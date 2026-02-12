@@ -8,21 +8,19 @@ import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
   SectionCard,
-  TopologyViewer,
   MetadataCard,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
 import { useDeleteK8sResource, useUpdateK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { useClusterStore } from '@/stores/clusterStore';
 import { useBackendConfigStore } from '@/stores/backendConfigStore';
@@ -67,14 +65,12 @@ export default function PersistentVolumeClaimDetail() {
     undefined as unknown as K8sPVC
   );
   const { events, refetch: refetchEvents } = useResourceEvents('PersistentVolumeClaim', namespace, name ?? undefined);
-  const { nodes: topologyNodes, edges: topologyEdges, refetch: refetchTopology, isLoading: topologyLoading, error: topologyError } = useResourceTopology('persistentvolumeclaims', namespace, name ?? undefined);
   const deletePVC = useDeleteK8sResource('persistentvolumeclaims');
   const updatePVC = useUpdateK8sResource('persistentvolumeclaims');
 
   const handleRefresh = () => {
     refetch();
     refetchEvents();
-    refetchTopology();
   };
 
   const handleDownloadYaml = useCallback(() => {
@@ -152,11 +148,6 @@ export default function PersistentVolumeClaimDetail() {
     }
   };
 
-  const handleNodeClick = (node: TopologyNode) => {
-    if (node.type === 'pv') navigate(`/persistentvolumes/${node.name}`);
-    else if (node.type === 'pod' && node.namespace) navigate(`/pods/${node.namespace}/${node.name}`);
-    else if (node.type === 'storageclass') navigate(`/storageclasses/${node.name}`);
-  };
 
   const tabs = [
     {
@@ -203,27 +194,14 @@ export default function PersistentVolumeClaimDetail() {
       id: 'topology',
       label: 'Topology',
       icon: Network,
-      content: !isBackendConfigured() || !clusterId ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">Connect to the Kubilitics backend (Settings → Connect) and select a cluster to view resource topology.</p>
-        </div>
-      ) : topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      ) : topologyError ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <p className="text-destructive text-sm">Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}</p>
-          <Button variant="outline" size="sm" className="mt-2" onClick={() => refetchTopology()}>Retry</Button>
-        </div>
-      ) : (topologyNodes.length === 0 && topologyEdges.length === 0) ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">No related resources in topology for this PersistentVolumeClaim.</p>
-        </div>
-      ) : (
-        <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('PersistentVolumeClaim')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="PersistentVolumeClaim"
+          sourceResourceName={pvc?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

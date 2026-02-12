@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Folder, Clock, Download, Trash2, Box, Globe, Settings, Layers, Package, Database, Shield, Activity, RefreshCw, Loader2 } from 'lucide-react';
+import { Folder, Clock, Download, Trash2, Box, Globe, Settings, Layers, Package, Database, Shield, Activity, RefreshCw, Loader2, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -9,23 +9,19 @@ import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
   SectionCard,
-  TopologyViewer,
-  NodeDetailPopup,
   MetadataCard,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
-  type ResourceDetail,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useK8sResourceList, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useNamespaceTopology } from '@/hooks/useNamespaceTopology';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 
@@ -44,7 +40,6 @@ export default function NamespaceDetail() {
   const { isConnected } = useConnectionStatus();
   const clusterId = useActiveClusterId();
   const [activeTab, setActiveTab] = useState('overview');
-  const [topologySelectedNode, setTopologySelectedNode] = useState<ResourceDetail | null>(null);
 
   const { resource: ns, isLoading, error: resourceError, age, yaml, isConnected: resourceConnected, refetch } = useResourceDetail<NamespaceResource>(
     'namespaces',
@@ -94,19 +89,6 @@ export default function NamespaceDetail() {
   const resourceQuotas = useMemo(() => resourceQuotasList.data?.items ?? [], [resourceQuotasList.data?.items]);
   const hasQuota = resourceQuotas.length > 0;
 
-  // Use namespace topology hook instead of resource topology (backend doesn't support namespace topology)
-  const { nodes: topologyNodes, edges: topologyEdges, isLoading: topologyLoading, error: topologyError } = useNamespaceTopology(nsName);
-
-  const handleNodeClick = useCallback((node: TopologyNode) => {
-    const resourceDetail: ResourceDetail = {
-      id: node.id,
-      type: node.type as ResourceDetail['type'],
-      name: node.name,
-      namespace: node.namespace,
-      status: node.status,
-    };
-    setTopologySelectedNode(resourceDetail);
-  }, []);
 
   if (isLoading) {
     return (
@@ -219,24 +201,15 @@ export default function NamespaceDetail() {
     {
       id: 'topology',
       label: 'Topology',
-      content: topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      ) : topologyError ? (
-        <div className="flex items-center justify-center min-h-[400px] text-muted-foreground text-sm">
-          Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}
-        </div>
-      ) : (
-        <>
-          <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
-          <NodeDetailPopup
-            resource={topologySelectedNode}
-            onClose={() => setTopologySelectedNode(null)}
-            sourceResourceType="Namespace"
-            sourceResourceName={nsName}
-          />
-        </>
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('Namespace')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="Namespace"
+          sourceResourceName={ns?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

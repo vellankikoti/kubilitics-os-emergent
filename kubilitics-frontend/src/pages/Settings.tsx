@@ -163,7 +163,7 @@ export default function Settings() {
             Backend API
           </CardTitle>
           <CardDescription>
-            Kubilitics backend base URL. When set (or when using default on this device), clusters and topology load from the backend.
+            Kubilitics backend base URL. When set (or when using default on this device), clusters load from the backend.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -284,61 +284,6 @@ export default function Settings() {
         </CardContent>
       </Card>
 
-      {/* Topology Settings */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ZoomIn className="h-5 w-5" />
-            Topology & Visualization
-          </CardTitle>
-          <CardDescription>
-            Configure topology view defaults
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Default Zoom */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label className="text-sm font-medium">Default Zoom Level</Label>
-                <p className="text-xs text-muted-foreground">
-                  Initial zoom level for topology views
-                </p>
-              </div>
-              <Badge variant="secondary">{preferences.defaultZoom}%</Badge>
-            </div>
-            <Slider
-              value={[preferences.defaultZoom]}
-              onValueChange={([value]) => updatePreference('defaultZoom', value)}
-              min={25}
-              max={200}
-              step={5}
-              className="w-full"
-            />
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>25%</span>
-              <span>100%</span>
-              <span>200%</span>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* Mini-map */}
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label className="text-sm font-medium">Show Mini-map</Label>
-              <p className="text-xs text-muted-foreground">
-                Display a mini-map for large topology views
-              </p>
-            </div>
-            <Switch
-              checked={preferences.showMiniMap}
-              onCheckedChange={(checked) => updatePreference('showMiniMap', checked)}
-            />
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Notifications Settings */}
       <Card>

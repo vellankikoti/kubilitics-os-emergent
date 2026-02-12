@@ -48,7 +48,6 @@ import {
   ResourceDetailLayout,
   ResourceTabs,
   SectionCard,
-  TopologyViewer,
   ContainersSection,
   DetailRow,
   YamlViewer,
@@ -60,13 +59,10 @@ import {
   DeleteConfirmDialog,
   PortForwardDialog,
   MetricsDashboard,
-  NodeDetailPopup,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type ContainerInfo,
   type YamlVersion,
-  type ResourceDetail,
 } from '@/components/resources';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { useClusterStore } from '@/stores/clusterStore';
@@ -85,10 +81,9 @@ import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDeta
 import { useDeleteK8sResource, useUpdateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useMetricsSummary } from '@/hooks/useMetricsSummary';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
-import { usePodTopology } from '@/hooks/usePodTopology';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useBackendConfigStore } from '@/stores/backendConfigStore';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { cn } from '@/lib/utils';
 
 function parseCPUToMillicores(s: string): number {
@@ -210,7 +205,6 @@ export default function PodDetail() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showPortForwardDialog, setShowPortForwardDialog] = useState(false);
   const [portForwardInitial, setPortForwardInitial] = useState<{ containerName: string; port: number } | null>(null);
-  const [selectedNode, setSelectedNode] = useState<ResourceDetail | null>(null);
   
   const { isConnected } = useConnectionStatus();
   const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
@@ -230,28 +224,6 @@ export default function PodDetail() {
       if (!p) return undefined;
       return { CPU: p.cpu, Memory: p.memory, containers: p.containers ?? [] };
     }, [metricsResult?.summary]);
-    const useBackendTopology = useBackendConfigStore((s) => s.isBackendConfigured()) && !!clusterId;
-  const resourceTopology = useResourceTopology('pods', namespace ?? undefined, name ?? undefined);
-  const podTopology = usePodTopology(name ?? undefined, namespace ?? undefined);
-  // When backend topology fails (e.g. 404 route not deployed), fall back to client-side topology so something always shows
-  const backendTopologyFailed =
-    useBackendTopology &&
-    (resourceTopology.error != null || (resourceTopology.nodes.length === 0 && !resourceTopology.isLoading));
-  const useBackendData = useBackendTopology && !backendTopologyFailed && resourceTopology.nodes.length > 0;
-  const rawTopologyNodes = useBackendData ? resourceTopology.nodes : podTopology.nodes;
-  const topologyNodes = useMemo(
-    () =>
-      rawTopologyNodes.map((n) => ({
-        ...n,
-        isCurrent: n.type === 'pod' && n.name === name && n.namespace === namespace,
-      })),
-    [rawTopologyNodes, name, namespace]
-  );
-  const topologyEdges = useBackendData ? resourceTopology.edges : podTopology.edges;
-  const topologyLoading = useBackendData ? false : useBackendTopology ? resourceTopology.isLoading : podTopology.isLoading;
-  // Only show error when using backend and it failed and we have no data to show (fallback gives us podTopology)
-  const topologyError =
-    useBackendTopology && resourceTopology.error != null && topologyNodes.length === 0 ? resourceTopology.error : null;
   const deletePod = useDeleteK8sResource('pods');
   const updatePod = useUpdateK8sResource('pods');
 
@@ -315,17 +287,6 @@ export default function PodDetail() {
     return containers.filter((c) => c.name === selectedContainerFilter);
   }, [containers, selectedContainerFilter]);
 
-  const handleNodeClick = useCallback((node: TopologyNode) => {
-    // Convert TopologyNode to ResourceDetail for popup
-    const resourceDetail: ResourceDetail = {
-      id: node.id,
-      type: node.type as any,
-      name: node.name,
-      namespace: node.namespace,
-      status: node.status,
-    };
-    setSelectedNode(resourceDetail);
-  }, []);
 
   const handleDownloadYaml = useCallback(() => {
     const blob = new Blob([yaml], { type: 'text/yaml' });
@@ -989,23 +950,13 @@ export default function PodDetail() {
       label: 'Topology',
       icon: Network,
       content: (
-        <>
-          {topologyLoading ? (
-            <div className="flex items-center justify-center min-h-[400px]">
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : topologyError ? (
-            <div className="flex items-center justify-center min-h-[400px] text-muted-foreground text-sm">
-              Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}
-            </div>
-          ) : (
-            <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
-          )}
-          <NodeDetailPopup 
-            resource={selectedNode} 
-            onClose={() => setSelectedNode(null)} 
-          />
-        </>
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('Pod')}
+          namespace={namespace || pod?.metadata?.namespace || ''}
+          name={name || pod?.metadata?.name || ''}
+          sourceResourceType="Pod"
+          sourceResourceName={pod?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

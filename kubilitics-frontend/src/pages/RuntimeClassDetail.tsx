@@ -1,19 +1,21 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { FolderCog, Clock, Cpu, Download, Trash2, Settings, Package, Box, RefreshCw } from 'lucide-react';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
+import { FolderCog, Clock, Cpu, Download, Trash2, Settings, Package, Box, RefreshCw, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
+  
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
+  
+  
   type ResourceStatus,
   type EventInfo,
   type YamlVersion,
@@ -42,40 +44,6 @@ const mockPodsUsingRuntime = [
 
 const mockEvents: EventInfo[] = [];
 
-const topologyNodes: TopologyNode[] = [
-  { id: 'rc', type: 'configmap', name: 'gvisor', status: 'healthy', isCurrent: true },
-  ...mockPodsUsingRuntime.map((pod, i) => ({
-    id: `pod${i}`,
-    type: 'pod' as const,
-    name: pod.name,
-    status: 'healthy' as const,
-  })),
-];
-
-const topologyEdges: TopologyEdge[] = mockPodsUsingRuntime.map((_, i) => ({
-  from: `pod${i}`,
-  to: 'rc',
-  label: 'Uses Runtime',
-}));
-
-const yaml = `apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: gvisor
-handler: runsc
-overhead:
-  podFixed:
-    cpu: 100m
-    memory: 50Mi
-scheduling:
-  nodeSelector:
-    runtime: gvisor
-  tolerations:
-  - key: runtime
-    operator: Equal
-    value: gvisor
-    effect: NoSchedule`;
-
 export default function RuntimeClassDetail() {
   const { name } = useParams();
   const navigate = useNavigate();
@@ -84,7 +52,7 @@ export default function RuntimeClassDetail() {
   const rc = mockRuntimeClass;
 
   const handleDownloadYaml = useCallback(() => {
-    const blob = new Blob([yaml], { type: 'application/yaml' });
+    const blob = new Blob(['apiVersion: node.k8s.io/v1\nkind: RuntimeClass\n...'], { type: 'application/yaml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -93,24 +61,8 @@ export default function RuntimeClassDetail() {
     URL.revokeObjectURL(url);
   }, [rc.name]);
 
-  // Mock YAML versions for comparison
-  const yamlVersions: YamlVersion[] = [
-    { id: 'current', label: 'Current Version', yaml, timestamp: 'now' },
-    { id: 'previous', label: 'Previous Version', yaml: yaml.replace('cpu: 100m', 'cpu: 50m'), timestamp: '2 hours ago' },
-    { id: 'initial', label: 'Initial Version', yaml: yaml.replace('memory: 50Mi', 'memory: 25Mi'), timestamp: '1 day ago' },
-  ];
-
-  const handleSaveYaml = async (newYaml: string) => {
-    toast.success('RuntimeClass updated successfully');
-    console.log('Saving YAML:', newYaml);
-  };
-
-  const handleNodeClick = (node: TopologyNode) => {
-    if (node.type === 'pod') {
-      const pod = mockPodsUsingRuntime.find(p => p.name === node.name);
-      if (pod) navigate(`/pods/${pod.namespace}/${node.name}`);
-    }
-  };
+  const yaml = 'apiVersion: node.k8s.io/v1\nkind: RuntimeClass\n...';
+  const yamlVersions: YamlVersion[] = yaml ? [{ id: 'current', label: 'Current Version', yaml, timestamp: 'now' }] : [];
 
   const statusCards = [
     { label: 'Handler', value: rc.handler, icon: Cpu, iconColor: 'primary' as const },
@@ -239,7 +191,20 @@ export default function RuntimeClassDetail() {
     { id: 'events', label: 'Events', content: <EventsSection events={mockEvents} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={rc.name} editable onSave={handleSaveYaml} /> },
     { id: 'compare', label: 'Compare', content: <YamlCompareViewer versions={yamlVersions} resourceName={rc.name} /> },
-    { id: 'topology', label: 'Topology', content: <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} /> },
+    {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('RuntimeClass')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="RuntimeClass"
+          sourceResourceName={rc?.name ?? name ?? ''}
+        />
+      ),
+    },
     {
       id: 'actions',
       label: 'Actions',

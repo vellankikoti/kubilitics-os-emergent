@@ -31,16 +31,28 @@ export function inferRegion(serverUrl: string): string {
   return '';
 }
 
+function normalizeProvider(backendProvider?: string, server?: string): Cluster['provider'] {
+  if (backendProvider) {
+    const p = backendProvider.toLowerCase().replace(/\s+/g, '-');
+    if (['eks', 'gke', 'aks', 'minikube', 'kind', 'on-prem', 'openshift', 'rancher', 'k3s', 'docker-desktop'].includes(p)) {
+      return p as Cluster['provider'];
+    }
+    if (p.includes('docker')) return 'docker-desktop';
+    if (p.includes('openshift')) return 'openshift';
+    if (p.includes('rancher')) return 'rancher';
+  }
+  const s = (server ?? '').toLowerCase();
+  if (s.includes('eks') || s.includes('amazonaws')) return 'eks';
+  if (s.includes('gke') || s.includes('google')) return 'gke';
+  if (s.includes('aks') || s.includes('azure')) return 'aks';
+  if (s.includes('minikube')) return 'minikube';
+  if (s.includes('kind')) return 'kind';
+  return 'on-prem';
+}
+
 export function backendClusterToCluster(b: BackendCluster): Cluster {
   const server = b.server_url ?? b.server ?? '';
-  const provider = ((): Cluster['provider'] => {
-    if (server.includes('eks') || server.includes('amazonaws')) return 'eks';
-    if (server.includes('gke') || server.includes('google')) return 'gke';
-    if (server.includes('aks') || server.includes('azure')) return 'aks';
-    if (server.includes('minikube')) return 'minikube';
-    if (server.includes('kind')) return 'kind';
-    return 'on-prem';
-  })();
+  const provider = normalizeProvider(b.provider, server);
   const region = inferRegion(server);
   return {
     id: b.id,

@@ -41,7 +41,6 @@ import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
   ContainersSection,
   YamlViewer,
   YamlCompareViewer,
@@ -49,24 +48,21 @@ import {
   MetadataCard,
   ActionsSection,
   MetricsDashboard,
-  NodeDetailPopup,
   ScaleDialog,
   RolloutActionsDialog,
   DeleteConfirmDialog,
   SectionCard,
   LogViewer,
   TerminalViewer,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type ContainerInfo,
   type YamlVersion,
-  type ResourceDetail,
 } from '@/components/resources';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useUpdateK8sResource, usePatchK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useClusterStore } from '@/stores/clusterStore';
@@ -117,7 +113,6 @@ export default function StatefulSetDetail() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showScaleDialog, setShowScaleDialog] = useState(false);
   const [showRolloutDialog, setShowRolloutDialog] = useState(false);
-  const [selectedNode, setSelectedNode] = useState<ResourceDetail | null>(null);
   const [selectedLogPod, setSelectedLogPod] = useState<string>('');
   const [selectedLogContainer, setSelectedLogContainer] = useState<string>('');
   const [selectedTerminalPod, setSelectedTerminalPod] = useState<string>('');
@@ -138,15 +133,6 @@ export default function StatefulSetDetail() {
   const deleteStatefulSet = useDeleteK8sResource('statefulsets');
   const updateStatefulSet = useUpdateK8sResource('statefulsets');
   const patchStatefulSet = usePatchK8sResource('statefulsets');
-  const resourceTopology = useResourceTopology('statefulsets', namespace ?? undefined, name ?? undefined);
-  const topologyNodes = useMemo(
-    () =>
-      resourceTopology.nodes.map((n) => ({
-        ...n,
-        isCurrent: n.type === 'statefulset' && n.name === name && n.namespace === namespace,
-      })),
-    [resourceTopology.nodes, name, namespace]
-  );
 
   const status: ResourceStatus = statefulSet.status?.readyReplicas === statefulSet.spec?.replicas ? 'Running' : 
     statefulSet.status?.readyReplicas ? 'Pending' : 'Failed';
@@ -205,16 +191,6 @@ export default function StatefulSetDetail() {
   const logPodContainers = (stsPods.find((p) => p.metadata?.name === logPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
   const terminalPodContainers = (stsPods.find((p) => p.metadata?.name === terminalPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
 
-  const handleNodeClick = useCallback((node: TopologyNode) => {
-    const resourceDetail: ResourceDetail = {
-      id: node.id,
-      type: node.type as any,
-      name: node.name,
-      namespace: node.namespace,
-      status: node.status,
-    };
-    setSelectedNode(resourceDetail);
-  }, []);
 
   const handleDownloadYaml = useCallback(() => {
     const blob = new Blob([yaml], { type: 'text/yaml' });
@@ -796,23 +772,13 @@ export default function StatefulSetDetail() {
       label: 'Topology',
       icon: Network,
       content: (
-        <>
-          {resourceTopology.isLoading ? (
-            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">Loading topology...</div>
-          ) : resourceTopology.error ? (
-            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">
-              Topology unavailable: {resourceTopology.error instanceof Error ? resourceTopology.error.message : String(resourceTopology.error)}
-            </div>
-          ) : (
-            <TopologyViewer nodes={topologyNodes} edges={resourceTopology.edges} onNodeClick={handleNodeClick} />
-          )}
-          <NodeDetailPopup
-            resource={selectedNode}
-            onClose={() => setSelectedNode(null)}
-            sourceResourceType="StatefulSet"
-            sourceResourceName={statefulSet?.metadata?.name ?? name ?? ''}
-          />
-        </>
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('StatefulSet')}
+          namespace={namespace || statefulSet?.metadata?.namespace || ''}
+          name={name || statefulSet?.metadata?.name || ''}
+          sourceResourceType="StatefulSet"
+          sourceResourceName={statefulSet?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

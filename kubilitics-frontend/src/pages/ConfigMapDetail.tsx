@@ -13,16 +13,14 @@ import {
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
-  TopologyViewer,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
 import { useDeleteK8sResource, useUpdateK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useClusterStore } from '@/stores/clusterStore';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
@@ -58,7 +56,6 @@ export default function ConfigMapDetail() {
     undefined as unknown as ConfigMapResource
   );
   const { events, refetch: refetchEvents } = useResourceEvents('ConfigMap', namespace, name ?? undefined);
-  const { nodes: topologyNodes, edges: topologyEdges, refetch: refetchTopology, isLoading: topologyLoading, error: topologyError } = useResourceTopology('configmaps', namespace, name ?? undefined);
   const deleteConfigMap = useDeleteK8sResource('configmaps');
   const updateConfigMap = useUpdateK8sResource('configmaps');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -84,7 +81,6 @@ export default function ConfigMapDetail() {
   const handleRefresh = () => {
     refetch();
     refetchEvents();
-    refetchTopology();
   };
 
   const status: ResourceStatus = 'Healthy';
@@ -182,10 +178,6 @@ export default function ConfigMapDetail() {
     { label: 'Immutable', value: cm.immutable ? 'Yes' : 'No', icon: FileJson, iconColor: 'muted' as const },
   ];
 
-  const handleNodeClick = (node: TopologyNode) => {
-    if (node.type === 'deployment') navigate(`/deployments/${node.namespace ?? namespace}/${node.name}`);
-    else if (node.type === 'pod') navigate(`/pods/${node.namespace ?? namespace}/${node.name}`);
-  };
 
   const usedByContent = !namespace || !name ? (
     <p className="text-muted-foreground text-sm">No resource selected.</p>
@@ -303,27 +295,14 @@ export default function ConfigMapDetail() {
       id: 'topology',
       label: 'Topology',
       icon: Network,
-      content: !isBackendConfigured() || !clusterId ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">Connect to the Kubilitics backend (Settings → Connect) and select a cluster to view resource topology.</p>
-        </div>
-      ) : topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      ) : topologyError ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <p className="text-destructive text-sm">Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}</p>
-          <Button variant="outline" size="sm" className="mt-2" onClick={() => refetchTopology()}>Retry</Button>
-        </div>
-      ) : (topologyNodes.length === 0 && topologyEdges.length === 0) ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">No related resources in topology for this ConfigMap.</p>
-        </div>
-      ) : (
-        <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('ConfigMap')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="ConfigMap"
+          sourceResourceName={cm?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

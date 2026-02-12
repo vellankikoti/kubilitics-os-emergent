@@ -8,7 +8,7 @@ export interface Cluster {
   version: string;
   status: 'healthy' | 'warning' | 'error';
   region: string;
-  provider: 'eks' | 'gke' | 'aks' | 'minikube' | 'kind' | 'on-prem';
+  provider: 'eks' | 'gke' | 'aks' | 'minikube' | 'kind' | 'on-prem' | 'openshift' | 'rancher' | 'k3s' | 'docker-desktop';
   nodes: number;
   namespaces: number;
   pods: { running: number; pending: number; failed: number };

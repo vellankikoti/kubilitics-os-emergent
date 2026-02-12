@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Bell, Clock, Download, AlertTriangle, CheckCircle2, ExternalLink, RefreshCw } from 'lucide-react';
+import { Bell, Clock, Download, AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, Network } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -11,11 +11,13 @@ import {
   YamlViewer,
   EventsSection,
   ActionsSection,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import type { KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 
 interface EventResource extends KubernetesResource {
@@ -192,6 +194,20 @@ export default function EventDetail() {
     },
     { id: 'events', label: 'Events', content: <EventsSection events={relatedEvents} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={eventName} editable={false} /> },
+    {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('Event')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="Event"
+          sourceResourceName={ev?.metadata?.name ?? name ?? ''}
+        />
+      ),
+    },
     {
       id: 'actions',
       label: 'Actions',

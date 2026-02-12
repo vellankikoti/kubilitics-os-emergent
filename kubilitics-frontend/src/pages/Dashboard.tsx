@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { LiveSignalStrip } from '@/components/dashboard/LiveSignalStrip';
 import { DashboardHero } from '@/components/dashboard/DashboardHero';
 import { IntelligencePanel } from '@/components/dashboard/IntelligencePanel';
-import { ClusterTopologyMap } from '@/features/dashboard/components/ClusterTopologyMap';
+import { ClusterOverviewPanel } from '@/features/dashboard/components/ClusterOverviewPanel';
 import { ActivityFeed } from '@/components/dashboard/ActivityFeed';
 import { WorkloadCapacitySnapshot } from '@/components/dashboard/WorkloadCapacitySnapshot';
 import { HealthScoreCard } from '@/components/dashboard/HealthScoreCard';
@@ -99,12 +99,12 @@ export default function Dashboard() {
               <IntelligencePanel />
             </section>
 
-            {/* Center: Cluster Topology — cluster at center, nodes connected, click node for nested pods (backend data) */}
+            {/* Center: Cluster overview — operational insights, health, capacity */}
             <section
               className="min-h-[340px] flex flex-col order-1 lg:order-2"
-              aria-label="Cluster topology map"
+              aria-label="Cluster overview"
             >
-              <ClusterTopologyMap />
+              <ClusterOverviewPanel />
             </section>
 
             {/* Right: Activity Feed & Quick Actions (~25%) */}

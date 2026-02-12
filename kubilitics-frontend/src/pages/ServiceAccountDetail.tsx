@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { UserCircle, Clock, Download, Trash2, KeyRound, Shield, RefreshCw } from 'lucide-react';
+import { UserCircle, Clock, Download, Trash2, KeyRound, Shield, RefreshCw, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -8,21 +8,22 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
+  
   MetadataCard,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
+  
+  
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
 import { useDeleteK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 
 interface ServiceAccountResource extends KubernetesResource {
@@ -47,7 +48,6 @@ export default function ServiceAccountDetail() {
     undefined as unknown as ServiceAccountResource
   );
   const { events, refetch: refetchEvents } = useResourceEvents('ServiceAccount', namespace ?? undefined, name ?? undefined);
-  const { nodes: topologyNodesResolved, edges: topologyEdgesResolved, refetch: refetchTopology, isLoading: topologyLoading } = useResourceTopology('serviceaccounts', namespace ?? undefined, name ?? undefined);
   const deleteResource = useDeleteK8sResource('serviceaccounts');
 
   useEffect(() => {
@@ -65,7 +65,6 @@ export default function ServiceAccountDetail() {
   const handleRefresh = () => {
     refetch();
     refetchEvents();
-    refetchTopology();
   };
 
   const handleDownloadYaml = useCallback(() => {
@@ -88,18 +87,6 @@ export default function ServiceAccountDetail() {
     { label: 'Permission Level', value: '–', icon: Shield, iconColor: 'muted' as const },
     { label: 'Token Auto-Mount', value: automount ? 'Yes' : 'No', icon: KeyRound, iconColor: 'info' as const },
   ];
-
-  const topologyNodes: TopologyNode[] = topologyNodesResolved.length > 0
-    ? topologyNodesResolved
-    : [{ id: 'sa', type: 'serviceaccount', name: saName, status: 'healthy', isCurrent: true }];
-  const topologyEdges: TopologyEdge[] = topologyEdgesResolved;
-
-  const handleNodeClick = (node: TopologyNode) => {
-    if (node.type === 'secret') navigate(`/secrets/${namespace}/${node.name}`);
-    else if (node.type === 'rolebinding') navigate(`/rolebindings/${namespace}/${node.name}`);
-    else if (node.type === 'clusterrolebinding') navigate(`/clusterrolebindings/${node.name}`);
-    else if (node.type === 'pod') navigate(`/pods/${node.namespace ?? namespace}/${node.name}`);
-  };
 
   if (isLoading) {
     return (
@@ -216,10 +203,15 @@ export default function ServiceAccountDetail() {
     {
       id: 'topology',
       label: 'Topology',
-      content: topologyLoading ? (
-        <Skeleton className="h-64 w-full" />
-      ) : (
-        <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('ServiceAccount')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="ServiceAccount"
+          sourceResourceName={resource?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

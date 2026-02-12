@@ -1,15 +1,17 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Webhook, Clock, Shield, Download, Trash2, AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react';
+import { Webhook, Clock, Shield, Download, Trash2, AlertTriangle, CheckCircle, RefreshCw, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import {
   ResourceDetailLayout,
   YamlViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
+  ResourceTopologyView,
   type ResourceStatus,
   type EventInfo,
 } from '@/components/resources';
@@ -165,6 +167,20 @@ export default function ValidatingWebhookDetail() {
     },
     { id: 'events', label: 'Events', content: <EventsSection events={mockEvents} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={wh.name} /> },
+    {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('ValidatingWebhookConfiguration')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="ValidatingWebhookConfiguration"
+          sourceResourceName={wh.name ?? name ?? ''}
+        />
+      ),
+    },
     {
       id: 'actions',
       label: 'Actions',

@@ -37,26 +37,6 @@ export function InsightsPanelSkeleton() {
   );
 }
 
-export function TopologyPanelSkeleton() {
-  return (
-    <div
-      className={cn(
-        'rounded-xl border border-border/50 bg-card/30 overflow-hidden',
-        'flex flex-col min-h-[320px]'
-      )}
-      aria-hidden
-    >
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border/50">
-        <Skeleton className="h-4 w-24" />
-        <Skeleton className="h-3 w-20" />
-      </div>
-      <div className="flex-1 min-h-[280px] p-4">
-        <div className="h-full w-full rounded-inner bg-muted/30 animate-pulse" />
-      </div>
-    </div>
-  );
-}
-
 export function ActivityFeedSkeleton() {
   return (
     <div className="rounded-xl border border-border/50 bg-card/30 overflow-hidden min-h-[280px]">

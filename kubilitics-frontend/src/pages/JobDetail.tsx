@@ -35,7 +35,6 @@ import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
   ContainersSection,
   YamlViewer,
   YamlCompareViewer,
@@ -43,21 +42,18 @@ import {
   MetadataCard,
   ActionsSection,
   MetricsDashboard,
-  NodeDetailPopup,
   LogViewer,
   TerminalViewer,
   DeleteConfirmDialog,
   SectionCard,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type ContainerInfo,
   type YamlVersion,
-  type ResourceDetail,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useUpdateK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useClusterStore } from '@/stores/clusterStore';
@@ -112,7 +108,6 @@ export default function JobDetail() {
   
   const [activeTab, setActiveTab] = useState('overview');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [selectedNode, setSelectedNode] = useState<ResourceDetail | null>(null);
   const [selectedLogPod, setSelectedLogPod] = useState<string>('');
   const [selectedLogContainer, setSelectedLogContainer] = useState<string>('');
   const [selectedTerminalPod, setSelectedTerminalPod] = useState<string>('');
@@ -133,15 +128,6 @@ export default function JobDetail() {
   const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
   const deleteJob = useDeleteK8sResource('jobs');
   const updateJob = useUpdateK8sResource('jobs');
-  const resourceTopology = useResourceTopology('jobs', namespace ?? undefined, name ?? undefined);
-  const topologyNodes = useMemo(
-    () =>
-      resourceTopology.nodes.map((n) => ({
-        ...n,
-        isCurrent: n.type === 'job' && n.name === name && n.namespace === namespace,
-      })),
-    [resourceTopology.nodes, name, namespace]
-  );
 
   const succeeded = job.status?.succeeded || 0;
   const failed = job.status?.failed || 0;
@@ -183,16 +169,6 @@ export default function JobDetail() {
   const logPodContainers = jobPods.find((p) => p.metadata?.name === logPod)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
   const terminalPodContainers = jobPods.find((p) => p.metadata?.name === terminalPod)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
 
-  const handleNodeClick = useCallback((node: TopologyNode) => {
-    const resourceDetail: ResourceDetail = {
-      id: node.id,
-      type: node.type as any,
-      name: node.name,
-      namespace: node.namespace,
-      status: node.status,
-    };
-    setSelectedNode(resourceDetail);
-  }, []);
 
   const handleDownloadYaml = useCallback(() => {
     const blob = new Blob([yaml], { type: 'text/yaml' });
@@ -652,23 +628,13 @@ export default function JobDetail() {
       label: 'Topology',
       icon: Network,
       content: (
-        <>
-          {resourceTopology.isLoading ? (
-            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">Loading topology...</div>
-          ) : resourceTopology.error ? (
-            <div className="flex justify-center items-center min-h-[400px] text-muted-foreground text-sm">
-              Topology unavailable: {resourceTopology.error instanceof Error ? resourceTopology.error.message : String(resourceTopology.error)}
-            </div>
-          ) : (
-            <TopologyViewer nodes={topologyNodes} edges={resourceTopology.edges} onNodeClick={handleNodeClick} />
-          )}
-          <NodeDetailPopup
-            resource={selectedNode}
-            onClose={() => setSelectedNode(null)}
-            sourceResourceType="Job"
-            sourceResourceName={job?.metadata?.name ?? name ?? ''}
-          />
-        </>
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('Job')}
+          namespace={namespace || job?.metadata?.namespace || ''}
+          name={name || job?.metadata?.name || ''}
+          sourceResourceType="Job"
+          sourceResourceName={job?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

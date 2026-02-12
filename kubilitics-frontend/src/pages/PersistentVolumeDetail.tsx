@@ -8,21 +8,19 @@ import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
   SectionCard,
-  TopologyViewer,
   MetadataCard,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
 import { useDeleteK8sResource, useUpdateK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { useClusterStore } from '@/stores/clusterStore';
 import { useBackendConfigStore } from '@/stores/backendConfigStore';
@@ -65,7 +63,6 @@ export default function PersistentVolumeDetail() {
     undefined as unknown as K8sPV
   );
   const { events, refetch: refetchEvents } = useResourceEvents('PersistentVolume', '', name ?? undefined);
-  const { nodes: topologyNodes, edges: topologyEdges, refetch: refetchTopology, isLoading: topologyLoading, error: topologyError } = useResourceTopology('persistentvolumes', '', name ?? undefined);
   const deletePV = useDeleteK8sResource('persistentvolumes');
   const updatePV = useUpdateK8sResource('persistentvolumes');
 
@@ -76,7 +73,6 @@ export default function PersistentVolumeDetail() {
   const handleRefresh = () => {
     refetch();
     refetchEvents();
-    refetchTopology();
   };
 
   const handleDownloadYaml = useCallback(() => {
@@ -155,11 +151,6 @@ export default function PersistentVolumeDetail() {
     }
   };
 
-  const handleNodeClick = (node: TopologyNode) => {
-    if (node.type === 'pvc' && node.namespace) navigate(`/persistentvolumeclaims/${node.namespace}/${node.name}`);
-    else if (node.type === 'pod' && node.namespace) navigate(`/pods/${node.namespace}/${node.name}`);
-    else if (node.type === 'storageclass') navigate(`/storageclasses/${node.name}`);
-  };
 
   const tabs = [
     {
@@ -206,27 +197,14 @@ export default function PersistentVolumeDetail() {
       id: 'topology',
       label: 'Topology',
       icon: Network,
-      content: !isBackendConfigured() || !clusterId ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">Connect to the Kubilitics backend (Settings → Connect) and select a cluster to view resource topology.</p>
-        </div>
-      ) : topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      ) : topologyError ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <p className="text-destructive text-sm">Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}</p>
-          <Button variant="outline" size="sm" className="mt-2" onClick={() => refetchTopology()}>Retry</Button>
-        </div>
-      ) : (topologyNodes.length === 0 && topologyEdges.length === 0) ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">No related resources in topology for this PersistentVolume.</p>
-        </div>
-      ) : (
-        <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} />
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('PersistentVolume')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="PersistentVolume"
+          sourceResourceName={pv?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

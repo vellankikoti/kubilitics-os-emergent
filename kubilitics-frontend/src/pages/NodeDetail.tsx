@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueries } from '@tanstack/react-query';
-import { Server, Clock, Download, Trash2, Cpu, HardDrive, Box, Shield, RefreshCw, Pause, Play, AlertTriangle, Loader2, Info, BarChart2, Activity, MapPin, Tag, FileJson, FileSpreadsheet, Image } from 'lucide-react';
+import { Server, Clock, Download, Trash2, Cpu, HardDrive, Box, Shield, RefreshCw, Pause, Play, AlertTriangle, Loader2, Info, BarChart2, Activity, MapPin, Tag, FileJson, FileSpreadsheet, Image, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -11,23 +11,19 @@ import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
   SectionCard,
-  TopologyViewer,
-  NodeDetailPopup,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
   ActionsSection,
   MetricsDashboard,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
-  type TopologyViewerRef,
-  type ResourceDetail,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useK8sEvents } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useK8sResourceList, type KubernetesResource } from '@/hooks/useKubernetes';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { useClusterStore } from '@/stores/clusterStore';
@@ -64,8 +60,6 @@ export default function NodeDetail() {
   const { isConnected } = useConnectionStatus();
   const [activeTab, setActiveTab] = useState('overview');
   const [isCordoned, setIsCordoned] = useState(false);
-  const [topologySelectedNode, setTopologySelectedNode] = useState<ResourceDetail | null>(null);
-  const topologyViewerRef = useRef<TopologyViewerRef>(null);
 
   const { resource: n, isLoading, error: resourceError, age, yaml, isConnected: resourceConnected, refetch } = useResourceDetail<NodeResource>(
     'nodes',
@@ -198,144 +192,6 @@ export default function NodeDetail() {
     return m;
   }, [replicasetQueries, replicasetKeys]);
 
-  // Build full topology: Node, Pods, Namespaces, ServiceAccounts, Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs, ConfigMaps, Secrets, PVCs, PVs.
-  const { topologyNodesResolved, topologyEdgesResolved } = useMemo(() => {
-    const nodeId = 'node';
-    const nodes: TopologyNode[] = [{ id: nodeId, type: 'node', name: name ?? '', status: 'healthy', isCurrent: true }];
-    const edges: TopologyEdge[] = [];
-    const seenNodeIds = new Set<string>([nodeId]);
-
-    const kindToType = (k: string): TopologyNode['type'] => {
-      const kind = (k || '').toLowerCase();
-      if (kind === 'deployment') return 'deployment';
-      if (kind === 'replicaset') return 'replicaset';
-      if (kind === 'statefulset') return 'statefulset';
-      if (kind === 'daemonset') return 'daemonset';
-      if (kind === 'job') return 'job';
-      if (kind === 'cronjob') return 'cronjob';
-      return 'pod';
-    };
-
-    const addNode = (id: string, type: TopologyNode['type'], resourceName: string, ns?: string) => {
-      if (seenNodeIds.has(id)) return;
-      seenNodeIds.add(id);
-      nodes.push({ id, type, name: resourceName, namespace: ns, status: 'healthy' });
-    };
-
-    type PodRaw = {
-      metadata?: { name?: string; namespace?: string; ownerReferences?: Array<{ kind?: string; name?: string }> };
-      spec?: {
-        serviceAccountName?: string;
-        volumes?: Array<{ configMap?: { name?: string }; secret?: { secretName?: string }; persistentVolumeClaim?: { claimName?: string } }>;
-        containers?: Array<{
-          envFrom?: Array<{ configMapRef?: { name?: string }; secretRef?: { name?: string } }>;
-          env?: Array<{ valueFrom?: { configMapKeyRef?: { name?: string }; secretKeyRef?: { name?: string } } }>;
-        }>;
-      };
-    };
-
-    (runningPodsRaw as PodRaw[]).forEach((pod) => {
-      const podName = pod.metadata?.name ?? '';
-      const podNs = pod.metadata?.namespace ?? 'default';
-      const podId = `pod:${podNs}/${podName}`;
-      addNode(podId, 'pod', podName, podNs);
-      edges.push({ from: podId, to: nodeId, label: 'Runs On' });
-
-      // Namespace
-      const nsId = `namespace:${podNs}`;
-      addNode(nsId, 'namespace', podNs, podNs);
-      edges.push({ from: podId, to: nsId, label: 'In Namespace' });
-
-      // ServiceAccount
-      const saName = pod.spec?.serviceAccountName ?? 'default';
-      const saId = `serviceaccount:${podNs}/${saName}`;
-      addNode(saId, 'serviceaccount', saName, podNs);
-      edges.push({ from: podId, to: saId, label: 'Uses' });
-
-      // Owners (Deployment, ReplicaSet, StatefulSet, DaemonSet, Job, CronJob)
-      pod.metadata?.ownerReferences?.forEach((ref) => {
-        const ownerKind = ref.kind ?? '';
-        const ownerName = ref.name ?? '';
-        if (!ownerName) return;
-        const ownerType = kindToType(ownerKind);
-        const ownerId = `owner:${ownerType}:${podNs}/${ownerName}`;
-        addNode(ownerId, ownerType, ownerName, podNs);
-        edges.push({ from: podId, to: ownerId, label: 'Managed By' });
-      });
-
-      const refsFromVolumes = (vol: { configMap?: { name?: string }; secret?: { secretName?: string }; persistentVolumeClaim?: { claimName?: string } }) => {
-        if (vol.configMap?.name) {
-          const id = `configmap:${podNs}/${vol.configMap.name}`;
-          addNode(id, 'configmap', vol.configMap.name, podNs);
-          edges.push({ from: podId, to: id, label: 'Uses' });
-        }
-        if (vol.secret?.secretName) {
-          const id = `secret:${podNs}/${vol.secret.secretName}`;
-          addNode(id, 'secret', vol.secret.secretName, podNs);
-          edges.push({ from: podId, to: id, label: 'Uses' });
-        }
-        if (vol.persistentVolumeClaim?.claimName) {
-          const id = `pvc:${podNs}/${vol.persistentVolumeClaim.claimName}`;
-          addNode(id, 'pvc', vol.persistentVolumeClaim.claimName, podNs);
-          edges.push({ from: podId, to: id, label: 'Uses' });
-          const pvName = pvcVolumeNames[`${podNs}/${vol.persistentVolumeClaim.claimName}`];
-          if (pvName) {
-            const pvId = `pv:${pvName}`;
-            addNode(pvId, 'pv', pvName, undefined);
-            edges.push({ from: id, to: pvId, label: 'Bound To' });
-          }
-        }
-      };
-
-      pod.spec?.volumes?.forEach(refsFromVolumes);
-
-      pod.spec?.containers?.forEach((container) => {
-        container.envFrom?.forEach((e) => {
-          if (e.configMapRef?.name) {
-            const id = `configmap:${podNs}/${e.configMapRef.name}`;
-            addNode(id, 'configmap', e.configMapRef.name, podNs);
-            edges.push({ from: podId, to: id, label: 'Uses' });
-          }
-          if (e.secretRef?.name) {
-            const id = `secret:${podNs}/${e.secretRef.name}`;
-            addNode(id, 'secret', e.secretRef.name, podNs);
-            edges.push({ from: podId, to: id, label: 'Uses' });
-          }
-        });
-        container.env?.forEach((e) => {
-          const cmName = e.valueFrom?.configMapKeyRef?.name;
-          const secretName = e.valueFrom?.secretKeyRef?.name;
-          if (cmName) {
-            const id = `configmap:${podNs}/${cmName}`;
-            addNode(id, 'configmap', cmName, podNs);
-            edges.push({ from: podId, to: id, label: 'Uses' });
-          }
-          if (secretName) {
-            const id = `secret:${podNs}/${secretName}`;
-            addNode(id, 'secret', secretName, podNs);
-            edges.push({ from: podId, to: id, label: 'Uses' });
-          }
-        });
-      });
-    });
-
-    // Add Deployment nodes and ReplicaSet -> Deployment edges (from fetched ReplicaSet ownerReferences).
-    replicasetToDeployment.forEach((dep, rsKey) => {
-      const depId = `deployment:${dep.ns}/${dep.name}`;
-      if (seenNodeIds.has(depId)) return;
-      seenNodeIds.add(depId);
-      nodes.push({ id: depId, type: 'deployment', name: dep.name, namespace: dep.ns, status: 'healthy' });
-      const rsId = `owner:replicaset:${rsKey}`;
-      if (seenNodeIds.has(rsId)) {
-        edges.push({ from: rsId, to: depId, label: 'Managed By' });
-      }
-    });
-
-    return { topologyNodesResolved: nodes, topologyEdgesResolved: edges };
-  }, [name, runningPodsRaw, pvcVolumeNames, replicasetToDeployment]);
-
-  const topologyLoading = false;
-  const topologyError = null;
 
   const nodeName = n?.metadata?.name ?? name ?? '';
   const handleDownloadYaml = useCallback(() => {
@@ -348,88 +204,6 @@ export default function NodeDetail() {
     URL.revokeObjectURL(url);
   }, [yaml, nodeName]);
 
-  const handleNodeClick = useCallback((node: TopologyNode) => {
-    const resourceDetail: ResourceDetail = {
-      id: node.id,
-      type: node.type as ResourceDetail['type'],
-      name: node.name,
-      namespace: node.namespace,
-      status: node.status,
-    };
-    setTopologySelectedNode(resourceDetail);
-  }, []);
-
-  const handleExportTopologyReport = useCallback((format: 'json' | 'csv') => {
-    const nodeMetrics = nodeMetricsQuery.data as { CPU?: string; Memory?: string } | undefined;
-    const isReady = (n?.status?.conditions ?? []).some((c: { type?: string; status?: string }) => c.type === 'Ready' && c.status === 'True');
-    const roles = Object.keys(n?.metadata?.labels ?? {})
-      .filter((k: string) => k.startsWith('node-role.kubernetes.io/'))
-      .map((k: string) => k.replace('node-role.kubernetes.io/', ''));
-    const capacity = n?.status?.capacity ?? {};
-    const allocatable = n?.status?.allocatable ?? {};
-    const report = {
-      exportedAt: new Date().toISOString(),
-      node: {
-        name: nodeName,
-        status: isReady ? 'Ready' : 'NotReady',
-        roles: roles.join(', '),
-        version: (n?.status?.nodeInfo as { kubeletVersion?: string })?.kubeletVersion ?? '–',
-        cpuUsagePercent: undefined as number | undefined,
-        memoryUsagePercent: undefined as number | undefined,
-        cpuUsageRaw: nodeMetrics?.CPU,
-        memoryUsageRaw: nodeMetrics?.Memory,
-        capacity: { cpu: capacity.cpu, memory: capacity.memory, pods: capacity.pods },
-        allocatable: { cpu: allocatable.cpu, memory: allocatable.memory, pods: allocatable.pods },
-        podsCount: runningPods.length,
-        podsCapacity: capacity.pods ?? '110',
-        osImage: (n?.status?.nodeInfo as { osImage?: string })?.osImage,
-        architecture: (n?.status?.nodeInfo as { architecture?: string })?.architecture,
-        kernelVersion: (n?.status?.nodeInfo as { kernelVersion?: string })?.kernelVersion,
-        containerRuntime: (n?.status?.nodeInfo as { containerRuntimeVersion?: string })?.containerRuntimeVersion,
-      },
-      resources: topologyNodesResolved.map((no) => {
-        const base: Record<string, string | undefined> = { type: no.type, name: no.name, namespace: no.namespace ?? '' };
-        if (no.type === 'pod') {
-          const pod = runningPods.find((p) => p.namespace === no.namespace && p.name === no.name);
-          if (pod) {
-            base.cpu = pod.cpu;
-            base.memory = pod.memory;
-            base.status = pod.status;
-          }
-        }
-        return base;
-      }),
-      edges: topologyEdgesResolved.map((e) => ({ from: e.from, to: e.to, relation: e.label })),
-    };
-
-    const filePrefix = activeCluster?.name ? `${activeCluster.name.replace(/[^a-zA-Z0-9_-]/g, '-')}-` : '';
-    if (format === 'json') {
-      const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${filePrefix}node-topology-${nodeName}-${new Date().toISOString().slice(0, 10)}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast.success('Topology report (JSON) downloaded');
-    } else {
-      const csvRows: string[] = ['Section,Key,Value', `Node,Name,${nodeName}`, `Node,Status,${report.node.status}`, `Node,Pods,${report.node.podsCount}/${report.node.podsCapacity}`, `Node,Version,${report.node.version}`, '', 'S.No,Type,Name,Namespace,CPU,Memory,Status'];
-      report.resources.forEach((r, i) => {
-        const row = [i + 1, r.type ?? '', r.name ?? '', r.namespace ?? '', r.cpu ?? '', r.memory ?? '', r.status ?? ''];
-        csvRows.push(row.map((c) => (String(c).includes(',') || String(c).includes('"') ? `"${String(c).replace(/"/g, '""')}"` : c)).join(','));
-      });
-      csvRows.push('', 'S.No,From,To,Relation');
-      report.edges.forEach((e, i) => csvRows.push(`${i + 1},${e.from},${e.to},${e.relation ?? ''}`));
-      const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${filePrefix}node-topology-${nodeName}-${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast.success('Topology report (CSV) downloaded');
-    }
-  }, [nodeName, n, nodeMetricsQuery.data, runningPods, topologyNodesResolved, topologyEdgesResolved, activeCluster?.name]);
 
   const yamlVersions: YamlVersion[] = yaml ? [{ id: 'current', label: 'Current Version', yaml, timestamp: 'now' }] : [];
 
@@ -724,48 +498,15 @@ export default function NodeDetail() {
     {
       id: 'topology',
       label: 'Topology',
-      content: topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      ) : topologyError ? (
-        <div className="flex items-center justify-center min-h-[400px] text-muted-foreground text-sm">
-          Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 px-4 py-3">
-            <span className="text-sm font-medium text-muted-foreground">Export</span>
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">Report (node + resources + metrics)</span>
-                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleExportTopologyReport('json')}>
-                  <FileJson className="h-4 w-4" />
-                  JSON
-                </Button>
-                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleExportTopologyReport('csv')}>
-                  <FileSpreadsheet className="h-4 w-4" />
-                  CSV
-                </Button>
-              </div>
-              <div className="w-px h-6 bg-border" />
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">Graph</span>
-                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => topologyViewerRef.current?.exportAsPng()}>
-                  <Image className="h-4 w-4" />
-                  PNG
-                </Button>
-              </div>
-            </div>
-          </div>
-          <TopologyViewer ref={topologyViewerRef} hideBuiltInExport nodes={topologyNodesResolved} edges={topologyEdgesResolved} onNodeClick={handleNodeClick} />
-          <NodeDetailPopup
-            resource={topologySelectedNode}
-            onClose={() => setTopologySelectedNode(null)}
-            sourceResourceType="Node"
-            sourceResourceName={nodeName}
-          />
-        </div>
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('Node')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="Node"
+          sourceResourceName={n?.metadata?.name ?? name ?? ''}
+        />
       ),
     },
     {

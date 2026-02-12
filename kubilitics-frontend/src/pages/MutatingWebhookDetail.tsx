@@ -1,15 +1,17 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Webhook, Clock, Shield, Download, Trash2, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Webhook, Clock, Shield, Download, Trash2, AlertTriangle, RefreshCw, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import {
   ResourceDetailLayout,
   YamlViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
+  ResourceTopologyView,
   type ResourceStatus,
   type EventInfo,
 } from '@/components/resources';
@@ -149,6 +151,20 @@ export default function MutatingWebhookDetail() {
     },
     { id: 'events', label: 'Events', content: <EventsSection events={mockEvents} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={wh.name} /> },
+    {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('MutatingWebhookConfiguration')}
+          namespace={''}
+          name={name ?? ''}
+          sourceResourceType="MutatingWebhookConfiguration"
+          sourceResourceName={wh.name ?? name ?? ''}
+        />
+      ),
+    },
     {
       id: 'actions',
       label: 'Actions',

@@ -7,8 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
-  NodeDetailPopup,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
@@ -16,16 +14,14 @@ import {
   DeleteConfirmDialog,
   SectionCard,
   DetailRow,
-  type TopologyNode,
-  type TopologyEdge,
-  type ResourceDetail,
+  ResourceTopologyView,
   type ResourceStatus,
   type YamlVersion,
   type EventInfo,
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents, resourceToYaml } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useUpdateK8sResource, useK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
-import { useResourceTopology } from '@/hooks/useResourceTopology';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { useQuery } from '@tanstack/react-query';
@@ -57,8 +53,6 @@ interface ServiceResource extends KubernetesResource {
   };
 }
 
-const fallbackTopologyNodes: TopologyNode[] = [];
-const fallbackTopologyEdges: TopologyEdge[] = [];
 
 interface EndpointsResource extends KubernetesResource {
   subsets?: Array<{
@@ -75,7 +69,6 @@ export default function ServiceDetail() {
   const initialTab = searchParams.get('tab') || 'overview';
   const [activeTab, setActiveTab] = useState(initialTab);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [topologySelectedNode, setTopologySelectedNode] = useState<ResourceDetail | null>(null);
 
   const namespace = nsParam ?? '';
   const baseUrl = getEffectiveBackendBaseUrl();
@@ -115,12 +108,6 @@ export default function ServiceDetail() {
 
   const deleteService = useDeleteK8sResource('services');
   const updateService = useUpdateK8sResource('services');
-  const resourceTopology = useResourceTopology('services', namespace, name ?? undefined);
-  const useBackendTopology = isBackendConfigured && !!clusterId;
-  const topologyNodesFromBackend = useBackendTopology ? resourceTopology.nodes : fallbackTopologyNodes;
-  const topologyEdgesFromBackend = useBackendTopology ? resourceTopology.edges : fallbackTopologyEdges;
-  const topologyLoading = useBackendTopology ? resourceTopology.isLoading : false;
-  const topologyError = useBackendTopology ? resourceTopology.error : null;
 
   const servicesInNs = useK8sResourceList<KubernetesResource>('services', namespace, { limit: 100, enabled: !!namespace });
   const networkPoliciesInNs = useK8sResourceList<KubernetesResource & { spec?: { podSelector?: { matchLabels?: Record<string, string> }; policyTypes?: string[] } }>(
@@ -259,16 +246,6 @@ export default function ServiceDetail() {
     }
   }, [isConnected, name, namespace, updateService, refetch]);
 
-  const handleNodeClick = useCallback((node: TopologyNode) => {
-    const resourceDetail: ResourceDetail = {
-      id: node.id,
-      type: node.type as ResourceDetail['type'],
-      name: node.name,
-      namespace: node.namespace,
-      status: node.status,
-    };
-    setTopologySelectedNode(resourceDetail);
-  }, []);
 
   if (isLoading) {
     return (
@@ -495,6 +472,20 @@ export default function ServiceDetail() {
     },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={svcName} editable onSave={handleSaveYaml} /> },
     {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('Service')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="Service"
+          sourceResourceName={svc?.metadata?.name ?? name ?? ''}
+        />
+      ),
+    },
+    {
       id: 'compare',
       label: 'Compare',
       content: !isBackendConfigured || !clusterId ? (
@@ -503,40 +494,6 @@ export default function ServiceDetail() {
         </SectionCard>
       ) : (
         <YamlCompareViewer versions={yamlVersions} resourceName={svcName} />
-      ),
-    },
-    {
-      id: 'topology',
-      label: 'Topology',
-      content: !isBackendConfigured || !clusterId ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">Connect to the Kubilitics backend (Settings → Connect) and select a cluster to view resource topology.</p>
-        </div>
-      ) : topologyLoading ? (
-        <div className="flex items-center justify-center min-h-[400px]">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      ) : topologyError ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <p className="text-destructive text-sm">Topology unavailable: {topologyError instanceof Error ? topologyError.message : String(topologyError)}</p>
-          <Button variant="outline" size="sm" className="mt-2" onClick={() => resourceTopology.refetch()}>Retry</Button>
-        </div>
-      ) : (topologyNodesFromBackend.length === 0 && topologyEdgesFromBackend.length === 0) ? (
-        <div className="flex flex-col items-center justify-center min-h-[400px] text-center p-6">
-          <Network className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">No related resources in topology for this service.</p>
-        </div>
-      ) : (
-        <>
-          <TopologyViewer nodes={topologyNodesFromBackend} edges={topologyEdgesFromBackend} onNodeClick={handleNodeClick} />
-          <NodeDetailPopup
-            resource={topologySelectedNode}
-            onClose={() => setTopologySelectedNode(null)}
-            sourceResourceType="Service"
-            sourceResourceName={svc?.metadata?.name ?? name ?? ''}
-          />
-        </>
       ),
     },
     {

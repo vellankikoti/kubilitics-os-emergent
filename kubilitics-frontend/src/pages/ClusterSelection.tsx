@@ -66,7 +66,7 @@ function backendClusterToDisplay(b: BackendCluster): ClusterWithHealth {
     isChecking: false,
     version: b.version,
     nodeCount: b.node_count,
-    provider: inferProvider(server),
+    provider: b.provider || inferProvider(server),
   };
 }
 

@@ -66,7 +66,7 @@ export function ResourceTabs({ tabs, activeTab, onTabChange, className }: Resour
         </nav>
       </div>
 
-      {/* Tab Content - min height so topology and other tall content use available space */}
+      {/* Tab Content - min height so tall content uses available space */}
       <motion.div
         key={activeTab}
         initial={{ opacity: 0, y: 4 }}

@@ -1,23 +1,27 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Layers, Clock, Server, Download, Trash2, RefreshCw, Scale, AlertTriangle, Package } from 'lucide-react';
+import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
+import { Layers, Clock, Server, Download, Trash2, RefreshCw, Scale, AlertTriangle, Package, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
-  TopologyViewer,
+  
   YamlViewer,
+  YamlCompareViewer,
   EventsSection,
   ActionsSection,
   MetadataCard,
   ScaleDialog,
   DeleteConfirmDialog,
-  type TopologyNode,
-  type TopologyEdge,
+  ResourceTopologyView,
+  
+  
   type ResourceStatus,
   type EventInfo,
+  type YamlVersion,
 } from '@/components/resources';
 
 const mockRC = {
@@ -56,86 +60,33 @@ const mockEvents: EventInfo[] = [
   { type: 'Normal', reason: 'SuccessfulCreate', message: 'Created pod: legacy-app-ghi56', time: '1h ago', count: 1 },
 ];
 
-const topologyNodes: TopologyNode[] = [
-  { id: 'rc', type: 'replicaset', name: 'legacy-app', status: 'healthy', isCurrent: true },
-  { id: 'pod1', type: 'pod', name: 'legacy-app-abc12', status: 'healthy' },
-  { id: 'pod2', type: 'pod', name: 'legacy-app-def34', status: 'healthy' },
-  { id: 'pod3', type: 'pod', name: 'legacy-app-ghi56', status: 'healthy' },
-  { id: 'svc', type: 'service', name: 'legacy-app-svc', status: 'healthy' },
-];
-
-const topologyEdges: TopologyEdge[] = [
-  { from: 'rc', to: 'pod1', label: 'Manages' },
-  { from: 'rc', to: 'pod2', label: 'Manages' },
-  { from: 'rc', to: 'pod3', label: 'Manages' },
-  { from: 'svc', to: 'pod1', label: 'Selects' },
-  { from: 'svc', to: 'pod2', label: 'Selects' },
-  { from: 'svc', to: 'pod3', label: 'Selects' },
-];
-
-const yaml = `apiVersion: v1
-kind: ReplicationController
-metadata:
-  name: legacy-app
-  namespace: legacy
-  labels:
-    app: legacy-app
-    tier: backend
-    version: v1
-  annotations:
-    kubernetes.io/description: Legacy application controller
-spec:
-  replicas: 3
-  selector:
-    app: legacy-app
-  template:
-    metadata:
-      labels:
-        app: legacy-app
-    spec:
-      containers:
-      - name: legacy-container
-        image: legacy-app:v1.0
-        ports:
-        - containerPort: 8080
-          protocol: TCP
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 512Mi`;
-
 export default function ReplicationControllerDetail() {
   const { namespace, name } = useParams();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
-  const [showScaleDialog, setShowScaleDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showScaleDialog, setShowScaleDialog] = useState(false);
   const rc = mockRC;
 
   const handleDownloadYaml = useCallback(() => {
-    const blob = new Blob([yaml], { type: 'application/yaml' });
+    const blob = new Blob(['apiVersion: v1\nkind: ReplicationController\n...'], { type: 'application/yaml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${rc.name || 'replicationcontroller'}.yaml`;
+    a.download = `${rc.name || 'rc'}.yaml`;
     a.click();
     URL.revokeObjectURL(url);
   }, [rc.name]);
 
+  const yaml = 'apiVersion: v1\nkind: ReplicationController\n...';
+  const yamlVersions: YamlVersion[] = yaml ? [{ id: 'current', label: 'Current Version', yaml, timestamp: 'now' }] : [];
+
   const statusCards = [
     { label: 'Desired', value: rc.desired, icon: Layers, iconColor: 'primary' as const },
     { label: 'Current', value: rc.current, icon: Server, iconColor: 'info' as const },
-    { label: 'Ready', value: rc.ready, icon: Server, iconColor: 'success' as const },
+    { label: 'Ready', value: rc.ready, icon: Package, iconColor: 'success' as const },
     { label: 'Age', value: rc.age, icon: Clock, iconColor: 'muted' as const },
   ];
-
-  const handleNodeClick = (node: TopologyNode) => {
-    if (node.type === 'pod') navigate(`/pods/${namespace}/${node.name}`);
-    if (node.type === 'service') navigate(`/services/${namespace}/${node.name}`);
-  };
 
   const handleScale = async (replicas: number) => {
     toast.success(`Scaled ${rc.name} to ${replicas} replicas (demo mode)`);
@@ -295,13 +246,27 @@ export default function ReplicationControllerDetail() {
     },
     { id: 'events', label: 'Events', content: <EventsSection events={mockEvents} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={rc.name} /> },
-    { id: 'topology', label: 'Topology', content: <TopologyViewer nodes={topologyNodes} edges={topologyEdges} onNodeClick={handleNodeClick} /> },
+    { id: 'compare', label: 'Compare', content: <YamlCompareViewer versions={yamlVersions} resourceName={rc.name} /> },
+    {
+      id: 'topology',
+      label: 'Topology',
+      icon: Network,
+      content: (
+        <ResourceTopologyView
+          kind={normalizeKindForTopology('ReplicationController')}
+          namespace={namespace ?? ''}
+          name={name ?? ''}
+          sourceResourceType="ReplicationController"
+          sourceResourceName={rc?.name ?? name ?? ''}
+        />
+      ),
+    },
     {
       id: 'actions',
       label: 'Actions',
       content: (
         <ActionsSection actions={[
-          { icon: Scale, label: 'Scale', description: 'Scale the replication controller', onClick: () => setShowScaleDialog(true) },
+          { icon: Scale, label: 'Scale', description: 'Adjust replica count', onClick: () => setShowScaleDialog(true) },
           { icon: Download, label: 'Download YAML', description: 'Export RC definition', onClick: handleDownloadYaml },
           { icon: Trash2, label: 'Delete RC', description: 'Remove this replication controller', variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]} />
