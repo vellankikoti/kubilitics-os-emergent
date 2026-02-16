@@ -17,12 +17,18 @@ import { useSelectionEngine } from '../interaction/useSelectionEngine';
 import { toCytoscapeNodeData } from '../utils/nodeHelpers';
 import { toCytoscapeEdgeData } from '../utils/edgeHelpers';
 import { applyAbstraction, type FilterOptions } from '../core/abstractionEngine';
+import { downloadPDF } from '../export/exportPdf';
 import { cn } from '@/lib/utils';
 import type {
   TopologyGraph, TopologyNode, TopologyCanvasRef,
   KubernetesKind, HealthStatus, RelationshipType, AbstractionLevel,
   HeatMapMode,
 } from '../types/topology.types';
+import type { BlastRadiusResult } from '../types/interaction.types';
+import type { OverlayData } from '../types/overlay.types';
+
+/** Above this node count use grid layout instead of ELK to avoid main-thread freeze */
+const ELK_NODE_CAP = 250;
 
 // Register ELK once
 let elkRegistered = false;
@@ -45,6 +51,12 @@ export interface TopologyCanvasProps {
   trafficFlowEnabled?: boolean;
   onNodeSelect?: (node: TopologyNode | null) => void;
   onNodeDoubleClick?: (node: TopologyNode) => void;
+  onContextMenu?: (event: { nodeId: string; position: { x: number; y: number } }) => void;
+  onNodeHover?: (nodeId: string | null, clientPosition: { x: number; y: number } | null) => void;
+  blastRadius?: BlastRadiusResult | null;
+  overlayData?: OverlayData | null;
+  /** When true, node positions snap to grid on drag end (grid size 20px) */
+  snapToGrid?: boolean;
 }
 
 export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>(({
@@ -62,14 +74,27 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
   trafficFlowEnabled = false,
   onNodeSelect,
   onNodeDoubleClick,
+  onContextMenu,
+  onNodeHover,
+  blastRadius,
+  overlayData,
+  snapToGrid = false,
 }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const minimapRef = useRef<HTMLDivElement>(null);
   const [isReady, setIsReady] = useState(false);
   const trafficAnimRef = useRef<number | null>(null);
+  const onContextMenuRef = useRef(onContextMenu);
+  onContextMenuRef.current = onContextMenu;
+  const onNodeHoverRef = useRef(onNodeHover);
+  onNodeHoverRef.current = onNodeHover;
+  const minimapTransformRef = useRef<{ scale: number; ox: number; oy: number } | null>(null);
 
-  const highlightEngine = useHighlightEngine({ isPaused });
+  const highlightEngine = useHighlightEngine({
+    isPaused,
+    onNodeHover: (nodeId, clientPosition) => onNodeHoverRef.current?.(nodeId, clientPosition ?? null),
+  });
   const selectionEngine = useSelectionEngine({ onNodeSelect, onNodeDoubleClick });
 
   // Build filtered Cytoscape elements
@@ -105,7 +130,7 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
       minZoom: 0.05,
       maxZoom: 5.0,
       boxSelectionEnabled: true,
-      selectionType: 'single',
+      selectionType: 'additive',
       autoungrabify: false,
       layout: { name: 'preset' },
     });
@@ -115,50 +140,124 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
     highlightEngine.attachListeners(cy, containerRef.current);
     selectionEngine.attachListeners(cy);
 
+    // Right-click context menu: emit node id and client position for menu placement
+    const handleCxttap = (ev: EventObject) => {
+      const target = ev.target;
+      if (target === cy || !target.isNode()) return;
+      const nodeId = target.id();
+      const pos = (target as NodeSingular).renderedPosition();
+      const container = containerRef.current;
+      const x = container ? container.getBoundingClientRect().left + pos.x : pos.x;
+      const y = container ? container.getBoundingClientRect().top + pos.y : pos.y;
+      onContextMenuRef.current?.({ nodeId, position: { x, y } });
+    };
+    cy.on('cxttap', handleCxttap);
+
     setIsReady(true);
     return () => {
+      cy.off('cxttap', handleCxttap);
       if (trafficAnimRef.current) cancelAnimationFrame(trafficAnimRef.current);
       cy.destroy();
       cyRef.current = null;
     };
   }, []);
 
-  // Update elements on data/filter change
+  // Update elements on data/filter change — deferred so tab stays responsive (avoids freeze)
   useEffect(() => {
     if (!cyRef.current || !isReady) return;
     const cy = cyRef.current;
     const elements = getFilteredElements();
+    const centered = centeredNodeId;
+    let cancelled = false;
 
-    cy.batch(() => {
-      cy.elements().remove();
-      if (elements.length > 0) {
-        cy.add(elements);
-      }
-    });
-
-    if (elements.length === 0) return;
-
-    applyELKLayout(cy).then(() => {
-      if (centeredNodeId) {
-        const node = cy.getElementById(centeredNodeId);
-        if (node.length > 0) {
-          cy.center(node);
-          node.addClass('current');
+    const runUpdate = () => {
+      if (cancelled) return;
+      const nodeCount = elements.filter((el: cytoscape.ElementDefinition) => el.data && !('target' in (el.data || {}))).length;
+      cy.batch(() => {
+        cy.elements().remove();
+        if (elements.length > 0) {
+          cy.add(elements);
         }
+      });
+      if (elements.length === 0) return;
+
+      const finish = () => {
+        if (cancelled) return;
+        if (centered) {
+          const node = cy.getElementById(centered);
+          if (node.length > 0) {
+            cy.center(node);
+            node.addClass('current');
+          }
+        } else {
+          cy.fit(undefined, 50);
+        }
+        updateMinimap();
+      };
+
+      if (nodeCount > ELK_NODE_CAP) {
+        const gridLayout = cy.layout({ name: 'grid', padding: 50, fit: true } as any);
+        gridLayout.on('layoutstop', () => { if (!cancelled) finish(); });
+        gridLayout.run();
       } else {
-        cy.fit(undefined, 50);
+        applyELKLayout(cy).then(finish);
       }
-      updateMinimap();
-    });
+    };
+
+    const rafId = requestAnimationFrame(() => runUpdate());
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
   }, [graph, selectedResources, selectedRelationships, selectedHealth, searchQuery, abstractionLevel, namespace, isReady, getFilteredElements, centeredNodeId]);
 
-  // Heatmap mode
+  // Center on node when centeredNodeId changes (no relayout)
+  useEffect(() => {
+    if (!cyRef.current || !isReady || !centeredNodeId) return;
+    const node = cyRef.current.getElementById(centeredNodeId);
+    if (node.length > 0) {
+      cyRef.current.center(node);
+      node.addClass('current');
+    }
+  }, [centeredNodeId, isReady]);
+
+  // Snap to grid on drag end when snapToGrid is enabled
+  const GRID_SIZE = 20;
+  useEffect(() => {
+    if (!cyRef.current || !isReady || !snapToGrid) return;
+    const cy = cyRef.current;
+    const handleFree = (ev: EventObject) => {
+      const node = ev.target;
+      if (!node.isNode()) return;
+      const pos = node.position();
+      node.position({
+        x: Math.round(pos.x / GRID_SIZE) * GRID_SIZE,
+        y: Math.round(pos.y / GRID_SIZE) * GRID_SIZE,
+      });
+    };
+    cy.on('free', handleFree);
+    return () => { cy.off('free', handleFree); };
+  }, [isReady, snapToGrid]);
+
+  // Heatmap mode (when no overlay) or overlay mode
   useEffect(() => {
     if (!cyRef.current || !isReady) return;
     const cy = cyRef.current;
 
     cy.batch(() => {
-      cy.nodes().removeClass('heatmap-green heatmap-yellow heatmap-orange heatmap-red');
+      cy.nodes().removeClass('heatmap-green heatmap-yellow heatmap-orange heatmap-red overlay-green overlay-yellow overlay-red');
+
+      if (overlayData?.nodeValues) {
+        const nodeValues = overlayData.nodeValues;
+        cy.nodes().forEach((node: any) => {
+          const val = nodeValues.get(node.id());
+          if (val === undefined) return;
+          if (val >= 70) node.addClass('overlay-green');
+          else if (val >= 40) node.addClass('overlay-yellow');
+          else node.addClass('overlay-red');
+        });
+        return;
+      }
 
       if (heatMapMode === 'none') return;
 
@@ -186,7 +285,46 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
         else n.addClass('heatmap-red');
       });
     });
-  }, [heatMapMode, isReady]);
+  }, [heatMapMode, overlayData, isReady]);
+
+  // Blast radius overlay
+  useEffect(() => {
+    if (!cyRef.current || !isReady) return;
+    const cy = cyRef.current;
+
+    cy.batch(() => {
+      cy.nodes().removeClass('blast-target blast-direct blast-transitive blast-dim');
+      cy.edges().removeClass('blast-affected blast-alternative blast-dim');
+
+      if (!blastRadius) return;
+
+      const { affectedNodes, affectedEdges, severity, alternativePathEdges } = blastRadius;
+      const allNodeIds = new Set(cy.nodes().map((n: any) => n.id()));
+
+      cy.nodes().forEach((node: any) => {
+        const id = node.id();
+        if (!affectedNodes.has(id)) {
+          node.addClass('blast-dim');
+          return;
+        }
+        const s = severity.get(id) ?? 0;
+        if (s >= 99) node.addClass('blast-target');
+        else if (s >= 60) node.addClass('blast-direct');
+        else node.addClass('blast-transitive');
+      });
+
+      cy.edges().forEach((edge: any) => {
+        const edgeKey = edge.id();
+        if (affectedEdges.has(edgeKey)) {
+          edge.addClass('blast-affected');
+        } else if (alternativePathEdges?.has(edgeKey)) {
+          edge.addClass('blast-alternative');
+        } else {
+          edge.addClass('blast-dim');
+        }
+      });
+    });
+  }, [blastRadius, isReady]);
 
   // Traffic flow animation
   useEffect(() => {
@@ -250,6 +388,7 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
     const scale = Math.min(w / bb.w, h / bb.h) * 0.85;
     const ox = (w - bb.w * scale) / 2 - bb.x1 * scale;
     const oy = (h - bb.h * scale) / 2 - bb.y1 * scale;
+    minimapTransformRef.current = { scale, ox, oy };
 
     // Draw edges
     ctx.strokeStyle = '#cbd5e1';
@@ -321,6 +460,11 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
       if (!cyRef.current) return;
       return cyRef.current.png({ full: true, scale: 2, bg: '#ffffff' });
     },
+    exportAsPDF: (filename?: string) => {
+      if (cyRef.current) {
+        downloadPDF(cyRef.current, filename ?? `topology-${new Date().toISOString().slice(0, 10)}.pdf`);
+      }
+    },
     relayout: () => {
       if (cyRef.current) applyELKLayout(cyRef.current);
     },
@@ -328,10 +472,13 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
     getEdgeCount: () => cyRef.current?.edges().length || 0,
   }));
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts: F fit, R reset, Escape clear, Arrow pan, +/- zoom, Enter open selection
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!cyRef.current) return;
+      const target = e.target as HTMLElement;
+      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+      if (isInput) return;
       switch (e.key) {
         case 'f': case 'F':
           if (!e.metaKey && !e.ctrlKey) cyRef.current.fit(undefined, 50);
@@ -342,6 +489,40 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
         case 'Escape':
           onNodeSelect?.(null);
           break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          cyRef.current.pan(cyRef.current.pan().x + 80);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          cyRef.current.pan(cyRef.current.pan().x - 80);
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          cyRef.current.pan(cyRef.current.pan().y + 80);
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          cyRef.current.pan(cyRef.current.pan().y - 80);
+          break;
+        case '+': case '=':
+          e.preventDefault();
+          cyRef.current.zoom(cyRef.current.zoom() * 1.2);
+          break;
+        case '-':
+          e.preventDefault();
+          cyRef.current.zoom(cyRef.current.zoom() / 1.2);
+          break;
+        case 'Enter': {
+          e.preventDefault();
+          const sel = cyRef.current.elements(':selected');
+          if (sel.length > 0) {
+            const node = sel[0];
+            const data = node.data('_nodeData');
+            if (data) onNodeSelect?.(data);
+          }
+          break;
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -359,13 +540,35 @@ export const TopologyCanvas = forwardRef<TopologyCanvasRef, TopologyCanvasProps>
         tabIndex={0}
       />
 
-      {/* Minimap */}
+      {/* Minimap (click to jump) */}
       <div
         ref={minimapRef}
-        className="absolute bottom-3 right-3 w-[160px] h-[100px] rounded-lg border border-border bg-background/90 backdrop-blur-sm shadow-lg overflow-hidden"
+        className="absolute bottom-3 right-3 w-[160px] h-[100px] rounded-lg border border-border bg-background/90 backdrop-blur-sm shadow-lg overflow-hidden cursor-pointer"
+        role="button"
+        tabIndex={0}
+        aria-label="Minimap – click to pan view"
+        onClick={(e) => {
+          if (!cyRef.current || !minimapRef.current || !minimapTransformRef.current) return;
+          const canvas = minimapRef.current.querySelector('canvas');
+          if (!canvas) return;
+          const rect = canvas.getBoundingClientRect();
+          const scale = minimapTransformRef.current.scale;
+          const ox = minimapTransformRef.current.ox;
+          const oy = minimapTransformRef.current.oy;
+          const clickX = e.clientX - rect.left;
+          const clickY = e.clientY - rect.top;
+          const graphX = (clickX - ox) / scale;
+          const graphY = (clickY - oy) / scale;
+          const cy = cyRef.current;
+          const zoom = cy.zoom();
+          const container = containerRef.current;
+          const cw = container?.clientWidth ?? 400;
+          const ch = container?.clientHeight ?? 300;
+          cy.pan({ x: -graphX * zoom + cw / 2, y: -graphY * zoom + ch / 2 });
+        }}
       >
         <canvas width={160} height={100} className="w-full h-full" />
-        <div className="absolute top-1 left-1.5 text-[8px] font-semibold text-muted-foreground/60 uppercase tracking-wider">
+        <div className="absolute top-1 left-1.5 text-[8px] font-semibold text-muted-foreground/60 uppercase tracking-wider pointer-events-none">
           Minimap
         </div>
       </div>

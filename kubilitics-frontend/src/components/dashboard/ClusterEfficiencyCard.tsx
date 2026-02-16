@@ -116,7 +116,7 @@ export function ClusterEfficiencyCard() {
     return (
         <Card
             className={cn(
-                "h-full min-h-[320px] border-none glass-panel relative overflow-hidden flex flex-col group",
+                "h-full min-h-[28rem] border-none glass-panel relative overflow-hidden flex flex-col group",
                 "hover:shadow-lg transition-all duration-300"
             )}
         >

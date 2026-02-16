@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { NamespaceBadge } from '@/components/list';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Select,
@@ -136,7 +137,7 @@ export function PortForwardDialog({
               <div className="flex items-center gap-2 text-sm">
                 <Server className="h-4 w-4 text-muted-foreground" />
                 <span className="font-mono">{podName}</span>
-                <Badge variant="outline" className="text-xs">{namespace}</Badge>
+                <NamespaceBadge namespace={namespace} className="text-xs" />
               </div>
             </CardContent>
           </Card>

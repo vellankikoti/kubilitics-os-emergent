@@ -1,20 +1,21 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Activity, Clock, CheckCircle, AlertTriangle, Download, Trash2, RefreshCw, Network } from 'lucide-react';
+import { Activity, Clock, CheckCircle, AlertTriangle, Download, Trash2, Network, Server } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import {
   ResourceDetailLayout,
+  ResourceOverviewMetadata,
   YamlViewer,
   EventsSection,
   ActionsSection,
   DeleteConfirmDialog,
   ResourceTopologyView,
   type ResourceStatus,
-  type EventInfo,
 } from '@/components/resources';
+import { useResourceEvents } from '@/hooks/useK8sResourceDetail';
 
 const mockComponentStatus = {
   name: 'etcd-0',
@@ -24,8 +25,6 @@ const mockComponentStatus = {
     { type: 'Healthy', status: 'True', message: '{"health":"true","reason":""}', error: '' },
   ],
 };
-
-const mockEvents: EventInfo[] = [];
 
 const yaml = `apiVersion: v1
 kind: ComponentStatus
@@ -41,6 +40,7 @@ export default function ComponentStatusDetail() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('overview');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const { events } = useResourceEvents('ComponentStatus', undefined, name ?? undefined);
   const cs = mockComponentStatus;
 
   const handleDownloadYaml = useCallback(() => {
@@ -57,6 +57,7 @@ export default function ComponentStatusDetail() {
 
   const statusCards = [
     { label: 'Status', value: isHealthy ? 'Healthy' : 'Unhealthy', icon: isHealthy ? CheckCircle : AlertTriangle, iconColor: isHealthy ? 'success' as const : 'error' as const },
+    { label: 'Component', value: cs.name, icon: Server, iconColor: 'primary' as const },
     { label: 'Conditions', value: cs.conditions.length, icon: Activity, iconColor: 'info' as const },
     { label: 'Age', value: cs.age, icon: Clock, iconColor: 'muted' as const },
   ];
@@ -66,7 +67,9 @@ export default function ComponentStatusDetail() {
       id: 'overview',
       label: 'Overview',
       content: (
-        <div className="grid grid-cols-1 gap-6">
+        <div className="space-y-6">
+          <ResourceOverviewMetadata metadata={{ name: cs.name }} />
+          <div className="grid grid-cols-1 gap-6">
           <Card>
             <CardHeader><CardTitle className="text-base">Component Info</CardTitle></CardHeader>
             <CardContent className="space-y-4">
@@ -114,10 +117,11 @@ export default function ComponentStatusDetail() {
               </div>
             </CardContent>
           </Card>
+          </div>
         </div>
       ),
     },
-    { id: 'events', label: 'Events', content: <EventsSection events={mockEvents} /> },
+    { id: 'events', label: 'Events', content: <EventsSection events={events} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={cs.name} /> },
     {
       id: 'topology',
@@ -154,9 +158,8 @@ export default function ComponentStatusDetail() {
         status={cs.status}
         backLink="/componentstatuses"
         backLabel="Component Statuses"
-        headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Age {cs.age}</span>}
+        createdLabel={cs.age}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => {} },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

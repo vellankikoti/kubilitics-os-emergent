@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { Globe, Clock, Download, Trash2, Lock, ExternalLink, RefreshCw, Activity, Shield, Route, Server, Network } from 'lucide-react';
+import { Globe, Clock, Download, Trash2, Lock, ExternalLink, Activity, Shield, Route, Server, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,9 @@ import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDeta
 import { useDeleteK8sResource, useUpdateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
+import { useQuery } from '@tanstack/react-query';
+import { getSecretTLSInfo } from '@/services/backendApiClient';
+import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
 interface IngressResource extends KubernetesResource {
@@ -51,6 +54,93 @@ interface IngressResource extends KubernetesResource {
 
 
 const VALID_TAB_IDS = new Set(['overview', 'routing', 'tls', 'traffic', 'backends', 'events', 'metrics', 'yaml', 'compare', 'controller', 'waf', 'actions']);
+
+function daysRemainingColor(days: number): string {
+  if (days < 0) return 'bg-red-900/30 text-red-900 dark:bg-red-950/50 dark:text-red-400';
+  if (days <= 7) return 'bg-red-500/20 text-red-700 dark:text-red-400';
+  if (days <= 30) return 'bg-amber-500/20 text-amber-700 dark:text-amber-400';
+  return 'bg-[hsl(142,76%,36%)]/20 text-[hsl(142,76%,36%)]';
+}
+
+function TLSCertCard({
+  hosts,
+  secretName,
+  namespace,
+  baseUrl,
+  clusterId,
+}: {
+  hosts: string[];
+  secretName: string;
+  namespace: string;
+  baseUrl: string | null;
+  clusterId: string | null;
+}) {
+  const enabled = !!(baseUrl && clusterId && secretName);
+  const { data: tlsInfo, isLoading, error } = useQuery({
+    queryKey: ['secret-tls-info', clusterId, namespace, secretName],
+    queryFn: () => getSecretTLSInfo(baseUrl!, clusterId!, namespace, secretName),
+    enabled,
+    staleTime: 60_000,
+  });
+  const hasCert = tlsInfo?.hasValidCert;
+  const days = tlsInfo?.daysRemaining ?? 0;
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Certificate — {(hosts.length ? hosts.join(', ') : '*') || '—'}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <DetailRow label="Hosts" value={hosts.length ? hosts.join(', ') : '—'} />
+          <DetailRow
+            label="Secret"
+            value={
+              secretName ? (
+                <Link to={`/secrets/${namespace}/${secretName}`} className="text-primary hover:underline font-mono">
+                  {secretName}
+                </Link>
+              ) : (
+                '—'
+              )
+            }
+          />
+          {!enabled && <DetailRow label="Certificate status" value={<span className="text-muted-foreground text-sm">Connect to backend and select cluster to load certificate details.</span>} />}
+          {enabled && isLoading && <DetailRow label="Certificate status" value={<span className="text-muted-foreground text-sm">Loading…</span>} />}
+          {enabled && error && <DetailRow label="Certificate status" value={<span className="text-destructive text-sm">{error instanceof Error ? error.message : 'Failed to load'}</span>} />}
+          {enabled && hasCert && tlsInfo && (
+            <>
+              <DetailRow label="Issuer" value={tlsInfo.issuer ?? '—'} />
+              <DetailRow label="Subject" value={tlsInfo.subject ?? '—'} />
+              <DetailRow label="Valid From" value={tlsInfo.validFrom ?? '—'} />
+              <DetailRow label="Valid To" value={tlsInfo.validTo ?? '—'} />
+              <DetailRow
+                label="Days Remaining"
+                value={
+                  <Badge className={cn('font-mono', daysRemainingColor(days))}>
+                    {days < 0 ? `Expired ${-days}d ago` : `${days} days`}
+                  </Badge>
+                }
+              />
+            </>
+          )}
+          {enabled && !isLoading && !error && !hasCert && tlsInfo?.error && <DetailRow label="Certificate status" value={<span className="text-muted-foreground text-sm">{tlsInfo.error}</span>} />}
+        </div>
+        <div className="flex flex-wrap gap-2 items-center">
+          {secretName && (
+            <Link to={`/secrets/${namespace}/${secretName}`}>
+              <Button variant="outline" size="sm">View Secret</Button>
+            </Link>
+          )}
+          {hasCert && (
+            <Badge className={cn('text-xs', daysRemainingColor(days))}>
+              {days < 0 ? 'Expired' : days <= 7 ? 'Expires soon' : days <= 30 ? 'Expires in <30d' : 'Healthy'}
+            </Badge>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function IngressDetail() {
   const { namespace: nsParam, name } = useParams();
@@ -285,49 +375,63 @@ export default function IngressDetail() {
               </div>
             )}
           </SectionCard>
-          {/* Rules table */}
-          <Card>
-            <CardHeader><CardTitle className="text-base">Rules Table</CardTitle></CardHeader>
-            <CardContent>
-              {rules.length === 0 ? (
-                <p className="text-muted-foreground text-sm">No routing rules.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm border-collapse">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="text-left py-2 font-medium">Host</th>
-                        <th className="text-left py-2 font-medium">Path</th>
-                        <th className="text-left py-2 font-medium">Path Type</th>
-                        <th className="text-left py-2 font-medium">Backend Service</th>
-                        <th className="text-left py-2 font-medium">Backend Port</th>
-                        <th className="w-20"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rules.flatMap((rule, rIdx) =>
-                        (rule.http?.paths || []).map((path, pIdx) => (
-                          <tr key={`${rIdx}-${pIdx}`} className="border-b border-border/60">
-                            <td className="py-2 font-mono">{rule.host || '*'}</td>
-                            <td className="py-2 font-mono">{path.path}</td>
-                            <td><Badge variant="outline">{path.pathType}</Badge></td>
-                            <td className="font-mono">{path.backend?.service?.name ?? '—'}</td>
-                            <td className="font-mono">{path.backend?.service?.port?.number ?? path.backend?.service?.port?.name ?? '—'}</td>
-                            <td><Button variant="ghost" size="sm" onClick={() => toast.info('Test: coming soon')}>Test</Button></td>
+          {/* Rules table: Host | Path | Path Type | Backend Service | Backend Port */}
+          <SectionCard title="Routing table" icon={Route} tooltip={<p className="text-xs text-muted-foreground">Host, path, path type, and backend service per rule</p>}>
+            {rules.length === 0 ? (
+              <p className="text-muted-foreground text-sm">No routing rules.</p>
+            ) : (
+              <div className="rounded-md border overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="border-b bg-muted/50">
+                      <th className="text-left p-3 font-medium">Host</th>
+                      <th className="text-left p-3 font-medium">Path</th>
+                      <th className="text-left p-3 font-medium">Path Type</th>
+                      <th className="text-left p-3 font-medium">Backend Service</th>
+                      <th className="text-left p-3 font-medium">Backend Port</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rules.flatMap((rule, rIdx) =>
+                      (rule.http?.paths || []).map((path, pIdx) => {
+                        const host = rule.host || '*';
+                        const isWildcard = !rule.host || rule.host.includes('*');
+                        const svcName = path.backend?.service?.name;
+                        const portVal = path.backend?.service?.port?.number ?? path.backend?.service?.port?.name ?? '—';
+                        const pathTypeLabel = `${path.pathType}: ${path.path}`;
+                        return (
+                          <tr key={`${rIdx}-${pIdx}`} className="border-b border-border/60 hover:bg-muted/20">
+                            <td className={isWildcard ? 'p-3 font-mono italic text-muted-foreground' : 'p-3 font-mono'}>{host}</td>
+                            <td className="p-3 font-mono">{path.path}</td>
+                            <td className="p-3"><Badge variant="outline" className="font-normal">{pathTypeLabel}</Badge></td>
+                            <td className="p-3">
+                              {svcName ? (
+                                <Link to={`/services/${ingNamespace}/${svcName}`} className="text-primary hover:underline font-mono">{svcName}</Link>
+                              ) : (
+                                <span className="font-mono text-muted-foreground">—</span>
+                              )}
+                            </td>
+                            <td className="p-3 font-mono">{portVal}</td>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </SectionCard>
           {/* Default backend */}
           {(defaultBackendService || defaultBackendPort !== '—') && (
             <SectionCard title="Default Backend" icon={Server}>
               <p className="text-sm text-muted-foreground">When no rule matches:</p>
-              <p className="font-mono mt-1">{defaultBackendService ?? '—'}:{defaultBackendPort}</p>
+              <p className="font-mono mt-1">
+                {defaultBackendService ? (
+                  <Link to={`/services/${ingNamespace}/${defaultBackendService}`} className="text-primary hover:underline">{defaultBackendService}</Link>
+                ) : (
+                  '—'
+                )}:{defaultBackendPort}
+              </p>
             </SectionCard>
           )}
           <SectionCard title="Path conflict detection" icon={Route}>
@@ -344,32 +448,16 @@ export default function IngressDetail() {
       ) : (
         <div className="space-y-6">
           {tls.map((t, idx) => (
-            <Card key={idx}>
-              <CardHeader><CardTitle className="text-base">Certificate — {(t.hosts || []).join(', ') || '—'}</CardTitle></CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <DetailRow label="Hosts" value={(t.hosts || []).join(', ') || '—'} />
-                  <DetailRow label="Secret" value={t.secretName ? <Link to={`/secrets/${namespace}/${t.secretName}`} className="text-primary hover:underline">{t.secretName}</Link> : '—'} />
-                  <DetailRow label="Issuer" value="—" />
-                  <DetailRow label="Subject" value="—" />
-                  <DetailRow label="SANs" value="—" />
-                  <DetailRow label="Valid From / Valid To" value="—" />
-                  <DetailRow label="Days Remaining" value="—" />
-                  <DetailRow label="Key Algorithm / Key Size" value="—" />
-                  <DetailRow label="Signature Algorithm" value="—" />
-                </div>
-                <div className="rounded-lg border border-border bg-muted/20 p-3">
-                  <p className="text-xs font-medium text-muted-foreground mb-1">Certificate chain</p>
-                  <p className="text-sm text-muted-foreground">Root → Intermediate → Leaf (requires secret/cert-manager integration)</p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Badge className="bg-[hsl(142,76%,36%)]/20 text-[hsl(142,76%,36%)]">Certificate health: —</Badge>
-                  <span className="text-xs text-muted-foreground">Green (&gt;30d), Yellow (7–30d), Red (&lt;7d)</span>
-                </div>
-                <p className="text-muted-foreground text-sm">Auto-renewal status and SSL Labs grade require cert-manager and external integration.</p>
-              </CardContent>
-            </Card>
+            <TLSCertCard
+              key={idx}
+              hosts={t.hosts ?? []}
+              secretName={t.secretName ?? ''}
+              namespace={ingNamespace}
+              baseUrl={baseUrl}
+              clusterId={clusterId ?? null}
+            />
           ))}
+          <p className="text-muted-foreground text-xs">Certificate details are loaded from the cluster via the backend. Days remaining: green &gt;30d, orange 7–30d, red &lt;7d, dark red expired.</p>
         </div>
       ),
     },
@@ -455,7 +543,6 @@ export default function IngressDetail() {
         backLabel="Ingresses"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}{isConnected && <Badge variant="outline" className="ml-2 text-xs">Live</Badge>}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

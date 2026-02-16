@@ -492,3 +492,6 @@ func getContextWindow(model string) int {
 		return 4096
 	}
 }
+
+// SetBaseURL overrides the OpenAI API base URL.  Used in tests.
+func (c *OpenAIClientImpl) SetBaseURL(url string) { c.baseURL = url }

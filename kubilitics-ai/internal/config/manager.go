@@ -132,6 +132,7 @@ func (m *viperConfigManager) setDefaults() {
 
 	// Backend defaults
 	m.viper.SetDefault("backend.address", defaults.Backend.Address)
+	m.viper.SetDefault("backend.http_base_url", defaults.Backend.HTTPBaseURL)
 	m.viper.SetDefault("backend.timeout", defaults.Backend.Timeout)
 	m.viper.SetDefault("backend.tls_enabled", defaults.Backend.TLSEnabled)
 
@@ -189,6 +190,7 @@ func (m *viperConfigManager) unmarshalConfig() error {
 
 	// Backend
 	cfg.Backend.Address = m.viper.GetString("backend.address")
+	cfg.Backend.HTTPBaseURL = m.viper.GetString("backend.http_base_url")
 	cfg.Backend.Timeout = m.viper.GetInt("backend.timeout")
 	cfg.Backend.TLSEnabled = m.viper.GetBool("backend.tls_enabled")
 

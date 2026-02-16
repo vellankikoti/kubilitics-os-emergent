@@ -4,7 +4,6 @@ import {
   Layers,
   Clock,
   Server,
-  RefreshCw,
   Download,
   Trash2,
   Copy,
@@ -57,6 +56,10 @@ import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/back
 import { useClusterStore } from '@/stores/clusterStore';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { useQuery } from '@tanstack/react-query';
+import { getReplicaSetMetrics } from '@/services/backendApiClient';
+import { AgeCell } from '@/components/list';
+import { Input } from '@/components/ui/input';
+import { Search } from 'lucide-react';
 
 interface ReplicaSetResource extends KubernetesResource {
   spec?: {
@@ -93,6 +96,7 @@ export default function ReplicaSetDetail() {
   const [selectedLogContainer, setSelectedLogContainer] = useState<string>('');
   const [selectedTerminalPod, setSelectedTerminalPod] = useState<string>('');
   const [selectedTerminalContainer, setSelectedTerminalContainer] = useState<string>('');
+  const [podsTabSearch, setPodsTabSearch] = useState('');
 
   const { isConnected } = useConnectionStatus();
   const { resource: replicaSet, isLoading, error, age, yaml, refetch } = useResourceDetail<ReplicaSetResource>(
@@ -137,6 +141,25 @@ export default function ReplicaSetDetail() {
     const labels = pod.metadata?.labels ?? {};
     return Object.entries(rsMatchLabels).every(([k, v]) => labels[k] === v);
   });
+
+  const rsMetricsQuery = useQuery({
+    queryKey: ['backend', 'replicaset-metrics', clusterId, namespace, name],
+    queryFn: () => getReplicaSetMetrics(backendBaseUrl!, clusterId!, namespace!, name!),
+    enabled: !!(isBackendConfigured() && backendBaseUrl && clusterId && namespace && name),
+    staleTime: 15_000,
+  });
+  const podMetricsByName = useMemo(() => {
+    const pods = rsMetricsQuery.data?.pods ?? [];
+    const map: Record<string, { cpu: string; memory: string }> = {};
+    pods.forEach((p) => { map[p.name] = { cpu: p.cpu ?? '–', memory: p.memory ?? '–' }; });
+    return map;
+  }, [rsMetricsQuery.data?.pods]);
+
+  const rsPodsFiltered = useMemo(() => {
+    if (!podsTabSearch.trim()) return rsPods;
+    const q = podsTabSearch.trim().toLowerCase();
+    return rsPods.filter((pod) => (pod.metadata?.name ?? '').toLowerCase().includes(q) || ((pod.spec as { nodeName?: string })?.nodeName ?? '').toLowerCase().includes(q));
+  }, [rsPods, podsTabSearch]);
 
   const firstRsPodName = rsPods[0]?.metadata?.name ?? '';
   const logPod = selectedLogPod || firstRsPodName;
@@ -325,36 +348,68 @@ export default function ReplicaSetDetail() {
       badge: rsPods.length.toString(),
       content: (
         <SectionCard icon={Box} title="Pods" tooltip={<p className="text-xs text-muted-foreground">Pods managed by this ReplicaSet</p>}>
+          {rsPods.length > 0 && (
+            <div className="relative mb-3 max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by pod name or node..."
+                value={podsTabSearch}
+                onChange={(e) => setPodsTabSearch(e.target.value)}
+                className="pl-9 h-10 text-sm"
+                aria-label="Search pods"
+              />
+            </div>
+          )}
           {rsPods.length === 0 ? (
             <p className="text-sm text-muted-foreground">No pods match this ReplicaSet&apos;s selector yet.</p>
+          ) : rsPodsFiltered.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No pods match the search.</p>
           ) : (
-            <div className="rounded-lg border overflow-hidden">
-              <table className="w-full text-sm">
+            <div className="rounded-lg border overflow-x-auto">
+              <table className="w-full text-sm min-w-[700px]">
                 <thead className="bg-muted/50">
                   <tr>
                     <th className="text-left p-3 font-medium">Name</th>
                     <th className="text-left p-3 font-medium">Status</th>
+                    <th className="text-left p-3 font-medium">Ready</th>
+                    <th className="text-left p-3 font-medium">Restarts</th>
                     <th className="text-left p-3 font-medium">Node</th>
+                    <th className="text-left p-3 font-medium">CPU</th>
+                    <th className="text-left p-3 font-medium">Memory</th>
                     <th className="text-left p-3 font-medium">Age</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rsPods.map((pod) => {
+                  {rsPodsFiltered.map((pod) => {
                     const podName = pod.metadata?.name ?? '';
                     const podNs = pod.metadata?.namespace ?? namespace ?? '';
-                    const phase = (pod.status as { phase?: string } | undefined)?.phase ?? '-';
-                    const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
-                    const created = pod.metadata?.creationTimestamp ? calculateAge(pod.metadata.creationTimestamp) : '-';
+                    const status = pod.status as { phase?: string; containerStatuses?: Array<{ ready?: boolean; restartCount?: number }> } | undefined;
+                    const phase = status?.phase ?? '–';
+                    const containerStatuses = status?.containerStatuses ?? [];
+                    const readyCount = containerStatuses.filter((c) => c.ready).length;
+                    const totalContainers = containerStatuses.length || 1;
+                    const readyStr = `${readyCount}/${totalContainers}`;
+                    const restarts = containerStatuses.reduce((sum, c) => sum + (c.restartCount ?? 0), 0);
+                    const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '–';
+                    const metrics = podMetricsByName[podName];
                     return (
-                      <tr key={podName} className="border-t">
+                      <tr
+                        key={podName}
+                        className="border-t hover:bg-muted/20 cursor-pointer"
+                        onClick={() => navigate(`/pods/${podNs}/${podName}`)}
+                      >
                         <td className="p-3">
-                          <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">
+                          <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium" onClick={(e) => e.stopPropagation()}>
                             {podName}
                           </Link>
                         </td>
-                        <td className="p-3">{phase}</td>
-                        <td className="p-3 font-mono text-xs">{nodeName}</td>
-                        <td className="p-3">{created}</td>
+                        <td className="p-3"><Badge variant={phase === 'Running' ? 'default' : 'secondary'} className="text-xs">{phase}</Badge></td>
+                        <td className="p-3 font-mono text-xs">{readyStr}</td>
+                        <td className="p-3 font-mono text-xs">{restarts}</td>
+                        <td className="p-3 font-mono text-xs truncate max-w-[140px]" title={nodeName}>{nodeName}</td>
+                        <td className="p-3 font-mono text-xs text-muted-foreground">{metrics?.cpu ?? '–'}</td>
+                        <td className="p-3 font-mono text-xs text-muted-foreground">{metrics?.memory ?? '–'}</td>
+                        <td className="p-3"><AgeCell age={pod.metadata?.creationTimestamp ? calculateAge(pod.metadata.creationTimestamp) : '–'} timestamp={pod.metadata?.creationTimestamp} /></td>
                       </tr>
                     );
                   })}
@@ -541,7 +596,6 @@ export default function ReplicaSetDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Scale', icon: Scale, variant: 'outline', onClick: () => setShowScaleDialog(true) },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

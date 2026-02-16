@@ -24,6 +24,7 @@ export interface BackendCluster {
   updated_at?: string;
   node_count?: number;
   namespace_count?: number;
+  is_current?: boolean;
 }
 
 /** C2.3: Error transparency — status and requestId for support. */
@@ -94,10 +95,123 @@ export async function backendRequest<T>(
 }
 
 /**
+ * GET /api/v1/capabilities — backend capabilities (e.g. resource_topology_kinds).
+ */
+export interface BackendCapabilities {
+  resource_topology_kinds?: string[];
+}
+
+export async function getCapabilities(baseUrl: string): Promise<BackendCapabilities> {
+  return backendRequest<BackendCapabilities>(baseUrl, 'capabilities');
+}
+
+/**
  * GET /api/v1/clusters — list all clusters.
  */
 export async function getClusters(baseUrl: string): Promise<BackendCluster[]> {
   return backendRequest<BackendCluster[]>(baseUrl, 'clusters');
+}
+
+/**
+ * GET /api/v1/clusters/discover — scan kubeconfig for new clusters.
+ */
+export async function discoverClusters(baseUrl: string): Promise<BackendCluster[]> {
+  return backendRequest<BackendCluster[]>(baseUrl, 'clusters/discover');
+}
+
+/** Project shape from GET /api/v1/projects (list includes cluster_count, namespace_count) */
+export interface BackendProject {
+  id: string;
+  name: string;
+  description: string;
+  created_at?: string;
+  updated_at?: string;
+  cluster_count?: number;
+  namespace_count?: number;
+}
+
+/** Project with clusters and namespaces from GET /api/v1/projects/{projectId} */
+export interface BackendProjectWithDetails extends BackendProject {
+  clusters: Array<{
+    project_id: string;
+    cluster_id: string;
+    cluster_name: string;
+    cluster_status: string;
+    cluster_provider: string;
+  }>;
+  namespaces: Array<{
+    project_id: string;
+    cluster_id: string;
+    namespace_name: string;
+    team: string;
+    cluster_name: string;
+  }>;
+}
+
+export async function getProjects(baseUrl: string): Promise<BackendProject[]> {
+  return backendRequest<BackendProject[]>(baseUrl, 'projects');
+}
+
+export async function getProject(baseUrl: string, projectId: string): Promise<BackendProjectWithDetails> {
+  return backendRequest<BackendProjectWithDetails>(baseUrl, `projects/${encodeURIComponent(projectId)}`);
+}
+
+export async function createProject(baseUrl: string, name: string, description?: string): Promise<BackendProject> {
+  return backendRequest<BackendProject>(baseUrl, 'projects', {
+    method: 'POST',
+    body: JSON.stringify({ name, description: description ?? '' }),
+  });
+}
+
+export async function updateProject(baseUrl: string, projectId: string, data: { name?: string; description?: string }): Promise<BackendProject> {
+  return backendRequest<BackendProject>(baseUrl, `projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteProject(baseUrl: string, projectId: string): Promise<void> {
+  return backendRequest<void>(baseUrl, `projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
+}
+
+export async function addClusterToProject(
+  baseUrl: string,
+  projectId: string,
+  clusterId: string
+): Promise<void> {
+  return backendRequest<void>(baseUrl, `projects/${encodeURIComponent(projectId)}/clusters`, {
+    method: 'POST',
+    body: JSON.stringify({ cluster_id: clusterId }),
+  });
+}
+
+export async function removeClusterFromProject(baseUrl: string, projectId: string, clusterId: string): Promise<void> {
+  return backendRequest<void>(baseUrl, `projects/${encodeURIComponent(projectId)}/clusters/${encodeURIComponent(clusterId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function addNamespaceToProject(
+  baseUrl: string,
+  projectId: string,
+  clusterId: string,
+  namespaceName: string,
+  team?: string
+): Promise<void> {
+  return backendRequest<void>(baseUrl, `projects/${encodeURIComponent(projectId)}/namespaces`, {
+    method: 'POST',
+    body: JSON.stringify({ cluster_id: clusterId, namespace_name: namespaceName, team: team ?? '' }),
+  });
+}
+
+export async function removeNamespaceFromProject(
+  baseUrl: string,
+  projectId: string,
+  clusterId: string,
+  namespaceName: string
+): Promise<void> {
+  const path = `projects/${encodeURIComponent(projectId)}/namespaces/${encodeURIComponent(clusterId)}/${encodeURIComponent(namespaceName)}`;
+  return backendRequest<void>(baseUrl, path, { method: 'DELETE' });
 }
 
 /** Cluster summary shape from GET /api/v1/clusters/{clusterId}/summary (matches backend ClusterSummary). */
@@ -113,6 +227,17 @@ export interface BackendClusterSummary {
 }
 
 /**
+ * GET /api/v1/clusters/{clusterId}/features/metallb — returns { installed: boolean }.
+ */
+export async function getClusterFeatureMetallb(
+  baseUrl: string,
+  clusterId: string
+): Promise<{ installed: boolean }> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/features/metallb`;
+  return backendRequest<{ installed: boolean }>(baseUrl, path);
+}
+
+/**
  * GET /api/v1/clusters/{clusterId}/summary — cluster statistics (node_count, namespace_count, pod_count, etc.).
  */
 export async function getClusterSummary(
@@ -121,6 +246,79 @@ export async function getClusterSummary(
 ): Promise<BackendClusterSummary> {
   const path = `clusters/${encodeURIComponent(clusterId)}/summary`;
   return backendRequest<BackendClusterSummary>(baseUrl, path);
+}
+
+/** Cluster overview shape from GET /api/v1/clusters/{clusterId}/overview (dashboard snapshot). */
+export interface ClusterOverview {
+  health: {
+    score: number;
+    grade: string;
+    status: string;
+  };
+  counts: {
+    nodes: number;
+    pods: number;
+    namespaces: number;
+    deployments: number;
+  };
+  pod_status: {
+    running: number;
+    pending: number;
+    failed: number;
+    succeeded: number;
+  };
+  alerts: {
+    warnings: number;
+    critical: number;
+    top_3: Array<{ reason: string; resource: string; namespace: string }>;
+  };
+  utilization?: {
+    cpu_percent: number;
+    memory_percent: number;
+    cpu_cores: number;
+    memory_gib: number;
+  };
+}
+
+export async function getClusterOverview(
+  baseUrl: string,
+  clusterId: string
+): Promise<ClusterOverview> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/overview`;
+  return backendRequest<ClusterOverview>(baseUrl, path);
+}
+
+/** Workloads overview from GET /api/v1/clusters/{clusterId}/workloads */
+export interface WorkloadsOverview {
+  pulse: {
+    total: number;
+    healthy: number;
+    warning: number;
+    critical: number;
+    optimal_percent: number;
+  };
+  workloads: Array<{
+    kind: string;
+    name: string;
+    namespace: string;
+    status: string;
+    ready: number;
+    desired: number;
+    pressure: string;
+  }>;
+  alerts: {
+    warnings: number;
+    critical: number;
+    top_3: Array<{ reason: string; resource: string; namespace: string }>;
+  };
+}
+
+export async function getWorkloadsOverview(
+  baseUrl: string,
+  clusterId: string
+): Promise<WorkloadsOverview> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/workloads`;
+  return backendRequest<WorkloadsOverview>(baseUrl, path);
 }
 
 /**
@@ -174,10 +372,10 @@ export async function getTopology(
     params.resource_types.forEach((t) => search.append('resource_types', t));
   const query = search.toString();
   const path = `clusters/${encodeURIComponent(clusterId)}/topology${query ? `?${query}` : ''}`;
-  
+
   try {
     const result = await backendRequest<any>(baseUrl, path);
-    
+
     if (!result) {
       throw new Error('Empty response from topology API');
     }
@@ -236,6 +434,24 @@ export async function getResourceTopology(
 }
 
 /**
+ * GET /api/v1/clusters/{clusterId}/topology/export/drawio
+ * Returns { url: string, mermaid?: string } for opening topology in draw.io.
+ */
+export async function getTopologyExportDrawio(
+  baseUrl: string,
+  clusterId: string,
+  params?: { format?: 'mermaid' | 'xml' }
+): Promise<{ url: string; mermaid?: string }> {
+  const search = new URLSearchParams();
+  if (params?.format) search.set('format', params.format);
+  const query = search.toString();
+  const path = `clusters/${encodeURIComponent(clusterId)}/topology/export/drawio${query ? `?${query}` : ''}`;
+  const result = await backendRequest<{ url: string; mermaid?: string }>(baseUrl, path);
+  if (!result?.url) throw new Error('Invalid draw.io export response');
+  return result;
+}
+
+/**
  * GET /api/v1/../health => /health — backend health check (at API base, not under /api/v1).
  */
 export async function getHealth(
@@ -271,6 +487,27 @@ export interface BackendResourceListResponse {
   apiVersion?: string;
   metadata?: { resourceVersion?: string; continue?: string; remainingItemCount?: number };
   items: Record<string, unknown>[];
+}
+
+/**
+ * GET /api/v1/clusters/{clusterId}/crd-instances/{crdName} — list instances of a CRD by full name (e.g. certificates.cert-manager.io).
+ * Query: namespace, limit, continue, labelSelector, fieldSelector.
+ */
+export async function listCRDInstances(
+  baseUrl: string,
+  clusterId: string,
+  crdName: string,
+  params?: { namespace?: string; limit?: number; continue?: string; labelSelector?: string; fieldSelector?: string }
+): Promise<BackendResourceListResponse> {
+  const search = new URLSearchParams();
+  if (params?.namespace !== undefined && params.namespace !== '') search.set('namespace', params.namespace);
+  if (params?.limit != null) search.set('limit', String(params.limit));
+  if (params?.continue) search.set('continue', params.continue);
+  if (params?.labelSelector) search.set('labelSelector', params.labelSelector);
+  if (params?.fieldSelector) search.set('fieldSelector', params.fieldSelector);
+  const query = search.toString();
+  const path = `clusters/${encodeURIComponent(clusterId)}/crd-instances/${encodeURIComponent(crdName)}${query ? `?${query}` : ''}`;
+  return backendRequest<BackendResourceListResponse>(baseUrl, path);
 }
 
 /**
@@ -379,6 +616,37 @@ export interface RolloutHistoryRevision {
   desired: number;
   available: number;
   name: string;
+  /** Container images from ReplicaSet pod template (order preserved). */
+  images?: string[];
+  /** Seconds from this revision's creation until the next revision (rollout duration); 0 for current. */
+  durationSeconds?: number;
+}
+
+/**
+ * GET /api/v1/clusters/{clusterId}/search?q=...&limit=25
+ * Global search for command palette: returns resources matching name or namespace (case-insensitive).
+ */
+export interface SearchResultItem {
+  kind: string;
+  name: string;
+  namespace?: string;
+  path: string;
+}
+
+export interface SearchResponse {
+  results: SearchResultItem[];
+}
+
+export async function searchResources(
+  baseUrl: string,
+  clusterId: string,
+  q: string,
+  limit?: number
+): Promise<SearchResponse> {
+  const params = new URLSearchParams({ q: q.trim() });
+  if (limit != null && limit > 0) params.set('limit', String(limit));
+  const path = `clusters/${encodeURIComponent(clusterId)}/search?${params.toString()}`;
+  return backendRequest<SearchResponse>(baseUrl, path);
 }
 
 /**
@@ -450,6 +718,76 @@ export async function getSecretConsumers(
   return backendRequest<ConsumersResponse>(baseUrl, path);
 }
 
+/** TLS cert info from GET .../secrets/{namespace}/{name}/tls-info */
+export interface TLSSecretInfo {
+  issuer?: string;
+  subject?: string;
+  validFrom?: string;
+  validTo?: string;
+  daysRemaining: number;
+  hasValidCert: boolean;
+  error?: string;
+}
+
+export async function getSecretTLSInfo(
+  baseUrl: string,
+  clusterId: string,
+  namespace: string,
+  name: string
+): Promise<TLSSecretInfo> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/resources/secrets/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/tls-info`;
+  return backendRequest<TLSSecretInfo>(baseUrl, path);
+}
+
+/**
+ * GET .../resources/persistentvolumeclaims/{namespace}/{name}/consumers
+ */
+export async function getPVCConsumers(
+  baseUrl: string,
+  clusterId: string,
+  namespace: string,
+  name: string
+): Promise<ConsumersResponse> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/resources/persistentvolumeclaims/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/consumers`;
+  return backendRequest<ConsumersResponse>(baseUrl, path);
+}
+
+/**
+ * GET .../resources/storageclasses/pv-counts
+ * Returns { [storageClassName]: count }
+ */
+export async function getStorageClassPVCounts(
+  baseUrl: string,
+  clusterId: string
+): Promise<Record<string, number>> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/resources/storageclasses/pv-counts`;
+  return backendRequest<Record<string, number>>(baseUrl, path);
+}
+
+/**
+ * GET .../resources/namespaces/counts
+ * Returns { [namespaceName]: { pods, services } } for list-page display.
+ */
+export async function getNamespaceCounts(
+  baseUrl: string,
+  clusterId: string
+): Promise<Record<string, { pods: number; services: number }>> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/resources/namespaces/counts`;
+  return backendRequest<Record<string, { pods: number; services: number }>>(baseUrl, path);
+}
+
+/**
+ * GET .../resources/serviceaccounts/token-counts
+ * Returns { "namespace/name": tokenCount } for service account token secrets (type=service-account-token).
+ */
+export async function getServiceAccountTokenCounts(
+  baseUrl: string,
+  clusterId: string
+): Promise<Record<string, number>> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/resources/serviceaccounts/token-counts`;
+  return backendRequest<Record<string, number>>(baseUrl, path);
+}
+
 /**
  * POST /api/v1/clusters/{clusterId}/resources/deployments/{namespace}/{name}/rollback
  * Body: { revision?: number } — optional; omit to roll back to previous revision.
@@ -481,6 +819,22 @@ export async function postCronJobTrigger(
 ): Promise<Record<string, unknown>> {
   const path = `clusters/${encodeURIComponent(clusterId)}/resources/cronjobs/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/trigger`;
   return backendRequest<Record<string, unknown>>(baseUrl, path, { method: 'POST' });
+}
+
+/**
+ * GET /api/v1/clusters/{clusterId}/resources/cronjobs/{namespace}/{name}/jobs?limit=5
+ * Returns last N child jobs owned by this CronJob (for expandable row drill-down).
+ */
+export async function getCronJobJobs(
+  baseUrl: string,
+  clusterId: string,
+  namespace: string,
+  name: string,
+  limit = 5
+): Promise<{ items: Record<string, unknown>[] }> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/resources/cronjobs/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/jobs?limit=${limit}`;
+  const res = await backendRequest<{ items: Record<string, unknown>[] }>(baseUrl, path);
+  return res ?? { items: [] };
 }
 
 /**
@@ -780,8 +1134,33 @@ export function getKubectlShellStreamUrl(baseUrl: string, clusterId: string): st
   return `${wsBase}${API_PREFIX}/clusters/${encodeURIComponent(clusterId)}/shell/stream`;
 }
 
+/**
+ * WebSocket URL for GET /api/v1/clusters/{clusterId}/kcli/stream.
+ * mode can be "ui" (default) or "shell".
+ */
+export function getKCLIShellStreamUrl(
+  baseUrl: string,
+  clusterId: string,
+  mode: 'ui' | 'shell' = 'ui'
+): string {
+  const normalizedBase = (baseUrl || '').replace(/\/+$/, '');
+  let wsBase = normalizedBase.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+  if (!wsBase && typeof window !== 'undefined') {
+    wsBase = window.location.origin.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+  }
+  const search = new URLSearchParams({ mode });
+  return `${wsBase}${API_PREFIX}/clusters/${encodeURIComponent(clusterId)}/kcli/stream?${search.toString()}`;
+}
+
 /** Response from POST /clusters/{clusterId}/shell */
 export interface ShellCommandResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+/** Response from POST /clusters/{clusterId}/kcli/exec */
+export interface KCLIExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -801,9 +1180,34 @@ export async function postShellCommand(
   });
 }
 
+/**
+ * POST /api/v1/clusters/{clusterId}/kcli/exec — run kcli args server-side for embedded mode.
+ */
+export async function postKCLIExec(
+  baseUrl: string,
+  clusterId: string,
+  args: string[],
+  force = false
+): Promise<KCLIExecResult> {
+  return backendRequest<KCLIExecResult>(baseUrl, `clusters/${encodeURIComponent(clusterId)}/kcli/exec`, {
+    method: 'POST',
+    body: JSON.stringify({ args, force }),
+  });
+}
+
 /** Response from GET /api/v1/clusters/{clusterId}/shell/complete?line=... */
 export interface ShellCompleteResult {
   completions: string[];
+}
+
+/** Response from GET /api/v1/clusters/{clusterId}/shell/status */
+export interface ShellStatusResult {
+  clusterId: string;
+  clusterName: string;
+  context: string;
+  namespace: string;
+  kcliAvailable: boolean;
+  aiEnabled: boolean;
 }
 
 /**
@@ -815,6 +1219,30 @@ export async function getShellComplete(
   line: string
 ): Promise<ShellCompleteResult> {
   const path = `clusters/${encodeURIComponent(clusterId)}/shell/complete`;
+  const query = line ? `?line=${encodeURIComponent(line)}` : '';
+  return backendRequest<ShellCompleteResult>(baseUrl, `${path}${query}`);
+}
+
+/**
+ * GET /api/v1/clusters/{clusterId}/shell/status — shell context/namespace and capability metadata.
+ */
+export async function getShellStatus(
+  baseUrl: string,
+  clusterId: string
+): Promise<ShellStatusResult> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/shell/status`;
+  return backendRequest<ShellStatusResult>(baseUrl, path);
+}
+
+/**
+ * GET /api/v1/clusters/{clusterId}/kcli/complete?line=... — IDE-style kcli completions.
+ */
+export async function getKCLIComplete(
+  baseUrl: string,
+  clusterId: string,
+  line: string
+): Promise<ShellCompleteResult> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/kcli/complete`;
   const query = line ? `?line=${encodeURIComponent(line)}` : '';
   return backendRequest<ShellCompleteResult>(baseUrl, `${path}${query}`);
 }
@@ -860,6 +1288,7 @@ export function createBackendApiClient(baseUrl: string) {
   return {
     getClusters: () => getClusters(baseUrl),
     getClusterSummary: (clusterId: string) => getClusterSummary(baseUrl, clusterId),
+    getClusterOverview: (clusterId: string) => getClusterOverview(baseUrl, clusterId),
     addCluster: (kubeconfigPath: string, context: string) =>
       addCluster(baseUrl, kubeconfigPath, context),
     getTopology: (clusterId: string, params?: Parameters<typeof getTopology>[2]) =>
@@ -886,5 +1315,13 @@ export function createBackendApiClient(baseUrl: string) {
       getPodExecWebSocketUrl(baseUrl, clusterId, namespace, podName, params),
     postShellCommand: (clusterId: string, command: string) =>
       postShellCommand(baseUrl, clusterId, command),
+    getShellStatus: (clusterId: string) =>
+      getShellStatus(baseUrl, clusterId),
+    getShellComplete: (clusterId: string, line: string) =>
+      getShellComplete(baseUrl, clusterId, line),
+    getKCLIComplete: (clusterId: string, line: string) =>
+      getKCLIComplete(baseUrl, clusterId, line),
+    postKCLIExec: (clusterId: string, args: string[], force?: boolean) =>
+      postKCLIExec(baseUrl, clusterId, args, force),
   };
 }

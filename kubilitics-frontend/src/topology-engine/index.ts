@@ -51,21 +51,93 @@ export { D3HierarchicalTopologyCanvas } from './renderer/D3HierarchicalTopologyC
 export type { HierarchicalNode } from './renderer/D3HierarchicalTopologyCanvas';
 export { convertToHierarchicalTree } from './utils/hierarchicalAdapter';
 
+// ─── Three.js 3D Engine ───────────────────────────────────────
+export { Scene3D } from './engines/three/Scene3D';
+
 // ─── Interaction ──────────────────────────────────────────────
 export { useHighlightEngine } from './interaction/useHighlightEngine';
 export { useSelectionEngine } from './interaction/useSelectionEngine';
 export { createStateMachine } from './interaction/stateMachine';
+
+// ─── Overlays ──────────────────────────────────────────────────
+export { useHealthOverlay } from './overlays/HealthOverlay';
+export { useCostOverlay } from './overlays/CostOverlay';
+export { usePerformanceOverlay } from './overlays/PerformanceOverlay';
+export { useSecurityOverlay } from './overlays/SecurityOverlay';
+export { useDependencyOverlay } from './overlays/DependencyOverlay';
+export { useTrafficOverlay } from './overlays/TrafficOverlay';
+export type { OverlayType, OverlayData } from './types/overlay.types';
+export { OVERLAY_LABELS } from './types/overlay.types';
 
 // ─── Export ───────────────────────────────────────────────────
 export { exportAsSVG, downloadSVG } from './export/exportSvg';
 export { exportAsPNG, downloadPNG } from './export/exportPng';
 export { downloadPDF } from './export/exportPdf';
 export { exportAsJSON, downloadJSON } from './export/exportJson';
-export { exportAsCSV, downloadCSV } from './export/exportCsv';
+export { exportAsCSV, exportAsNodesCSV, exportAsEdgesCSV, downloadCSV, downloadCSVSummary } from './export/exportCsv';
 export { generatePosterMetadata, applyPosterLayout } from './export/posterLayout';
 
 // ─── Utils ────────────────────────────────────────────────────
 export { toCytoscapeNodeData, KIND_LABELS, getKindColor } from './utils/nodeHelpers';
 export { toCytoscapeEdgeData, RELATIONSHIP_CONFIG } from './utils/edgeHelpers';
 export { adaptTopologyGraph, validateTopologyGraph } from './utils/topologyAdapter';
+export { computeBlastRadius, getBlastRadiusSummary } from './utils/blastRadiusCompute';
+export type { BlastRadiusOptions } from './utils/blastRadiusCompute';
+export type { BlastRadiusResult } from './types/interaction.types';
 export { convertToD3Topology } from './utils/d3Adapter';
+export { generateTestGraph } from './utils/testGraphGenerator';
+
+// Path finding and journey tracing
+export {
+  findAllPaths,
+  traceUserJourney,
+  findCriticalPath,
+  findNodesAtDistance,
+  findShortestPath,
+  getPathSummary,
+} from './utils/pathFinding';
+export type { PathNode, PathResult } from './utils/pathFinding';
+
+// Enhanced export utilities
+export {
+  exportAsSVG as exportTopologyAsSVG,
+  exportAsPNG as exportTopologyAsPNG,
+  exportExecutiveMode,
+  exportAsVideo,
+  exportAsGLTF,
+  downloadFile,
+  copyToClipboard,
+  getSuggestedFilename,
+} from './utils/exportUtils';
+export type { ExportOptions as TopologyExportOptions } from './utils/exportUtils';
+
+// ─── Hooks ────────────────────────────────────────────────────
+export { useTopologyEngine } from './hooks/useTopologyEngine';
+export { useInsightOverlay } from './hooks/useInsightOverlay';
+export type { RendererEngine, EngineRef, EngineState } from './types/engine.types';
+
+// ─── Enhanced Cytoscape Components ───────────────────────────
+export { CytoscapeCanvas } from './engines/cytoscape/CytoscapeCanvas';
+export { HighlightManager, getHighlightStylesheet } from './engines/cytoscape/HighlightManager';
+export type { HighlightLevel } from './engines/cytoscape/HighlightManager';
+export { ContextMenu } from './engines/cytoscape/ContextMenu';
+
+// ─── Three.js Components ──────────────────────────────────────
+export { NodesRenderer } from './engines/three/NodesRenderer';
+export { EdgesRenderer } from './engines/three/EdgesRenderer';
+export { TrafficParticles, TrafficPulse, TrafficHeatMap } from './engines/three/TrafficParticles';
+
+// ─── Integrated Topology Viewer ───────────────────────────────
+export { TopologyViewer } from './TopologyViewer';
+export type { TopologyViewerProps } from './TopologyViewer';
+
+// ─── Overlay Color Utilities ──────────────────────────────────
+export { getHealthColor as getHealthOverlayColor, getHealthLabel } from './overlays/HealthOverlay';
+export { getCostColor, getCostLabel } from './overlays/CostOverlay';
+export { getSecurityColor, getSecurityLabel } from './overlays/SecurityOverlay';
+export { getPerformanceColor, getPerformanceLabel } from './overlays/PerformanceOverlay';
+export { getDependencyColor, getDependencyLabel, getUpstreamChain as getOverlayUpstreamChain, getDownstreamChain as getOverlayDownstreamChain } from './overlays/DependencyOverlay';
+export { getTrafficColor, getTrafficLabel, getEdgeAnimationSpeed, getEdgeThickness, getParticleCount } from './overlays/TrafficOverlay';
+
+// ─── Constants ────────────────────────────────────────────────
+export { OVERLAY_COLOR_SCHEMES } from './types/overlay.types';

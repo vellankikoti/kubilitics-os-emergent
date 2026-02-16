@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Shield, Search, RefreshCw, MoreHorizontal, Loader2, WifiOff, Plus, ChevronDown } from 'lucide-react';
+import { Shield, Search, RefreshCw, MoreHorizontal, Loader2, WifiOff, Plus, ChevronDown, Filter, List, Layers, CheckSquare, Trash2 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -26,6 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Checkbox } from '@/components/ui/checkbox';
 import { usePaginatedResourceList, useDeleteK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
@@ -35,14 +36,23 @@ import { cn } from '@/lib/utils';
 import {
   ResourceCommandBar,
   ResourceExportDropdown,
+  ListViewSegmentedControl,
   ListPagination,
   ListPageStatCard,
+  ListPageHeader,
   TableColumnHeaderWithFilterAndSort,
   resourceTableRowClassName,
   ROW_MOTION,
   PAGE_SIZE_OPTIONS,
+  AgeCell,
+  TableEmptyState,
+  NamespaceBadge,
+  CopyNameDropdownItem,
+  ResourceListTableToolbar,
+  TableFilterCell,
 } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 
 interface RoleRule {
   apiGroups?: string[];
@@ -55,6 +65,8 @@ interface RoleResource extends KubernetesResource {
   rules?: RoleRule[];
 }
 
+const READ_ONLY_VERBS = new Set(['get', 'list', 'watch']);
+
 interface Role {
   name: string;
   namespace: string;
@@ -62,8 +74,12 @@ interface Role {
   apiGroups: string;
   resources: string;
   verbs: string;
+  verbsList: string[];
   bindings: string;
   age: string;
+  creationTimestamp?: string;
+  hasWildcardVerb: boolean;
+  isReadOnly: boolean;
 }
 
 function getUniqueApiGroups(rules: RoleRule[]): string[] {
@@ -89,6 +105,9 @@ function transformRole(r: RoleResource): Role {
   const apiGroups = getUniqueApiGroups(rules);
   const resources = getUniqueResources(rules);
   const verbs = getUniqueVerbs(rules);
+  const verbsList = verbs.map((v) => v.toLowerCase());
+  const hasWildcardVerb = verbsList.includes('*');
+  const isReadOnly = !hasWildcardVerb && verbsList.length > 0 && verbsList.every((v) => READ_ONLY_VERBS.has(v));
   return {
     name: r.metadata.name,
     namespace: r.metadata.namespace || 'default',
@@ -96,8 +115,12 @@ function transformRole(r: RoleResource): Role {
     apiGroups: apiGroups.length ? apiGroups.slice(0, 3).join(', ') + (apiGroups.length > 3 ? '…' : '') : '–',
     resources: resources.length ? resources.slice(0, 4).join(', ') + (resources.length > 4 ? '…' : '') : '–',
     verbs: verbs.length ? verbs.join(', ') : '–',
+    verbsList,
     bindings: '–',
     age: calculateAge(r.metadata.creationTimestamp),
+    creationTimestamp: r.metadata?.creationTimestamp,
+    hasWildcardVerb,
+    isReadOnly,
   };
 }
 
@@ -112,28 +135,52 @@ const ROLE_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'age', defaultWidth: 90, minWidth: 56 },
 ];
 
+const ROLES_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'rules', label: 'Rules' },
+  { id: 'apiGroups', label: 'API Groups' },
+  { id: 'resources', label: 'Resources' },
+  { id: 'verbs', label: 'Verbs' },
+  { id: 'bindings', label: 'Bindings' },
+  { id: 'age', label: 'Age' },
+];
+
 export default function Roles() {
   const navigate = useNavigate();
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = usePaginatedResourceList<RoleResource>('roles');
+  const { data, isLoading, refetch, pagination: hookPagination } = usePaginatedResourceList<RoleResource>('roles');
   const deleteResource = useDeleteK8sResource('roles');
 
-  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: Role | null }>({ open: false, item: null });
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: Role | null; bulk?: boolean }>({ open: false, item: null });
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showCreator, setShowCreator] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
+  const [listView, setListView] = useState<'flat' | 'byNamespace'>('flat');
+  const [showTableFilters, setShowTableFilters] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
   const allItems = (data?.allItems ?? []) as RoleResource[];
   const items: Role[] = useMemo(() => (isConnected ? allItems.map(transformRole) : []), [isConnected, allItems]);
 
+  const namespaces = useMemo(() => ['all', ...Array.from(new Set(items.map((i) => i.namespace)))], [items]);
+  const itemsAfterNs = useMemo(() => (selectedNamespace === 'all' ? items : items.filter((i) => i.namespace === selectedNamespace)), [items, selectedNamespace]);
+
   const tableConfig: ColumnConfig<Role>[] = useMemo(() => [
     { columnId: 'name', getValue: (i) => i.name, sortable: true, filterable: false },
     { columnId: 'namespace', getValue: (i) => i.namespace, sortable: true, filterable: true },
+    { columnId: 'permissionLevel', getValue: (i) => i.hasWildcardVerb ? 'Admin' : i.isReadOnly ? 'Read-Only' : 'Custom', sortable: true, filterable: true },
+    { columnId: 'rules', getValue: (i) => i.rulesCount, sortable: true, filterable: false, compare: (a, b) => a.rulesCount - b.rulesCount },
+    { columnId: 'apiGroups', getValue: (i) => i.apiGroups, sortable: true, filterable: false },
+    { columnId: 'resources', getValue: (i) => i.resources, sortable: true, filterable: false },
+    { columnId: 'verbs', getValue: (i) => i.verbs, sortable: true, filterable: false },
+    { columnId: 'bindings', getValue: (i) => i.bindings, sortable: true, filterable: false },
     { columnId: 'age', getValue: (i) => i.age, sortable: true, filterable: false },
   ], []);
 
-  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(items, { columns: tableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, valueCountsByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterNs, { columns: tableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const columnVisibility = useColumnVisibility({ tableId: 'roles', columns: ROLES_COLUMNS_FOR_VISIBILITY, alwaysVisible: ['name'] });
 
   const searchFiltered = useMemo(() => {
     if (!searchQuery.trim()) return filteredItems;
@@ -143,10 +190,10 @@ export default function Roles() {
 
   const stats = useMemo(() => {
     const total = items.length;
-    const namespacesWithRoles = new Set(items.map((r) => r.namespace)).size;
-    const totalRules = items.reduce((acc, r) => acc + r.rulesCount, 0);
-    const totalBindings = '–';
-    return { total, namespacesWithRoles, totalRules, totalBindings };
+    const admin = items.filter((r) => r.hasWildcardVerb).length;
+    const readOnly = items.filter((r) => r.isReadOnly).length;
+    const custom = items.filter((r) => !r.hasWildcardVerb && !r.isReadOnly).length;
+    return { total, admin, readOnly, custom };
   }, [items]);
 
   const totalFiltered = searchFiltered.length;
@@ -173,18 +220,43 @@ export default function Roles() {
     currentPage: safePageIndex + 1,
     totalPages: Math.max(1, totalPages),
     onPageChange: (p: number) => setPageIndex(Math.max(0, Math.min(p - 1, totalPages - 1))),
+    dataUpdatedAt: hookPagination?.dataUpdatedAt,
+    isFetching: hookPagination?.isFetching,
   };
 
   const handleDelete = async () => {
-    if (!deleteDialog.item) return;
-    if (isConnected) {
-      await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
-      setDeleteDialog({ open: false, item: null });
-      refetch();
-    } else {
+    if (!isConnected) {
       toast.info('Connect cluster to delete resources');
+      return;
     }
+    if (deleteDialog.bulk && selectedItems.size > 0) {
+      for (const key of selectedItems) {
+        const [ns, n] = key.split('/');
+        if (n && ns) await deleteResource.mutateAsync({ name: n, namespace: ns });
+      }
+      toast.success(`Deleted ${selectedItems.size} role(s)`);
+      setSelectedItems(new Set());
+    } else if (deleteDialog.item) {
+      await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
+      toast.success(`Role ${deleteDialog.item.name} deleted`);
+    }
+    setDeleteDialog({ open: false, item: null });
+    refetch();
   };
+
+  const toggleSelection = (r: Role) => {
+    const key = `${r.namespace}/${r.name}`;
+    const next = new Set(selectedItems);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setSelectedItems(next);
+  };
+  const toggleAll = () => {
+    if (selectedItems.size === itemsOnPage.length) setSelectedItems(new Set());
+    else setSelectedItems(new Set(itemsOnPage.map((r) => `${r.namespace}/${r.name}`)));
+  };
+  const isAllSelected = itemsOnPage.length > 0 && selectedItems.size === itemsOnPage.length;
+  const isSomeSelected = selectedItems.size > 0 && selectedItems.size < itemsOnPage.length;
 
   const exportConfig = {
     filenamePrefix: 'roles',
@@ -216,70 +288,159 @@ export default function Roles() {
   return (
     <>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="p-2.5 rounded-xl bg-primary/10">
-              <Shield className="h-6 w-6 text-primary" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Roles</h1>
-              <p className="text-sm text-muted-foreground">
-                {searchFiltered.length} roles
-                {!isConnected && (
-                  <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]">
-                    <WifiOff className="h-3 w-3" /> Connect cluster
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <ResourceExportDropdown items={searchFiltered} selectedKeys={new Set()} getKey={(r) => `${r.namespace}/${r.name}`} config={exportConfig} selectionLabel="All visible" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
-            <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>
-              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            </Button>
-            <Button className="gap-2" onClick={() => setShowCreator(true)}><Plus className="h-4 w-4" /> Create</Button>
-          </div>
-        </div>
+        <ListPageHeader
+          icon={<Shield className="h-6 w-6 text-primary" />}
+          title="Roles"
+          resourceCount={searchFiltered.length}
+          subtitle={items.length > 0 ? `across ${new Set(items.map((r) => r.namespace)).size} namespaces` : undefined}
+          demoMode={!isConnected}
+          isLoading={isLoading}
+          onRefresh={() => refetch()}
+          createLabel="Create"
+          onCreate={() => setShowCreator(true)}
+          actions={
+            <>
+              <ResourceExportDropdown items={searchFiltered} selectedKeys={selectedItems} getKey={(r) => `${r.namespace}/${r.name}`} config={exportConfig} selectionLabel={selectedItems.size > 0 ? 'Selected roles' : 'All visible'} onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
+              {selectedItems.size > 0 && (
+                <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete {selectedItems.size} selected
+                </Button>
+              )}
+            </>
+          }
+        />
 
         <div className={cn('grid grid-cols-2 sm:grid-cols-4 gap-4', !isConnected && 'opacity-60')}>
-          <ListPageStatCard label="Total Roles" value={stats.total} icon={Shield} iconColor="text-primary" />
-          <ListPageStatCard label="Namespaces with Roles" value={stats.namespacesWithRoles} icon={Shield} iconColor="text-muted-foreground" />
-          <ListPageStatCard label="Rules" value={stats.totalRules} icon={Shield} iconColor="text-muted-foreground" />
-          <ListPageStatCard label="Bindings" value={String(stats.totalBindings)} icon={Shield} iconColor="text-muted-foreground" />
+          <ListPageStatCard label="Total" value={stats.total} icon={Shield} iconColor="text-primary" selected={!hasActiveFilters} onClick={clearAllFilters} className={cn(!hasActiveFilters && 'ring-2 ring-primary')} />
+          <ListPageStatCard label="Admin" value={stats.admin} icon={Shield} iconColor="text-destructive" valueClassName="text-destructive" selected={columnFilters.permissionLevel?.size === 1 && columnFilters.permissionLevel.has('Admin')} onClick={() => setColumnFilter('permissionLevel', new Set(['Admin']))} className={cn(columnFilters.permissionLevel?.size === 1 && columnFilters.permissionLevel.has('Admin') && 'ring-2 ring-destructive')} />
+          <ListPageStatCard label="Read-Only" value={stats.readOnly} icon={Shield} iconColor="text-[hsl(142,76%,36%)]" valueClassName="text-[hsl(142,76%,36%)]" selected={columnFilters.permissionLevel?.size === 1 && columnFilters.permissionLevel.has('Read-Only')} onClick={() => setColumnFilter('permissionLevel', new Set(['Read-Only']))} className={cn(columnFilters.permissionLevel?.size === 1 && columnFilters.permissionLevel.has('Read-Only') && 'ring-2 ring-[hsl(142,76%,36%)]')} />
+          <ListPageStatCard label="Custom" value={stats.custom} icon={Shield} iconColor="text-muted-foreground" selected={columnFilters.permissionLevel?.size === 1 && columnFilters.permissionLevel.has('Custom')} onClick={() => setColumnFilter('permissionLevel', new Set(['Custom']))} className={cn(columnFilters.permissionLevel?.size === 1 && columnFilters.permissionLevel.has('Custom') && 'ring-2 ring-muted-foreground')} />
         </div>
 
+        {/* Bulk Actions Bar */}
+        {selectedItems.size > 0 && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between p-3 bg-primary/5 border border-primary/20 rounded-lg">
+            <Badge variant="secondary" className="gap-1.5">
+              <CheckSquare className="h-3.5 w-3.5" />
+              {selectedItems.size} selected
+            </Badge>
+            <div className="flex items-center gap-2">
+              <ResourceExportDropdown items={searchFiltered} selectedKeys={selectedItems} getKey={(r) => `${r.namespace}/${r.name}`} config={exportConfig} selectionLabel="Selected roles" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} triggerLabel={`Export (${selectedItems.size})`} />
+              <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete selected
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedItems(new Set())}>
+                Clear
+              </Button>
+            </div>
+          </motion.div>
+        )}
+
+        <ResourceListTableToolbar
+          hasActiveFilters={hasActiveFilters}
+          onClearAllFilters={clearAllFilters}
+          globalFilterBar={
         <ResourceCommandBar
-          scope={<span className="text-sm font-medium text-muted-foreground">All</span>}
+          scope={
+            <div className="w-full min-w-0">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full min-w-0 justify-between h-10 gap-2 rounded-lg border border-border bg-background font-medium shadow-sm hover:bg-muted/50 hover:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/20">
+                    <Filter className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{selectedNamespace === 'all' ? 'All Namespaces' : selectedNamespace}</span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-48">
+                  {namespaces.map((ns) => (
+                    <DropdownMenuItem key={ns} onClick={() => setSelectedNamespace(ns)} className={cn(selectedNamespace === ns && 'bg-accent')}>
+                      {ns === 'all' ? 'All Namespaces' : ns}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          }
           search={
             <div className="relative w-full min-w-0">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input placeholder="Search roles..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full h-10 pl-9 rounded-lg border border-border bg-background text-sm font-medium shadow-sm placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20" aria-label="Search roles" />
             </div>
           }
-          className="mb-2"
+          structure={
+            <ListViewSegmentedControl
+              value={listView}
+              onChange={(v) => setListView(v as 'flat' | 'byNamespace')}
+              options={[
+                { id: 'flat', label: 'Flat', icon: List },
+                { id: 'byNamespace', label: 'By Namespace', icon: Layers },
+              ]}
+              label=""
+              ariaLabel="List structure"
+            />
+          }
         />
-
-        <div className="border border-border rounded-xl overflow-x-auto bg-card">
+          }
+          showTableFilters={showTableFilters}
+          onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+          columns={ROLES_COLUMNS_FOR_VISIBILITY}
+          visibleColumns={columnVisibility.visibleColumns}
+          onColumnToggle={columnVisibility.setColumnVisible}
+          footer={
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} dataUpdatedAt={pagination.dataUpdatedAt} isFetching={pagination.isFetching} />
+          </div>
+          }
+        >
           <ResizableTableProvider tableId="roles" columnConfig={ROLE_TABLE_COLUMNS}>
             <Table className="table-fixed" style={{ minWidth: 950 }}>
               <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+                <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
+                  <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} aria-label="Select all" className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
                   <ResizableTableHead columnId="name"><TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
-                  <ResizableTableHead columnId="namespace"><TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} /></ResizableTableHead>
-                  <ResizableTableHead columnId="rules"><span className="text-sm font-medium">Rules</span></ResizableTableHead>
-                  <ResizableTableHead columnId="apiGroups"><span className="text-sm font-medium">API Groups</span></ResizableTableHead>
-                  <ResizableTableHead columnId="resources"><span className="text-sm font-medium">Resources</span></ResizableTableHead>
-                  <ResizableTableHead columnId="verbs"><span className="text-sm font-medium">Verbs</span></ResizableTableHead>
-                  <ResizableTableHead columnId="bindings"><span className="text-sm font-medium">Bindings</span></ResizableTableHead>
+                  <ResizableTableHead columnId="namespace"><TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="rules"><TableColumnHeaderWithFilterAndSort columnId="rules" label="Rules" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="apiGroups"><TableColumnHeaderWithFilterAndSort columnId="apiGroups" label="API Groups" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="resources"><TableColumnHeaderWithFilterAndSort columnId="resources" label="Resources" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="verbs"><TableColumnHeaderWithFilterAndSort columnId="verbs" label="Verbs" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="bindings"><TableColumnHeaderWithFilterAndSort columnId="bindings" label="Bindings" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <ResizableTableHead columnId="age"><TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
                 </TableRow>
+                {showTableFilters && (
+                  <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                    <TableCell className="w-10" />
+                    <ResizableTableCell columnId="name" className="p-1.5" />
+                    <ResizableTableCell columnId="namespace" className="p-1.5"><TableFilterCell columnId="namespace" label="Namespace" distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.namespace} /></ResizableTableCell>
+                    <ResizableTableCell columnId="rules" className="p-1.5"><TableFilterCell columnId="permissionLevel" label="Permission Level" distinctValues={distinctValuesByColumn.permissionLevel ?? []} selectedFilterValues={columnFilters.permissionLevel ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.permissionLevel} /></ResizableTableCell>
+                    <ResizableTableCell columnId="apiGroups" className="p-1.5" />
+                    <ResizableTableCell columnId="resources" className="p-1.5" />
+                    <ResizableTableCell columnId="verbs" className="p-1.5" />
+                    <ResizableTableCell columnId="bindings" className="p-1.5" />
+                    <ResizableTableCell columnId="age" className="p-1.5" />
+                    <TableCell className="w-12" />
+                  </TableRow>
+                )}
               </TableHeader>
               <TableBody>
                 {isLoading && isConnected ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-32 text-center">
+                    <TableCell colSpan={10} className="h-32 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                         <p className="text-sm text-muted-foreground">Loading...</p>
@@ -288,39 +449,42 @@ export default function Roles() {
                   </TableRow>
                 ) : searchFiltered.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-32 text-center text-muted-foreground">
-                      <div className="flex flex-col items-center gap-2">
-                        <Shield className="h-8 w-8 opacity-50" />
-                        <p>No roles found</p>
-                        {(searchQuery || hasActiveFilters) && (
-                          <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
-                        )}
-                      </div>
+                    <TableCell colSpan={10} className="h-40 text-center">
+                      <TableEmptyState
+                        icon={<Shield className="h-8 w-8" />}
+                        title="No Roles found"
+                        subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Define namespace-scoped RBAC roles.'}
+                        hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                        onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                        createLabel="Create Role"
+                        onCreate={() => setShowCreator(true)}
+                      />
                     </TableCell>
                   </TableRow>
                 ) : (
                   itemsOnPage.map((r, idx) => (
-                    <motion.tr key={`${r.namespace}/${r.name}`} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5')}>
+                    <motion.tr key={`${r.namespace}/${r.name}`} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', selectedItems.has(`${r.namespace}/${r.name}`) && 'bg-primary/5')}>
+                      <TableCell><Checkbox checked={selectedItems.has(`${r.namespace}/${r.name}`)} onCheckedChange={() => toggleSelection(r)} aria-label={`Select ${r.name}`} /></TableCell>
                       <ResizableTableCell columnId="name">
                         <Link to={`/roles/${r.namespace}/${r.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate">
                           <Shield className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                           <span className="truncate">{r.name}</span>
                         </Link>
                       </ResizableTableCell>
-                      <ResizableTableCell columnId="namespace"><Badge variant="outline">{r.namespace}</Badge></ResizableTableCell>
+                      <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={r.namespace} /></ResizableTableCell>
                       <ResizableTableCell columnId="rules" className="font-mono text-sm">{r.rulesCount}</ResizableTableCell>
                       <ResizableTableCell columnId="apiGroups" className="text-muted-foreground text-sm truncate" title={r.apiGroups}>{r.apiGroups}</ResizableTableCell>
                       <ResizableTableCell columnId="resources" className="text-muted-foreground text-sm truncate" title={r.resources}>{r.resources}</ResizableTableCell>
                       <ResizableTableCell columnId="verbs">
-                        <div className="flex flex-wrap gap-1">
-                          {r.verbs !== '–' ? r.verbs.split(', ').slice(0, 3).map((v) => (
-                            <Badge key={v} variant="secondary" className="text-xs">{v}</Badge>
+                        <div className="flex flex-wrap gap-1 max-w-[200px]">
+                          {r.verbsList.length > 0 ? r.verbsList.slice(0, 6).map((v) => (
+                            <Badge key={v} variant={v === '*' ? 'destructive' : 'secondary'} className="text-xs font-mono">{v}</Badge>
                           )) : <span className="text-muted-foreground">–</span>}
-                          {r.verbs !== '–' && r.verbs.split(', ').length > 3 && <Badge variant="outline" className="text-xs">+{r.verbs.split(', ').length - 3}</Badge>}
+                          {r.verbsList.length > 6 && <Badge variant="outline" className="text-xs">+{r.verbsList.length - 6}</Badge>}
                         </div>
                       </ResizableTableCell>
                       <ResizableTableCell columnId="bindings" className="text-muted-foreground">{r.bindings}</ResizableTableCell>
-                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{r.age}</ResizableTableCell>
+                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={r.age} timestamp={r.creationTimestamp} /></ResizableTableCell>
                       <TableCell>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -329,9 +493,11 @@ export default function Roles() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-48">
+                            <CopyNameDropdownItem name={r.name} namespace={r.namespace} />
                             <DropdownMenuItem onClick={() => navigate(`/roles/${r.namespace}/${r.name}`)} className="gap-2">View Details</DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem onClick={() => navigate(`/roles/${r.namespace}/${r.name}?tab=yaml`)} className="gap-2">Download YAML</DropdownMenuItem>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem className="gap-2 text-destructive" onClick={() => setDeleteDialog({ open: true, item: r })} disabled={!isConnected}>Delete</DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -342,41 +508,17 @@ export default function Roles() {
               </TableBody>
             </Table>
           </ResizableTableProvider>
-        </div>
-
-        <div className="pt-4 pb-2 border-t border-border mt-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="gap-2">
-                    {pageSize} per page
-                    <ChevronDown className="h-4 w-4 opacity-50" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {PAGE_SIZE_OPTIONS.map((size) => (
-                    <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>
-                      {size} per page
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} />
-          </div>
-        </div>
+        </ResourceListTableToolbar>
       </motion.div>
 
       <DeleteConfirmDialog
         open={deleteDialog.open}
-        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null })}
+        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null, bulk: open ? deleteDialog.bulk : false })}
         resourceType="Role"
-        resourceName={deleteDialog.item?.name || ''}
-        namespace={deleteDialog.item?.namespace}
+        resourceName={deleteDialog.bulk ? `${selectedItems.size} selected` : (deleteDialog.item?.name || '')}
+        namespace={deleteDialog.bulk ? undefined : deleteDialog.item?.namespace}
         onConfirm={handleDelete}
-        requireNameConfirmation
+        requireNameConfirmation={!deleteDialog.bulk}
       />
     </>
   );

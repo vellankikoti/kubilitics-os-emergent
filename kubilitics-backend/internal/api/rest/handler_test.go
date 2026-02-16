@@ -4,8 +4,11 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,6 +21,192 @@ import (
 type mockClusterRepo struct {
 	list []*models.Cluster
 	get  map[string]*models.Cluster // optional: id -> cluster for Get(ctx, id)
+}
+
+func TestAPI_GET_ShellStatus_ReturnsContextAndNamespace(t *testing.T) {
+	clusterRouteID := "demo-ctx"
+	clusterID := "cluster-shell-status-id"
+	kubeconfig := `
+apiVersion: v1
+kind: Config
+current-context: demo-ctx
+contexts:
+- name: demo-ctx
+  context:
+    cluster: demo
+    user: demo-user
+    namespace: kube-system
+clusters:
+- name: demo
+  cluster:
+    server: https://127.0.0.1:6443
+users:
+- name: demo-user
+  user:
+    token: fake
+`
+	tmpFile := filepath.Join(t.TempDir(), "kubeconfig.yaml")
+	if err := os.WriteFile(tmpFile, []byte(kubeconfig), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+
+	cluster := &models.Cluster{
+		ID:             clusterID,
+		Name:           "demo",
+		Context:        "demo-ctx",
+		KubeconfigPath: tmpFile,
+	}
+	repo := &mockClusterRepo{
+		list: []*models.Cluster{cluster},
+		get: map[string]*models.Cluster{
+			clusterID: cluster,
+		},
+	}
+	cfg := &config.Config{}
+	cs := service.NewClusterService(repo, cfg)
+	h := NewHandler(cs, nil, cfg, nil, nil, nil, nil, nil)
+
+	router := mux.NewRouter()
+	api := router.PathPrefix("/api/v1").Subrouter()
+	SetupRoutes(api, h)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/"+clusterRouteID+"/shell/status", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /shell/status status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		ClusterID     string `json:"clusterId"`
+		ClusterName   string `json:"clusterName"`
+		Context       string `json:"context"`
+		Namespace     string `json:"namespace"`
+		KCLIAvailable bool   `json:"kcliAvailable"`
+		AIEnabled     bool   `json:"aiEnabled"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.ClusterID != clusterID {
+		t.Fatalf("clusterId = %q, want %q", out.ClusterID, clusterID)
+	}
+	if out.Context != "demo-ctx" {
+		t.Fatalf("context = %q, want demo-ctx", out.Context)
+	}
+	if out.Namespace != "kube-system" {
+		t.Fatalf("namespace = %q, want kube-system", out.Namespace)
+	}
+}
+
+func TestAPI_GET_ShellComplete_FileFlagPathCompletion(t *testing.T) {
+	clusterRouteID := "demo-ctx"
+	clusterID := "cluster-shell-complete-id"
+	tmpDir := t.TempDir()
+	manifest := filepath.Join(tmpDir, "manifest.yaml")
+	if err := os.WriteFile(manifest, []byte("apiVersion: v1\nkind: Pod\n"), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	cluster := &models.Cluster{
+		ID:             clusterID,
+		Name:           "demo",
+		Context:        clusterRouteID,
+		KubeconfigPath: "/tmp/kubeconfig",
+	}
+	repo := &mockClusterRepo{
+		list: []*models.Cluster{cluster},
+		get: map[string]*models.Cluster{
+			clusterID: cluster,
+		},
+	}
+	cfg := &config.Config{}
+	cs := service.NewClusterService(repo, cfg)
+	h := NewHandler(cs, nil, cfg, nil, nil, nil, nil, nil)
+
+	router := mux.NewRouter()
+	api := router.PathPrefix("/api/v1").Subrouter()
+	SetupRoutes(api, h)
+
+	line := "kubectl apply -f " + filepath.Join(tmpDir, "man")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/"+clusterRouteID+"/shell/complete?line="+url.QueryEscape(line), nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /shell/complete status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Completions []string `json:"completions"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	found := false
+	for _, c := range out.Completions {
+		if c == manifest {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected completion %q in %#v", manifest, out.Completions)
+	}
+}
+
+func TestAPI_GET_KCLIComplete_FileFlagPathCompletion(t *testing.T) {
+	clusterRouteID := "demo-ctx"
+	clusterID := "cluster-kcli-complete-id"
+	tmpDir := t.TempDir()
+	manifest := filepath.Join(tmpDir, "manifest.yaml")
+	if err := os.WriteFile(manifest, []byte("apiVersion: v1\nkind: Pod\n"), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	cluster := &models.Cluster{
+		ID:             clusterID,
+		Name:           "demo",
+		Context:        clusterRouteID,
+		KubeconfigPath: "/tmp/kubeconfig",
+	}
+	repo := &mockClusterRepo{
+		list: []*models.Cluster{cluster},
+		get: map[string]*models.Cluster{
+			clusterID: cluster,
+		},
+	}
+	cfg := &config.Config{}
+	cs := service.NewClusterService(repo, cfg)
+	h := NewHandler(cs, nil, cfg, nil, nil, nil, nil, nil)
+
+	router := mux.NewRouter()
+	api := router.PathPrefix("/api/v1").Subrouter()
+	SetupRoutes(api, h)
+
+	line := "apply -f " + filepath.Join(tmpDir, "man")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/"+clusterRouteID+"/kcli/complete?line="+url.QueryEscape(line), nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /kcli/complete status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Completions []string `json:"completions"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	found := false
+	for _, c := range out.Completions {
+		if c == manifest {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected completion %q in %#v", manifest, out.Completions)
+	}
 }
 
 func (m *mockClusterRepo) Create(ctx context.Context, cluster *models.Cluster) error { return nil }
@@ -39,7 +228,7 @@ func TestAPI_GET_Clusters_Returns200AndArray(t *testing.T) {
 	repo := &mockClusterRepo{list: []*models.Cluster{}}
 	cfg := &config.Config{}
 	cs := service.NewClusterService(repo, cfg)
-	h := NewHandler(cs, nil, cfg, nil, nil, nil)
+	h := NewHandler(cs, nil, cfg, nil, nil, nil, nil, nil)
 
 	router := mux.NewRouter()
 	api := router.PathPrefix("/api/v1").Subrouter()
@@ -94,7 +283,7 @@ func TestAPI_POST_Shell_BlockedVerb_Returns400(t *testing.T) {
 	}
 	cfg := &config.Config{}
 	cs := service.NewClusterService(repo, cfg)
-	h := NewHandler(cs, nil, cfg, nil, nil, nil)
+	h := NewHandler(cs, nil, cfg, nil, nil, nil, nil, nil)
 
 	router := mux.NewRouter()
 	api := router.PathPrefix("/api/v1").Subrouter()
@@ -130,7 +319,7 @@ func TestAPI_POST_Shell_EmptyCommand_Returns200(t *testing.T) {
 	}
 	cfg := &config.Config{}
 	cs := service.NewClusterService(repo, cfg)
-	h := NewHandler(cs, nil, cfg, nil, nil, nil)
+	h := NewHandler(cs, nil, cfg, nil, nil, nil, nil, nil)
 
 	router := mux.NewRouter()
 	api := router.PathPrefix("/api/v1").Subrouter()

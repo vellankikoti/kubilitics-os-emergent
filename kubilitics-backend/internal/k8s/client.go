@@ -15,8 +15,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// ListContextNames returns context names from a kubeconfig file (e.g. for auto-loading Docker Desktop).
-func ListContextNames(kubeconfigPath string) ([]string, error) {
+// GetKubeconfigContexts returns all context names and the current context from a kubeconfig file.
+func GetKubeconfigContexts(kubeconfigPath string) ([]string, string, error) {
 	if kubeconfigPath == "" {
 		homeDir, _ := os.UserHomeDir()
 		if homeDir != "" {
@@ -24,20 +24,20 @@ func ListContextNames(kubeconfigPath string) ([]string, error) {
 		}
 	}
 	if kubeconfigPath == "" {
-		return nil, nil
+		return nil, "", nil
 	}
 	raw, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath},
 		&clientcmd.ConfigOverrides{},
 	).RawConfig()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	names := make([]string, 0, len(raw.Contexts))
 	for name := range raw.Contexts {
 		names = append(names, name)
 	}
-	return names, nil
+	return names, raw.CurrentContext, nil
 }
 
 // Client wraps Kubernetes client-go

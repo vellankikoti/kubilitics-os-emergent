@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -13,7 +14,15 @@ import (
 	"github.com/kubilitics/kubilitics-backend/internal/pkg/validate"
 )
 
-const shellTimeout = 30 * time.Second
+const shellTimeout = 60 * time.Second
+
+// blockedShellVerbs: mutating/dangerous kubectl verbs not allowed in the web shell (user must use UI or direct kubectl).
+var blockedShellVerbs = map[string]bool{
+	"delete": true, "apply": true, "edit": true, "patch": true, "replace": true,
+	"create": true, "run": true, "drain": true, "taint": true, "set": true,
+	"expose": true, "rollout": true, "scale": true, "autoscale": true,
+	"label": true, "annotate": true, "exec": true,
+}
 
 // PostShell handles POST /clusters/{clusterId}/shell
 // Body: {"command": "get pods"} or "get pods -n default". Runs kubectl with cluster's kubeconfig and returns stdout/stderr.
@@ -92,6 +101,11 @@ func (h *Handler) PostShell(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Invalid command")
 		return
 	}
+	verb := strings.ToLower(strings.TrimSpace(parts[0]))
+	if blockedShellVerbs[verb] {
+		respondError(w, http.StatusBadRequest, "Command not allowed. Use read-only commands (get, describe, logs, top, version, etc.). For mutating actions use the UI or a local terminal.")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), shellTimeout)
 	defer cancel()
@@ -111,6 +125,9 @@ func (h *Handler) PostShell(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			respondError(w, http.StatusGatewayTimeout, "Command timed out (60s). Try a more specific query or use -n namespace.")
+			return
 		} else {
 			respondError(w, http.StatusInternalServerError, "Failed to run command: "+err.Error())
 			return

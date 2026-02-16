@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Bell, Clock, Download, AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, Network } from 'lucide-react';
+import { Bell, Clock, Download, AlertTriangle, CheckCircle2, ExternalLink, Network } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -237,7 +237,6 @@ export default function EventDetail() {
         </span>
       }
       actions={[
-        { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => refetch() },
         { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
       ]}
       statusCards={statusCards}

@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { KeyRound, Clock, Download, Trash2, Eye, EyeOff, Edit, Copy, RefreshCw, Info, Network, Loader2, FileCode, GitCompare } from 'lucide-react';
+import { KeyRound, Clock, Download, Trash2, Eye, EyeOff, Edit, Copy, Info, Network, Loader2, FileCode, GitCompare } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -25,14 +25,31 @@ import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useClusterStore } from '@/stores/clusterStore';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
-import { getSecretConsumers } from '@/services/backendApiClient';
+import { getSecretConsumers, getSecretTLSInfo } from '@/services/backendApiClient';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { DetailRow } from '@/components/resources';
 
 interface SecretResource extends KubernetesResource {
   type?: string;
   data?: Record<string, string>;
   stringData?: Record<string, string>;
+}
+
+function daysRemainingColor(days: number): string {
+  if (days < 0) return 'bg-red-900/30 text-red-900 dark:bg-red-950/50 dark:text-red-400';
+  if (days <= 7) return 'bg-red-500/20 text-red-700 dark:text-red-400';
+  if (days <= 30) return 'bg-amber-500/20 text-amber-700 dark:text-amber-400';
+  return 'bg-[hsl(142,76%,36%)]/20 text-[hsl(142,76%,36%)]';
 }
 
 export default function SecretDetail() {
@@ -71,12 +88,35 @@ export default function SecretDetail() {
   });
   const consumers = consumersQuery.data;
 
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
+  const tlsInfoQuery = useQuery({
+    queryKey: ['secret-tls-info', clusterId, namespace, name],
+    queryFn: () => getSecretTLSInfo(baseUrl!, clusterId!, namespace ?? '', name!),
+    enabled: !!(isBackendConfigured() && clusterId && namespace && name && (s?.type === 'kubernetes.io/tls')),
+    staleTime: 60_000,
+  });
+  const tlsInfo = tlsInfoQuery.data;
 
   const toggleShow = (key: string) => setShowValues(prev => ({ ...prev, [key]: !prev[key] }));
+
+  const decodeValue = useCallback((b64: string): string => {
+    try {
+      return atob(b64);
+    } catch {
+      return b64;
+    }
+  }, []);
+
+  const copyDecoded = useCallback((key: string) => {
+    const raw = data[key];
+    if (raw == null) return;
+    const decoded = decodeValue(raw);
+    navigator.clipboard.writeText(decoded).then(
+      () => toast.success(`Copied value of "${key}"`),
+      () => toast.error('Copy failed')
+    );
+  }, [data, decodeValue]);
+
+  const decodedSize = useCallback((b64: string): number => Math.round((b64?.length ?? 0) * 0.75), []);
 
   const status: ResourceStatus = 'Healthy';
   const secretType = s.type || 'Opaque';
@@ -240,25 +280,101 @@ export default function SecretDetail() {
       label: 'Data',
       icon: KeyRound,
       content: (
-        <div className="space-y-4">
-          {Object.entries(data).map(([key, value]) => (
-            <Card key={key}>
-              <CardHeader className="flex flex-row items-center justify-between py-3">
-                <CardTitle className="text-sm font-mono">{key}</CardTitle>
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => toggleShow(key)}>
-                    {showValues[key] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </Button>
-                  <Copy className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground" />
+        <div className="space-y-6">
+          {/* TLS certificate section */}
+          {secretType === 'kubernetes.io/tls' && (
+            <SectionCard icon={KeyRound} title="TLS certificate" tooltip={<p className="text-xs text-muted-foreground">Parsed certificate info (raw cert data is not shown)</p>}>
+              {!baseUrl || !clusterId ? (
+                <p className="text-muted-foreground text-sm">Connect to backend and select cluster to load certificate details.</p>
+              ) : tlsInfoQuery.isLoading ? (
+                <Skeleton className="h-24 w-full" />
+              ) : tlsInfo?.hasValidCert && tlsInfo ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                  <DetailRow label="Issuer" value={tlsInfo.issuer ?? '—'} />
+                  <DetailRow label="Subject" value={tlsInfo.subject ?? '—'} />
+                  <DetailRow label="Valid From" value={tlsInfo.validFrom ?? '—'} />
+                  <DetailRow label="Valid To" value={tlsInfo.validTo ?? '—'} />
+                  <DetailRow
+                    label="Days Remaining"
+                    value={
+                      <Badge className={cn('font-mono', daysRemainingColor(tlsInfo.daysRemaining ?? 0))}>
+                        {(tlsInfo.daysRemaining ?? 0) < 0 ? `Expired ${-(tlsInfo.daysRemaining ?? 0)}d ago` : `${tlsInfo.daysRemaining} days`}
+                      </Badge>
+                    }
+                  />
                 </div>
-              </CardHeader>
-              <CardContent>
-                <pre className="p-3 rounded-lg bg-muted text-sm font-mono">
-                  {showValues[key] ? (() => { try { return atob(value); } catch { return value; } })() : '••••••••••••'}
-                </pre>
-              </CardContent>
-            </Card>
-          ))}
+              ) : (
+                <p className="text-muted-foreground text-sm">{tlsInfo?.error ?? 'No valid certificate in tls.crt'}</p>
+              )}
+            </SectionCard>
+          )}
+
+          {/* Docker config section */}
+          {secretType === 'kubernetes.io/dockerconfigjson' && data['.dockerconfigjson'] && (() => {
+            try {
+              const decoded = decodeValue(data['.dockerconfigjson']);
+              const parsed = JSON.parse(decoded) as { auths?: Record<string, { username?: string; password?: string; auth?: string }> };
+              const auths = parsed?.auths ?? {};
+              const entries = Object.entries(auths);
+              if (entries.length === 0) return null;
+              return (
+                <SectionCard icon={KeyRound} title="Docker registries" tooltip={<p className="text-xs text-muted-foreground">Registry URLs and usernames (passwords masked)</p>}>
+                  <div className="space-y-3">
+                    {entries.map(([registry, cred]) => (
+                      <div key={registry} className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                        <span className="font-mono text-primary">{registry}</span>
+                        <span className="text-muted-foreground">username: {cred?.username ?? '—'}</span>
+                        <span className="text-muted-foreground">password: ••••••••</span>
+                      </div>
+                    ))}
+                  </div>
+                </SectionCard>
+              );
+            } catch {
+              return null;
+            }
+          })()}
+
+          {/* Per-key data table */}
+          <SectionCard icon={KeyRound} title="Keys and values" tooltip={<p className="text-xs text-muted-foreground">Reveal or copy decoded values</p>}>
+            {Object.keys(data).length === 0 ? (
+              <p className="text-muted-foreground text-sm">No keys</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="font-medium">Key</TableHead>
+                    <TableHead className="font-medium">Value</TableHead>
+                    <TableHead className="font-medium w-20">Size</TableHead>
+                    <TableHead className="w-24 text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {Object.entries(data).map(([key, value]) => (
+                    <TableRow key={key}>
+                      <TableCell className="font-mono text-sm">{key}</TableCell>
+                      <TableCell>
+                        <pre className={cn("p-2 rounded bg-muted text-sm font-mono overflow-x-auto max-w-md", !showValues[key] && "select-none")}>
+                          {showValues[key] ? decodeValue(value) : '••••••••••••'}
+                        </pre>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{decodedSize(value)} B</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => toggleShow(key)} aria-label={showValues[key] ? 'Hide value' : 'Reveal value'}>
+                            {showValues[key] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => copyDecoded(key)} aria-label="Copy value">
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </SectionCard>
         </div>
       ),
     },
@@ -307,7 +423,6 @@ export default function SecretDetail() {
         backLabel="Secrets"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}{isConnected && <Badge variant="outline" className="ml-2 text-xs">Live</Badge>}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Edit', icon: Edit, variant: 'outline', onClick: () => { setActiveTab('yaml'); setSearchParams((p) => { const n = new URLSearchParams(p); n.set('tab', 'yaml'); return n; }, { replace: true }); } },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

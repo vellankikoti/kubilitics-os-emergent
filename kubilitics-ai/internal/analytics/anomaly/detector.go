@@ -84,9 +84,4 @@ type AnomalyDetector interface {
 }
 
 // NewAnomalyDetector creates a new anomaly detector with dependencies.
-func NewAnomalyDetector() AnomalyDetector {
-	// Load metric-specific sensitivity from config
-	// Initialize time-series query engine
-	// Set default thresholds (Z-score, IQR)
-	return nil
-}
+// The concrete implementation is in detector_impl.go.

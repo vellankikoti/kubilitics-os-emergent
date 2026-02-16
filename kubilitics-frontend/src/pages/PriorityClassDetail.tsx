@@ -1,12 +1,13 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { AlertTriangle, Clock, ArrowUpDown, Download, Trash2, Shield, RefreshCw, Network } from 'lucide-react';
+import { AlertTriangle, Clock, ArrowUpDown, Download, Trash2, Shield, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import {
   ResourceDetailLayout,
+  ResourceOverviewMetadata,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
@@ -50,11 +51,6 @@ export default function PriorityClassDetail() {
   const globalDefault = !!resource?.globalDefault;
   const preemptionPolicy = resource?.preemptionPolicy ?? 'PreemptLowerPriority';
   const description = resource?.description ?? '';
-
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
 
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
@@ -108,7 +104,12 @@ export default function PriorityClassDetail() {
       id: 'overview',
       label: 'Overview',
       content: (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="space-y-6">
+          <ResourceOverviewMetadata
+            metadata={resource?.metadata ?? { name: pcName }}
+            createdLabel={age}
+          />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Card>
             <CardHeader><CardTitle className="text-base">Priority Class Info</CardTitle></CardHeader>
             <CardContent className="space-y-4">
@@ -158,6 +159,7 @@ export default function PriorityClassDetail() {
               </div>
             </CardContent>
           </Card>
+          </div>
         </div>
       ),
     },
@@ -216,9 +218,9 @@ export default function PriorityClassDetail() {
         status={status}
         backLink="/priorityclasses"
         backLabel="Priority Classes"
-        headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}</span>}
+        createdLabel={age}
+        createdAt={resource?.metadata?.creationTimestamp}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

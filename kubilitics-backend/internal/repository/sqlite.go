@@ -70,10 +70,13 @@ func (r *SQLiteRepository) createCluster(ctx context.Context, cluster *models.Cl
 	if cluster.ID == "" {
 		cluster.ID = uuid.New().String()
 	}
+	if cluster.Provider == "" {
+		cluster.Provider = "on-prem"
+	}
 
 	query := `
-		INSERT INTO clusters (id, name, context, kubeconfig_path, server_url, version, status, last_connected, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO clusters (id, name, context, kubeconfig_path, server_url, version, status, provider, last_connected, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -84,6 +87,7 @@ func (r *SQLiteRepository) createCluster(ctx context.Context, cluster *models.Cl
 		cluster.ServerURL,
 		cluster.Version,
 		cluster.Status,
+		cluster.Provider,
 		cluster.LastConnected,
 		time.Now(),
 		time.Now(),
@@ -116,7 +120,7 @@ func (r *SQLiteRepository) updateCluster(ctx context.Context, cluster *models.Cl
 	query := `
 		UPDATE clusters
 		SET name = ?, context = ?, kubeconfig_path = ?, server_url = ?, version = ?,
-		    status = ?, last_connected = ?, updated_at = ?
+		    status = ?, provider = ?, last_connected = ?, updated_at = ?
 		WHERE id = ?
 	`
 
@@ -127,6 +131,7 @@ func (r *SQLiteRepository) updateCluster(ctx context.Context, cluster *models.Cl
 		cluster.ServerURL,
 		cluster.Version,
 		cluster.Status,
+		cluster.Provider,
 		cluster.LastConnected,
 		time.Now(),
 		cluster.ID,
@@ -294,4 +299,80 @@ func (r *SQLiteRepository) ListResourceHistory(ctx context.Context, clusterID, r
 
 	err := r.db.SelectContext(ctx, &history, query, args...)
 	return history, err
+}
+
+// ProjectRepository implementation
+
+func (r *SQLiteRepository) CreateProject(ctx context.Context, p *models.Project) error {
+	if p.ID == "" {
+		p.ID = uuid.New().String()
+	}
+	query := `INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`
+	_, err := r.db.ExecContext(ctx, query, p.ID, p.Name, p.Description, time.Now(), time.Now())
+	return err
+}
+
+func (r *SQLiteRepository) GetProject(ctx context.Context, id string) (*models.Project, error) {
+	var p models.Project
+	err := r.db.GetContext(ctx, &p, `SELECT * FROM projects WHERE id = ?`, id)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("project not found: %s", id)
+	}
+	return &p, err
+}
+
+func (r *SQLiteRepository) ListProjects(ctx context.Context) ([]*models.ProjectListItem, error) {
+	query := `SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
+		(SELECT COUNT(*) FROM project_clusters WHERE project_id = p.id) AS cluster_count,
+		(SELECT COUNT(*) FROM project_namespaces WHERE project_id = p.id) AS namespace_count
+	FROM projects p ORDER BY p.name ASC`
+	var list []*models.ProjectListItem
+	err := r.db.SelectContext(ctx, &list, query)
+	return list, err
+}
+
+func (r *SQLiteRepository) UpdateProject(ctx context.Context, p *models.Project) error {
+	query := `UPDATE projects SET name = ?, description = ?, updated_at = ? WHERE id = ?`
+	_, err := r.db.ExecContext(ctx, query, p.Name, p.Description, time.Now(), p.ID)
+	return err
+}
+
+func (r *SQLiteRepository) DeleteProject(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
+	return err
+}
+
+func (r *SQLiteRepository) AddClusterToProject(ctx context.Context, pc *models.ProjectCluster) error {
+	query := `INSERT INTO project_clusters (project_id, cluster_id, created_at) VALUES (?, ?, ?)`
+	_, err := r.db.ExecContext(ctx, query, pc.ProjectID, pc.ClusterID, time.Now())
+	return err
+}
+
+func (r *SQLiteRepository) RemoveClusterFromProject(ctx context.Context, projectID, clusterID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM project_clusters WHERE project_id = ? AND cluster_id = ?`, projectID, clusterID)
+	return err
+}
+
+func (r *SQLiteRepository) ListProjectClusters(ctx context.Context, projectID string) ([]*models.ProjectCluster, error) {
+	var list []*models.ProjectCluster
+	err := r.db.SelectContext(ctx, &list, `SELECT project_id, cluster_id FROM project_clusters WHERE project_id = ? ORDER BY cluster_id`, projectID)
+	return list, err
+}
+
+func (r *SQLiteRepository) AddNamespaceToProject(ctx context.Context, pn *models.ProjectNamespace) error {
+	query := `INSERT INTO project_namespaces (project_id, cluster_id, namespace_name, team, created_at) VALUES (?, ?, ?, ?, ?)`
+	_, err := r.db.ExecContext(ctx, query, pn.ProjectID, pn.ClusterID, pn.NamespaceName, pn.Team, time.Now())
+	return err
+}
+
+func (r *SQLiteRepository) RemoveNamespaceFromProject(ctx context.Context, projectID, clusterID, namespaceName string) error {
+	query := `DELETE FROM project_namespaces WHERE project_id = ? AND cluster_id = ? AND namespace_name = ?`
+	_, err := r.db.ExecContext(ctx, query, projectID, clusterID, namespaceName)
+	return err
+}
+
+func (r *SQLiteRepository) ListProjectNamespaces(ctx context.Context, projectID string) ([]*models.ProjectNamespace, error) {
+	var list []*models.ProjectNamespace
+	err := r.db.SelectContext(ctx, &list, `SELECT project_id, cluster_id, namespace_name, team FROM project_namespaces WHERE project_id = ? ORDER BY cluster_id, team, namespace_name`, projectID)
+	return list, err
 }

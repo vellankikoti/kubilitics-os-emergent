@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Link2,
   Plus,
+  Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,14 +37,15 @@ import {
 import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { Link, useNavigate } from 'react-router-dom';
-import { useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
+import { useK8sResourceList, useDeleteK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { toast } from 'sonner';
-import { Card, CardContent } from '@/components/ui/card';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
-import { ResourceExportDropdown, ResourceCommandBar, ListPageStatCard, TableColumnHeaderWithFilterAndSort, ListPagination, PAGE_SIZE_OPTIONS, resourceTableRowClassName, ROW_MOTION } from '@/components/list';
+import { ResourceExportDropdown, ResourceCommandBar, ListPageStatCard, ListPageHeader, TableColumnHeaderWithFilterAndSort, TableFilterCell, ListPagination, PAGE_SIZE_OPTIONS, resourceTableRowClassName, ROW_MOTION, AgeCell, TableEmptyState, NamespaceBadge, ResourceListTableToolbar } from '@/components/list';
+import { DeleteConfirmDialog } from '@/components/resources';
 import { ResizableTableProvider, ResizableTableHead, ResizableTableCell, type ResizableColumnConfig } from '@/components/ui/resizable-table';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 
 interface K8sEndpoint extends KubernetesResource {
   subsets?: Array<{
@@ -61,15 +63,28 @@ interface Endpoint {
   notReadyCount: number;
   ports: string;
   age: string;
+  creationTimestamp?: string;
 }
 
 const ENDPOINTS_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'name', defaultWidth: 200, minWidth: 120 },
   { id: 'namespace', defaultWidth: 140, minWidth: 90 },
-  { id: 'readyCount', defaultWidth: 90, minWidth: 70 },
-  { id: 'notReadyCount', defaultWidth: 100, minWidth: 80 },
+  { id: 'readyCount', defaultWidth: 100, minWidth: 70 },
+  { id: 'notReadyCount', defaultWidth: 110, minWidth: 80 },
+  { id: 'totalAddresses', defaultWidth: 90, minWidth: 70 },
   { id: 'ports', defaultWidth: 140, minWidth: 80 },
+  { id: 'service', defaultWidth: 140, minWidth: 90 },
   { id: 'age', defaultWidth: 90, minWidth: 60 },
+];
+
+const ENDPOINTS_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'readyCount', label: 'Ready Addresses' },
+  { id: 'notReadyCount', label: 'Not Ready Addresses' },
+  { id: 'totalAddresses', label: 'Total' },
+  { id: 'ports', label: 'Ports' },
+  { id: 'service', label: 'Service' },
+  { id: 'age', label: 'Age' },
 ];
 
 export default function Endpoints() {
@@ -77,12 +92,15 @@ export default function Endpoints() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: Endpoint | null; bulk?: boolean }>({ open: false, item: null });
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
+  const [showTableFilters, setShowTableFilters] = useState(false);
 
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = useK8sResourceList<K8sEndpoint>('endpoints', undefined, { limit: 5000 });
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useK8sResourceList<K8sEndpoint>('endpoints', undefined, { limit: 5000 });
+  const deleteResource = useDeleteK8sResource('endpoints');
 
   const endpoints: Endpoint[] = isConnected && data?.items
     ? data.items.map((ep) => {
@@ -114,6 +132,7 @@ export default function Endpoints() {
           notReadyCount,
           ports: [...new Set(portsList)].join(', ') || '-',
           age: calculateAge(ep.metadata.creationTimestamp),
+          creationTimestamp: ep.metadata?.creationTimestamp,
         };
       })
     : [];
@@ -142,11 +161,14 @@ export default function Endpoints() {
   const endpointsTableConfig: ColumnConfig<Endpoint>[] = useMemo(() => [
     { columnId: 'name', getValue: (e) => e.name, sortable: true, filterable: false },
     { columnId: 'namespace', getValue: (e) => e.namespace, sortable: true, filterable: true },
+    { columnId: 'healthStatus', getValue: (e) => e.notReadyCount === 0 && e.readyCount > 0 ? 'Healthy' : e.notReadyCount > 0 && e.readyCount > 0 ? 'Degraded' : 'Empty', sortable: true, filterable: true },
     { columnId: 'readyCount', getValue: (e) => e.readyCount, sortable: true, filterable: false },
+    { columnId: 'notReadyCount', getValue: (e) => e.notReadyCount, sortable: true, filterable: false },
     { columnId: 'age', getValue: (e) => e.age, sortable: true, filterable: false },
   ], []);
 
-  const { filteredAndSortedItems: filteredEndpoints, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: endpointsTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const { filteredAndSortedItems: filteredEndpoints, distinctValuesByColumn, valueCountsByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: endpointsTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const columnVisibility = useColumnVisibility({ tableId: 'endpoints', columns: ENDPOINTS_COLUMNS_FOR_VISIBILITY, alwaysVisible: ['name'] });
 
   const totalFiltered = filteredEndpoints.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
@@ -203,45 +225,58 @@ subsets: []
   const isAllSelected = filteredEndpoints.length > 0 && selectedItems.size === filteredEndpoints.length;
   const isSomeSelected = selectedItems.size > 0 && selectedItems.size < filteredEndpoints.length;
 
+  const handleDelete = async () => {
+    try {
+      if (deleteDialog.bulk && selectedItems.size > 0) {
+        for (const key of selectedItems) {
+          const [ns, n] = key.split('/');
+          if (n && ns) await deleteResource.mutateAsync({ name: n, namespace: ns });
+        }
+        toast.success(`Deleted ${selectedItems.size} endpoint(s)`);
+        setSelectedItems(new Set());
+      } else if (deleteDialog.item) {
+        await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
+        toast.success('Endpoint deleted');
+      }
+      setDeleteDialog({ open: false, item: null });
+      refetch();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Delete failed');
+    }
+  };
+
   return (
     <>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-        {/* Page Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-primary/10">
-              <Network className="h-6 w-6 text-primary" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Endpoints</h1>
-              <p className="text-sm text-muted-foreground">
-                {filteredEndpoints.length} endpoints across {namespaces.length - 1} namespaces
-                {!isConnected && (
-                  <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]">
-                    <WifiOff className="h-3 w-3" /> Demo mode
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <ResourceExportDropdown
-              items={filteredEndpoints}
-              selectedKeys={selectedItems}
-              getKey={(e) => `${e.namespace}/${e.name}`}
-              config={endpointExportConfig}
-              selectionLabel={selectedItems.size > 0 ? 'Selected endpoints' : 'All visible endpoints'}
-              onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
-            />
-            <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>
-              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            </Button>
-            <Button className="gap-2" onClick={() => setShowCreateWizard(true)}>
-              <Plus className="h-4 w-4" />
-              Create Endpoint
-            </Button>
-          </div>
-        </div>
+        <ListPageHeader
+          icon={<Network className="h-6 w-6 text-primary" />}
+          title="Endpoints"
+          resourceCount={filteredEndpoints.length}
+          subtitle={namespaces.length > 1 ? `across ${namespaces.length - 1} namespaces` : undefined}
+          demoMode={!isConnected}
+          isLoading={isLoading}
+          onRefresh={() => refetch()}
+          createLabel="Create Endpoint"
+          onCreate={() => setShowCreateWizard(true)}
+          actions={
+            <>
+              <ResourceExportDropdown
+                items={filteredEndpoints}
+                selectedKeys={selectedItems}
+                getKey={(e) => `${e.namespace}/${e.name}`}
+                config={endpointExportConfig}
+                selectionLabel={selectedItems.size > 0 ? 'Selected endpoints' : 'All visible endpoints'}
+                onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+              />
+              {selectedItems.size > 0 && (
+                <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete {selectedItems.size} selected
+                </Button>
+              )}
+            </>
+          }
+        />
 
         {/* Bulk Actions Bar */}
         {selectedItems.size > 0 && (
@@ -264,6 +299,10 @@ subsets: []
                 onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
                 triggerLabel={selectedItems.size > 0 ? `Export (${selectedItems.size})` : 'Export'}
               />
+              <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete selected
+              </Button>
               <Button variant="ghost" size="sm" onClick={() => setSelectedItems(new Set())}>
                 Clear
               </Button>
@@ -274,11 +313,13 @@ subsets: []
         {/* Stats Cards - Design 3.4: Total, Healthy, Degraded, Empty */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <ListPageStatCard size="sm" label="Total Endpoints" value={stats.total} selected={!hasActiveFilters} onClick={clearAllFilters} className={cn(!hasActiveFilters && 'ring-2 ring-primary')} />
-          <ListPageStatCard size="sm" label="Healthy" value={stats.healthy} valueClassName="text-[hsl(142,76%,36%)]" />
-          <ListPageStatCard size="sm" label="Degraded" value={stats.degraded} valueClassName="text-[hsl(45,93%,47%)]" />
-          <ListPageStatCard size="sm" label="Empty" value={stats.empty} valueClassName="text-[hsl(0,72%,51%)]" />
+          <ListPageStatCard size="sm" label="Healthy" value={stats.healthy} valueClassName="text-[hsl(142,76%,36%)]" selected={columnFilters.healthStatus?.size === 1 && columnFilters.healthStatus.has('Healthy')} onClick={() => setColumnFilter('healthStatus', new Set(['Healthy']))} className={cn(columnFilters.healthStatus?.size === 1 && columnFilters.healthStatus.has('Healthy') && 'ring-2 ring-[hsl(142,76%,36%)]')} />
+          <ListPageStatCard size="sm" label="Degraded" value={stats.degraded} valueClassName="text-[hsl(45,93%,47%)]" selected={columnFilters.healthStatus?.size === 1 && columnFilters.healthStatus.has('Degraded')} onClick={() => setColumnFilter('healthStatus', new Set(['Degraded']))} className={cn(columnFilters.healthStatus?.size === 1 && columnFilters.healthStatus.has('Degraded') && 'ring-2 ring-[hsl(45,93%,47%)]')} />
+          <ListPageStatCard size="sm" label="Empty" value={stats.empty} valueClassName="text-[hsl(0,72%,51%)]" selected={columnFilters.healthStatus?.size === 1 && columnFilters.healthStatus.has('Empty')} onClick={() => setColumnFilter('healthStatus', new Set(['Empty']))} className={cn(columnFilters.healthStatus?.size === 1 && columnFilters.healthStatus.has('Empty') && 'ring-2 ring-[hsl(0,72%,51%)]')} />
         </div>
 
+        <ResourceListTableToolbar
+          globalFilterBar={
         <ResourceCommandBar
           scope={
             <div className="w-full min-w-0">
@@ -316,14 +357,38 @@ subsets: []
           <Button variant="link" size="sm" className="text-muted-foreground h-auto p-0" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
         ) : undefined}
         />
-
-        {/* Table */}
-        <Card>
+          }
+          hasActiveFilters={hasActiveFilters}
+          onClearAllFilters={clearAllFilters}
+          showTableFilters={showTableFilters}
+          onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+          columns={ENDPOINTS_COLUMNS_FOR_VISIBILITY}
+          visibleColumns={columnVisibility.visibleColumns}
+          onColumnToggle={columnVisibility.setColumnVisible}
+          footer={
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{totalFiltered > 0 ? `Showing ${start + 1}–${Math.min(start + pageSize, totalFiltered)} of ${totalFiltered}` : 'No endpoints'}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <DropdownMenuItem key={size} onClick={() => { setPageSize(size); setPageIndex(0); }} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination hasPrev={safePageIndex > 0} hasNext={start + pageSize < totalFiltered} onPrev={() => setPageIndex((i) => Math.max(0, i - 1))} onNext={() => setPageIndex((i) => Math.min(totalPages - 1, i + 1))} currentPage={safePageIndex + 1} totalPages={Math.max(1, totalPages)} onPageChange={(p) => setPageIndex(Math.max(0, p - 1))} dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+          </div>
+          }
+        >
           <ResizableTableProvider tableId="kubilitics-resizable-table-endpoints" columnConfig={ENDPOINTS_TABLE_COLUMNS}>
             <div className="border border-border rounded-xl overflow-x-auto bg-card">
               <Table className="table-fixed" style={{ minWidth: 960 }}>
                 <TableHeader>
-                  <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+                  <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
                     <TableHead className="w-12">
                       <Checkbox checked={isAllSelected} onCheckedChange={toggleAllSelection} aria-label="Select all" className={isSomeSelected ? 'opacity-50' : ''} />
                     </TableHead>
@@ -331,30 +396,52 @@ subsets: []
                       <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
                     </ResizableTableHead>
                     <ResizableTableHead columnId="namespace">
-                      <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} />
+                      <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
                     </ResizableTableHead>
-                    <ResizableTableHead columnId="readyCount">Ready Addresses</ResizableTableHead>
-                    <TableHead>Not Ready Addresses</TableHead>
-                    <TableHead>Total Addresses</TableHead>
+                    <ResizableTableHead columnId="readyCount">
+                      <TableColumnHeaderWithFilterAndSort columnId="readyCount" label="Ready Addresses" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                    </ResizableTableHead>
+                    <ResizableTableHead columnId="notReadyCount">
+                      <TableColumnHeaderWithFilterAndSort columnId="notReadyCount" label="Not Ready Addresses" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                    </ResizableTableHead>
+                    <ResizableTableHead columnId="totalAddresses">Total</ResizableTableHead>
                     <ResizableTableHead columnId="ports">Ports</ResizableTableHead>
-                    <TableHead>Service</TableHead>
+                    <ResizableTableHead columnId="service">Service</ResizableTableHead>
                     <ResizableTableHead columnId="age">
                       <TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
                     </ResizableTableHead>
                     <TableHead className="w-12"></TableHead>
                   </TableRow>
+                  {showTableFilters && (
+                    <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                      <TableCell className="w-12 p-1.5" />
+                      <ResizableTableCell columnId="name" className="p-1.5" />
+                      <ResizableTableCell columnId="namespace" className="p-1.5">
+                        <TableFilterCell columnId="namespace" label="Namespace" distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.namespace} />
+                      </ResizableTableCell>
+                      <ResizableTableCell columnId="readyCount" className="p-1.5" />
+                      <ResizableTableCell columnId="notReadyCount" className="p-1.5" />
+                      <ResizableTableCell columnId="totalAddresses" className="p-1.5" />
+                      <ResizableTableCell columnId="ports" className="p-1.5" />
+                      <ResizableTableCell columnId="service" className="p-1.5" />
+                      <ResizableTableCell columnId="age" className="p-1.5" />
+                      <TableCell className="w-12 p-1.5" />
+                    </TableRow>
+                  )}
                 </TableHeader>
                 <TableBody>
                   {itemsOnPage.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={11} className="h-32 text-center text-muted-foreground">
-                        <div className="flex flex-col items-center gap-2">
-                          <Network className="h-8 w-8 opacity-50" />
-                          <p>No endpoints found</p>
-                          {(searchQuery || hasActiveFilters) && (
-                            <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
-                          )}
-                        </div>
+                      <TableCell colSpan={11} className="h-40 text-center">
+                        <TableEmptyState
+                          icon={<Network className="h-8 w-8" />}
+                          title="No endpoints found"
+                          subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Endpoints are usually created by Services; create one manually if needed.'}
+                          hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                          onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                          createLabel="Create Endpoint"
+                          onCreate={() => setShowCreateWizard(true)}
+                        />
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -374,15 +461,17 @@ subsets: []
                           <ResizableTableCell columnId="name">
                             <Link to={`/endpoints/${ep.namespace}/${ep.name}`} className="font-medium text-primary hover:underline truncate block">{ep.name}</Link>
                           </ResizableTableCell>
-                          <ResizableTableCell columnId="namespace"><Badge variant="outline">{ep.namespace}</Badge></ResizableTableCell>
+                          <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={ep.namespace} /></ResizableTableCell>
                           <ResizableTableCell columnId="readyCount">
                             <span className={cn('font-mono', ep.readyCount > 0 ? 'text-[hsl(142,76%,36%)]' : 'text-muted-foreground')}>{ep.readyCount}</span>
                           </ResizableTableCell>
-                          <TableCell><span className={cn('font-mono', ep.notReadyCount > 0 ? 'text-[hsl(0,72%,51%)]' : 'text-muted-foreground')}>{ep.notReadyCount}</span></TableCell>
-                          <TableCell><span className="font-mono">{ep.readyCount + ep.notReadyCount}</span></TableCell>
+                          <ResizableTableCell columnId="notReadyCount">
+                            <span className={cn('font-mono', ep.notReadyCount > 0 ? 'text-[hsl(0,72%,51%)]' : 'text-muted-foreground')}>{ep.notReadyCount}</span>
+                          </ResizableTableCell>
+                          <ResizableTableCell columnId="totalAddresses"><span className="font-mono">{ep.readyCount + ep.notReadyCount}</span></ResizableTableCell>
                           <ResizableTableCell columnId="ports"><span className="font-mono text-xs truncate block">{ep.ports}</span></ResizableTableCell>
-                          <TableCell><Link to={`/services/${ep.namespace}/${ep.name}`} className="text-primary hover:underline text-sm truncate block">{ep.name}</Link></TableCell>
-                          <ResizableTableCell columnId="age"><span className="text-muted-foreground">{ep.age}</span></ResizableTableCell>
+                          <ResizableTableCell columnId="service"><Link to={`/services/${ep.namespace}/${ep.name}`} className="text-primary hover:underline text-sm truncate block font-medium">{ep.name}</Link></ResizableTableCell>
+                          <ResizableTableCell columnId="age"><AgeCell age={ep.age} timestamp={ep.creationTimestamp} /></ResizableTableCell>
                           <TableCell>
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
@@ -391,7 +480,10 @@ subsets: []
                               <DropdownMenuContent align="end">
                                 <DropdownMenuItem onClick={() => navigate(`/endpoints/${ep.namespace}/${ep.name}`)}><ExternalLink className="h-4 w-4 mr-2" />View Details</DropdownMenuItem>
                                 <DropdownMenuItem onClick={() => navigate(`/services/${ep.namespace}/${ep.name}`)}><Link2 className="h-4 w-4 mr-2" />View Service</DropdownMenuItem>
+                                <DropdownMenuSeparator />
                                 <DropdownMenuItem onClick={() => navigate(`/endpoints/${ep.namespace}/${ep.name}?tab=yaml`)}><Download className="h-4 w-4 mr-2" />Download YAML</DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleteDialog({ open: true, item: ep })}><Trash2 className="h-4 w-4 mr-2" />Delete</DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
                           </TableCell>
@@ -403,29 +495,18 @@ subsets: []
               </Table>
             </div>
           </ResizableTableProvider>
-        </Card>
-
-        <div className="pt-4 pb-2 border-t border-border mt-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">
-                {totalFiltered > 0 ? `Showing ${start + 1}–${Math.min(start + pageSize, totalFiltered)} of ${totalFiltered}` : 'No endpoints'}
-              </span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {PAGE_SIZE_OPTIONS.map((size) => (
-                    <DropdownMenuItem key={size} onClick={() => { setPageSize(size); setPageIndex(0); }} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <ListPagination hasPrev={safePageIndex > 0} hasNext={start + pageSize < totalFiltered} onPrev={() => setPageIndex((i) => Math.max(0, i - 1))} onNext={() => setPageIndex((i) => Math.min(totalPages - 1, i + 1))} currentPage={safePageIndex + 1} totalPages={Math.max(1, totalPages)} onPageChange={(p) => setPageIndex(Math.max(0, p - 1))} />
-          </div>
-        </div>
+        </ResourceListTableToolbar>
       </motion.div>
+
+      <DeleteConfirmDialog
+        open={deleteDialog.open}
+        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null })}
+        resourceType="Endpoint"
+        resourceName={deleteDialog.bulk ? `${selectedItems.size} endpoints` : (deleteDialog.item?.name || '')}
+        namespace={deleteDialog.bulk ? undefined : deleteDialog.item?.namespace}
+        onConfirm={handleDelete}
+        requireNameConfirmation={!deleteDialog.bulk}
+      />
 
       {showCreateWizard && (
         <ResourceCreator

@@ -82,10 +82,4 @@ type TimeSeriesEngine interface {
 }
 
 // NewTimeSeriesEngine creates a new time-series engine with storage backends.
-func NewTimeSeriesEngine() TimeSeriesEngine {
-	// Initialize in-memory ring buffer for hot data
-	// Initialize database connection for cold data
-	// Start background downsampling task
-	// Start background deletion task
-	return nil
-}
+// The concrete implementation is in engine_impl.go.

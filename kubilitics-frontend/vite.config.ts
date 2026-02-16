@@ -17,7 +17,7 @@ export default defineConfig(({ mode }) => ({
     // Proxy API, WebSocket, and health to backend so dev uses same-origin (no cross-origin WS errors)
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: 'http://127.0.0.1:8080',
         changeOrigin: true,
         ws: true,
       },

@@ -116,11 +116,5 @@ type PolicyEngine interface {
 	ScanForViolations(ctx context.Context) ([]interface{}, error)
 }
 
-// NewPolicyEngine creates a new policy engine with dependencies.
-func NewPolicyEngine() PolicyEngine {
-	// Load immutable rules
-	// Load configurable policies from storage
-	// Initialize policy rule evaluator
-	// Connect to Audit Logger
-	return nil
-}
+// NewPolicyEngine creates a new policy engine.
+// The concrete implementation is in engine_impl.go.

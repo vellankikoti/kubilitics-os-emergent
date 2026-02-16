@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { FileCode, Clock, Server, Download, Trash2, CheckCircle, RefreshCw, Network } from 'lucide-react';
+import { FileCode, Clock, Server, Download, Trash2, CheckCircle, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
+  ResourceOverviewMetadata,
   SectionCard,
   YamlViewer,
   YamlCompareViewer,
@@ -113,7 +114,12 @@ export default function APIServiceDetail() {
       id: 'overview',
       label: 'Overview',
       content: (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="space-y-6">
+          <ResourceOverviewMetadata
+            metadata={api?.metadata ?? { name: apiName }}
+            createdLabel={age}
+          />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <SectionCard icon={FileCode} title="API Service Info" tooltip="Group, version, service reference">
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div><p className="text-muted-foreground mb-1">Group</p><p className="font-mono">{group}</p></div>
@@ -122,12 +128,6 @@ export default function APIServiceDetail() {
               <div><p className="text-muted-foreground mb-1">Insecure Skip TLS</p><p>{api?.spec?.insecureSkipTLSVerify ? 'Yes' : 'No'}</p></div>
               <div><p className="text-muted-foreground mb-1">Group Priority Minimum</p><p className="font-mono">{api?.spec?.groupPriorityMinimum ?? '–'}</p></div>
               <div><p className="text-muted-foreground mb-1">Version Priority</p><p className="font-mono">{api?.spec?.versionPriority ?? '–'}</p></div>
-            </div>
-          </SectionCard>
-          <SectionCard icon={FileCode} title="Labels & Annotations" tooltip="Metadata">
-            <div className="space-y-2 text-sm">
-              <p className="text-muted-foreground">Labels: {Object.keys(api?.metadata?.labels ?? {}).length}</p>
-              <p className="text-muted-foreground">Annotations: {Object.keys(api?.metadata?.annotations ?? {}).length}</p>
             </div>
           </SectionCard>
           <SectionCard icon={FileCode} title="Conditions" tooltip="Status conditions" className="lg:col-span-2">
@@ -147,6 +147,7 @@ export default function APIServiceDetail() {
               </div>
             )}
           </SectionCard>
+          </div>
         </div>
       ),
     },
@@ -190,14 +191,16 @@ export default function APIServiceDetail() {
         status={status}
         backLink="/apiservices"
         backLabel="API Services"
+        createdLabel={age}
+        createdAt={api?.metadata?.creationTimestamp}
         headerMetadata={
-          <span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground">
-            <Clock className="h-3.5 w-3.5" />Created {age}
-            {isConnected && <Badge variant="outline" className="ml-2 text-xs">Live</Badge>}
-          </span>
+          isConnected ? (
+            <span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground">
+              <Badge variant="outline" className="text-xs">Live</Badge>
+            </span>
+          ) : undefined
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => refetch() },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

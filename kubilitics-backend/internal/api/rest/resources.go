@@ -1,7 +1,9 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -62,6 +64,10 @@ func (h *Handler) ListResources(w http.ResponseWriter, r *http.Request) {
 
 	list, err := client.ListResources(r.Context(), kind, namespace, opts)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			respondError(w, http.StatusGatewayTimeout, "Request to Kubernetes API timed out. The cluster may be slow or overloaded. Try again or use a more specific query with namespace or label selectors.")
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return
@@ -136,6 +142,10 @@ func (h *Handler) GetResource(w http.ResponseWriter, r *http.Request) {
 
 	obj, err := client.GetResource(r.Context(), kind, namespace, name)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			respondError(w, http.StatusGatewayTimeout, "Request to Kubernetes API timed out. The cluster may be slow or overloaded.")
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return
@@ -205,6 +215,10 @@ func (h *Handler) PatchResource(w http.ResponseWriter, r *http.Request) {
 	requestID := logger.FromContext(r.Context())
 	if err != nil {
 		audit.LogMutation(requestID, clusterID, "patch", kind, namespace, name, "failure", err.Error())
+		if errors.Is(err, context.DeadlineExceeded) {
+			respondError(w, http.StatusGatewayTimeout, "Request to Kubernetes API timed out. The cluster may be slow or overloaded.")
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return
@@ -261,6 +275,10 @@ func (h *Handler) DeleteResource(w http.ResponseWriter, r *http.Request) {
 	if err := client.DeleteResource(r.Context(), kind, namespace, name, opts); err != nil {
 		requestID := logger.FromContext(r.Context())
 		audit.LogDelete(requestID, clusterID, kind, namespace, name, "failure", err.Error())
+		if errors.Is(err, context.DeadlineExceeded) {
+			respondError(w, http.StatusGatewayTimeout, "Request to Kubernetes API timed out. The cluster may be slow or overloaded.")
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return
@@ -336,6 +354,10 @@ func (h *Handler) ApplyManifest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		requestID := logger.FromContext(r.Context())
 		audit.LogApply(requestID, clusterID, "failure", err.Error(), nil)
+		if errors.Is(err, context.DeadlineExceeded) {
+			respondError(w, http.StatusGatewayTimeout, "Request to Kubernetes API timed out. The cluster may be slow or overloaded.")
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return
@@ -393,6 +415,10 @@ func (h *Handler) GetServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 
 	obj, err := client.GetResource(r.Context(), "endpoints", namespace, name)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			respondError(w, http.StatusGatewayTimeout, "Request to Kubernetes API timed out. The cluster may be slow or overloaded.")
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return

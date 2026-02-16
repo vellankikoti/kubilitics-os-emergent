@@ -43,10 +43,10 @@ import { useK8sResourceList, useDeleteK8sResource, calculateAge, type Kubernetes
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { DeleteConfirmDialog } from '@/components/resources';
 import { NetworkPolicyWizard } from '@/components/wizards';
-import { ResourceExportDropdown, ResourceCommandBar, ListPageStatCard, TableColumnHeaderWithFilterAndSort, ListPagination, PAGE_SIZE_OPTIONS, resourceTableRowClassName, ROW_MOTION } from '@/components/list';
+import { ResourceExportDropdown, ResourceCommandBar, ListPageStatCard, ListPageHeader, TableColumnHeaderWithFilterAndSort, TableFilterCell, ListPagination, PAGE_SIZE_OPTIONS, resourceTableRowClassName, ROW_MOTION, AgeCell, TableEmptyState, CopyNameDropdownItem, NamespaceBadge, ResourceListTableToolbar } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 import { toast } from 'sonner';
-import { Card, CardContent } from '@/components/ui/card';
 
 interface K8sNetworkPolicy extends KubernetesResource {
   spec?: {
@@ -68,6 +68,7 @@ interface NetworkPolicy {
   allowedDestinations: number;
   affectedPods: number;
   age: string;
+  creationTimestamp?: string;
 }
 
 const NETWORKPOLICIES_TABLE_COLUMNS: ResizableColumnConfig[] = [
@@ -83,6 +84,18 @@ const NETWORKPOLICIES_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'age', defaultWidth: 90, minWidth: 60 },
 ];
 
+const NETWORKPOLICIES_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'podSelector', label: 'Pod Selector' },
+  { id: 'affectedPods', label: 'Affected Pods' },
+  { id: 'policyTypes', label: 'Policy Types' },
+  { id: 'ingressRules', label: 'Ingress Rules' },
+  { id: 'egressRules', label: 'Egress Rules' },
+  { id: 'allowedSources', label: 'Allowed Sources' },
+  { id: 'allowedDestinations', label: 'Allowed Destinations' },
+  { id: 'age', label: 'Age' },
+];
+
 function podMatchesSelector(podLabels: Record<string, string> | undefined, matchLabels: Record<string, string> | undefined): boolean {
   if (!matchLabels || Object.keys(matchLabels).length === 0) return true;
   if (!podLabels) return false;
@@ -96,11 +109,12 @@ export default function NetworkPolicies() {
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: NetworkPolicy | null; bulk?: boolean }>({ open: false, item: null });
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showCreateWizard, setShowCreateWizard] = useState(false);
+  const [showTableFilters, setShowTableFilters] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = useK8sResourceList<K8sNetworkPolicy>('networkpolicies', undefined, { limit: 5000 });
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useK8sResourceList<K8sNetworkPolicy>('networkpolicies', undefined, { limit: 5000 });
   const { data: podsData } = useK8sResourceList<KubernetesResource>('pods', undefined, { limit: 10000, enabled: isConnected });
   const deleteResource = useDeleteK8sResource('networkpolicies');
 
@@ -142,6 +156,7 @@ export default function NetworkPolicies() {
         allowedDestinations,
         affectedPods,
         age: calculateAge(np.metadata.creationTimestamp),
+        creationTimestamp: np.metadata?.creationTimestamp,
       };
     });
   }, [isConnected, data?.items, podsByNamespace]);
@@ -151,6 +166,7 @@ export default function NetworkPolicies() {
     const npList = (data?.items ?? []) as K8sNetworkPolicy[];
     if (npList.length > 0 && podsByNamespace.size > 0) {
       podsByNamespace.forEach((pods, ns) => {
+        if (selectedNamespace !== 'all' && selectedNamespace !== ns) return;
         const policiesInNs = npList.filter((np) => (np.metadata?.namespace ?? 'default') === ns);
         pods.forEach((p) => {
           const covered = policiesInNs.some((np) => podMatchesSelector(p.labels, np.spec?.podSelector?.matchLabels));
@@ -169,7 +185,7 @@ export default function NetworkPolicies() {
       ).length,
       unprotectedPods,
     };
-  }, [networkpolicies, data?.items, podsByNamespace]);
+  }, [networkpolicies, data?.items, podsByNamespace, selectedNamespace]);
 
   const namespaces = useMemo(() => {
     return ['all', ...Array.from(new Set(networkpolicies.map(np => np.namespace)))];
@@ -193,7 +209,7 @@ export default function NetworkPolicies() {
     { columnId: 'namespace', getValue: (np) => np.namespace, sortable: true, filterable: true },
     { columnId: 'podSelector', getValue: (np) => np.podSelector, sortable: true, filterable: false },
     { columnId: 'affectedPods', getValue: (np) => np.affectedPods, sortable: true, filterable: false },
-    { columnId: 'policyType', getValue: policyTypeValue, sortable: false, filterable: true },
+    { columnId: 'policyTypes', getValue: policyTypeValue, sortable: true, filterable: true },
     { columnId: 'ingressRules', getValue: (np) => np.ingressRules, sortable: true, filterable: false },
     { columnId: 'egressRules', getValue: (np) => np.egressRules, sortable: true, filterable: false },
     { columnId: 'allowedSources', getValue: (np) => np.allowedSources, sortable: true, filterable: false },
@@ -201,7 +217,8 @@ export default function NetworkPolicies() {
     { columnId: 'age', getValue: (np) => np.age, sortable: true, filterable: false },
   ], []);
 
-  const { filteredAndSortedItems: filteredPolicies, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: networkPoliciesTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const { filteredAndSortedItems: filteredPolicies, distinctValuesByColumn, valueCountsByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: networkPoliciesTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const columnVisibility = useColumnVisibility({ tableId: 'networkpolicies', columns: NETWORKPOLICIES_COLUMNS_FOR_VISIBILITY, alwaysVisible: ['name'] });
 
   const totalFiltered = filteredPolicies.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
@@ -288,44 +305,50 @@ spec:
   const isAllSelected = filteredPolicies.length > 0 && selectedItems.size === filteredPolicies.length;
   const isSomeSelected = selectedItems.size > 0 && selectedItems.size < filteredPolicies.length;
 
+  const pagination = {
+    rangeLabel: totalFiltered > 0 ? `Showing ${start + 1}–${Math.min(start + pageSize, totalFiltered)} of ${totalFiltered}` : 'No network policies',
+    hasPrev: safePageIndex > 0,
+    hasNext: start + pageSize < totalFiltered,
+    onPrev: () => setPageIndex((i) => Math.max(0, i - 1)),
+    onNext: () => setPageIndex((i) => Math.min(totalPages - 1, i + 1)),
+    currentPage: safePageIndex + 1,
+    totalPages: Math.max(1, totalPages),
+    onPageChange: (p: number) => setPageIndex(Math.max(0, Math.min(p - 1, totalPages - 1))),
+    dataUpdatedAt,
+    isFetching,
+  };
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      {/* Page Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-primary/10">
-            <Shield className="h-6 w-6 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Network Policies</h1>
-            <p className="text-sm text-muted-foreground">
-              {filteredPolicies.length} policies across {namespaces.length - 1} namespaces
-              {!isConnected && (
-                <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]">
-                  <WifiOff className="h-3 w-3" /> Demo mode
-                </span>
-              )}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <ResourceExportDropdown
-            items={filteredPolicies}
-            selectedKeys={selectedItems}
-            getKey={(np) => `${np.namespace}/${np.name}`}
-            config={networkPolicyExportConfig}
-            selectionLabel={selectedItems.size > 0 ? 'Selected network policies' : 'All visible network policies'}
-            onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
-          />
-          <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>
-            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          </Button>
-          <Button className="gap-2" onClick={() => setShowCreateWizard(true)}>
-            <Plus className="h-4 w-4" />
-            Create Policy
-          </Button>
-        </div>
-      </div>
+      <ListPageHeader
+        icon={<Shield className="h-6 w-6 text-primary" />}
+        title="Network Policies"
+        resourceCount={filteredPolicies.length}
+        subtitle={namespaces.length > 1 ? `across ${namespaces.length - 1} namespaces` : undefined}
+        demoMode={!isConnected}
+        isLoading={isLoading}
+        onRefresh={() => refetch()}
+        createLabel="Create Policy"
+        onCreate={() => setShowCreateWizard(true)}
+        actions={
+          <>
+            <ResourceExportDropdown
+              items={filteredPolicies}
+              selectedKeys={selectedItems}
+              getKey={(np) => `${np.namespace}/${np.name}`}
+              config={networkPolicyExportConfig}
+              selectionLabel={selectedItems.size > 0 ? 'Selected network policies' : 'All visible network policies'}
+              onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+            />
+            {selectedItems.size > 0 && (
+              <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete {selectedItems.size} selected
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {/* Bulk Actions Bar */}
       {selectedItems.size > 0 && (
@@ -367,12 +390,14 @@ spec:
       {/* Stats Cards - Design 3.6: Total, Ingress Rules, Egress Rules, Default Deny, Unprotected Pods */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <ListPageStatCard size="sm" label="Total Policies" value={stats.total} selected={!hasActiveFilters} onClick={clearAllFilters} className={cn(!hasActiveFilters && 'ring-2 ring-primary')} />
-        <ListPageStatCard size="sm" label="Ingress Rules" value={stats.withIngress} valueClassName="text-blue-600" icon={ArrowDownToLine} iconColor="text-blue-600" />
-        <ListPageStatCard size="sm" label="Egress Rules" value={stats.withEgress} valueClassName="text-orange-600" icon={ArrowUpFromLine} iconColor="text-orange-600" />
+        <ListPageStatCard size="sm" label="Ingress Rules" value={stats.withIngress} valueClassName="text-blue-600" icon={ArrowDownToLine} iconColor="text-blue-600" selected={columnFilters.policyTypes?.size === 1 && columnFilters.policyTypes.has('Ingress')} onClick={() => setColumnFilter('policyTypes', new Set(['Ingress']))} className={cn(columnFilters.policyTypes?.size === 1 && columnFilters.policyTypes.has('Ingress') && 'ring-2 ring-blue-600')} />
+        <ListPageStatCard size="sm" label="Egress Rules" value={stats.withEgress} valueClassName="text-orange-600" icon={ArrowUpFromLine} iconColor="text-orange-600" selected={columnFilters.policyTypes?.size === 1 && columnFilters.policyTypes.has('Egress')} onClick={() => setColumnFilter('policyTypes', new Set(['Egress']))} className={cn(columnFilters.policyTypes?.size === 1 && columnFilters.policyTypes.has('Egress') && 'ring-2 ring-orange-600')} />
         <ListPageStatCard size="sm" label="Default Deny" value={stats.defaultDeny} valueClassName="text-purple-600" />
         <ListPageStatCard size="sm" label="Unprotected Pods" value={stats.unprotectedPods} valueClassName="text-[hsl(45,93%,47%)]" />
       </div>
 
+      <ResourceListTableToolbar
+        globalFilterBar={
       <ResourceCommandBar
         scope={
           <div className="w-full min-w-0">
@@ -410,14 +435,35 @@ spec:
           <Button variant="link" size="sm" className="text-muted-foreground h-auto p-0" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
         ) : undefined}
       />
-
-      {/* Table */}
-      <Card>
+        }
+        hasActiveFilters={hasActiveFilters}
+        onClearAllFilters={clearAllFilters}
+        showTableFilters={showTableFilters}
+        onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+        columns={NETWORKPOLICIES_COLUMNS_FOR_VISIBILITY}
+        visibleColumns={columnVisibility.visibleColumns}
+        onColumnToggle={columnVisibility.setColumnVisible}
+        footer={
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button></DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <DropdownMenuItem key={size} onClick={() => { setPageSize(size); setPageIndex(0); }} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} dataUpdatedAt={pagination.dataUpdatedAt} isFetching={pagination.isFetching} />
+        </div>
+        }
+      >
         <ResizableTableProvider tableId="kubilitics-resizable-table-networkpolicies" columnConfig={NETWORKPOLICIES_TABLE_COLUMNS}>
-          <div className="border border-border rounded-xl overflow-x-auto bg-card">
             <Table className="table-fixed" style={{ minWidth: 1340 }}>
               <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+                <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
                   <TableHead className="w-12">
                     <Checkbox checked={isAllSelected} onCheckedChange={toggleAllSelection} aria-label="Select all" className={isSomeSelected ? 'opacity-50' : ''} />
                   </TableHead>
@@ -425,13 +471,17 @@ spec:
                     <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
                   </ResizableTableHead>
                   <ResizableTableHead columnId="namespace">
-                    <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} />
+                    <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
                   </ResizableTableHead>
                   <ResizableTableHead columnId="podSelector">
                     <TableColumnHeaderWithFilterAndSort columnId="podSelector" label="Pod Selector" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
                   </ResizableTableHead>
-                  <ResizableTableHead columnId="affectedPods">Affected Pods</ResizableTableHead>
-                  <ResizableTableHead columnId="policyTypes">Policy Types</ResizableTableHead>
+                  <ResizableTableHead columnId="affectedPods">
+                    <TableColumnHeaderWithFilterAndSort columnId="affectedPods" label="Affected Pods" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                  <ResizableTableHead columnId="policyTypes">
+                    <TableColumnHeaderWithFilterAndSort columnId="policyTypes" label="Policy Types" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
                   <ResizableTableHead columnId="ingressRules">Ingress Rules</ResizableTableHead>
                   <ResizableTableHead columnId="egressRules">Egress Rules</ResizableTableHead>
                   <ResizableTableHead columnId="allowedSources">Allowed Sources</ResizableTableHead>
@@ -441,18 +491,40 @@ spec:
                   </ResizableTableHead>
                   <TableHead className="w-12"></TableHead>
                 </TableRow>
+                {showTableFilters && (
+                  <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                    <TableCell className="w-12 p-1.5" />
+                    <ResizableTableCell columnId="name" className="p-1.5" />
+                    <ResizableTableCell columnId="namespace" className="p-1.5">
+                      <TableFilterCell columnId="namespace" label="Namespace" distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.namespace} />
+                    </ResizableTableCell>
+                    <ResizableTableCell columnId="podSelector" className="p-1.5" />
+                    <ResizableTableCell columnId="affectedPods" className="p-1.5" />
+                    <ResizableTableCell columnId="policyTypes" className="p-1.5">
+                      <TableFilterCell columnId="policyTypes" label="Policy Types" distinctValues={distinctValuesByColumn.policyTypes ?? []} selectedFilterValues={columnFilters.policyTypes ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.policyTypes} />
+                    </ResizableTableCell>
+                    <ResizableTableCell columnId="ingressRules" className="p-1.5" />
+                    <ResizableTableCell columnId="egressRules" className="p-1.5" />
+                    <ResizableTableCell columnId="allowedSources" className="p-1.5" />
+                    <ResizableTableCell columnId="allowedDestinations" className="p-1.5" />
+                    <ResizableTableCell columnId="age" className="p-1.5" />
+                    <TableCell className="w-12 p-1.5" />
+                  </TableRow>
+                )}
               </TableHeader>
               <TableBody>
                 {itemsOnPage.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={13} className="h-32 text-center text-muted-foreground">
-                      <div className="flex flex-col items-center gap-2">
-                        <Shield className="h-8 w-8 opacity-50" />
-                        <p>No network policies found</p>
-                        {(searchQuery || hasActiveFilters) && (
-                          <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
-                        )}
-                      </div>
+                    <TableCell colSpan={13} className="h-40 text-center">
+                      <TableEmptyState
+                        icon={<Shield className="h-8 w-8" />}
+                        title="No NetworkPolicies found"
+                        subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Create a NetworkPolicy to control pod-to-pod traffic.'}
+                        hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                        onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                        createLabel="Create NetworkPolicy"
+                        onCreate={() => setShowCreateWizard(true)}
+                      />
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -468,7 +540,7 @@ spec:
                       >
                         <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(np)} aria-label={`Select ${np.name}`} /></TableCell>
                         <ResizableTableCell columnId="name"><Link to={`/networkpolicies/${np.namespace}/${np.name}`} className="font-medium text-primary hover:underline truncate block">{np.name}</Link></ResizableTableCell>
-                        <ResizableTableCell columnId="namespace"><Badge variant="outline">{np.namespace}</Badge></ResizableTableCell>
+                        <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={np.namespace} /></ResizableTableCell>
                         <ResizableTableCell columnId="podSelector"><span className="font-mono text-sm truncate block" title={np.podSelector}>{np.podSelector}</span></ResizableTableCell>
                         <ResizableTableCell columnId="affectedPods"><span className="font-mono">{np.affectedPods > 0 ? np.affectedPods : '—'}</span></ResizableTableCell>
                         <ResizableTableCell columnId="policyTypes">
@@ -482,11 +554,12 @@ spec:
                         <ResizableTableCell columnId="egressRules"><span className="font-mono">{np.egressRules}</span></ResizableTableCell>
                         <ResizableTableCell columnId="allowedSources"><span className="font-mono">{np.allowedSources}</span></ResizableTableCell>
                         <ResizableTableCell columnId="allowedDestinations"><span className="font-mono">{np.allowedDestinations}</span></ResizableTableCell>
-                        <ResizableTableCell columnId="age"><span className="text-muted-foreground">{np.age}</span></ResizableTableCell>
+                        <ResizableTableCell columnId="age"><AgeCell age={np.age} timestamp={np.creationTimestamp} /></ResizableTableCell>
                         <TableCell>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-52">
+                              <CopyNameDropdownItem name={np.name} namespace={np.namespace} />
                               <DropdownMenuItem onClick={() => navigate(`/networkpolicies/${np.namespace}/${np.name}`)}><ExternalLink className="h-4 w-4 mr-2" />View Details</DropdownMenuItem>
                               <DropdownMenuItem onClick={() => navigate(`/networkpolicies/${np.namespace}/${np.name}?tab=simulation`)}>Simulate Policy</DropdownMenuItem>
                               <DropdownMenuItem onClick={() => navigate(`/networkpolicies/${np.namespace}/${np.name}?tab=pods`)}>View Affected Pods</DropdownMenuItem>
@@ -502,26 +575,8 @@ spec:
                 )}
               </TableBody>
             </Table>
-          </div>
         </ResizableTableProvider>
-      </Card>
-
-      <div className="pt-4 pb-2 border-t border-border mt-2">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">{totalFiltered > 0 ? `Showing ${start + 1}–${Math.min(start + pageSize, totalFiltered)} of ${totalFiltered}` : 'No network policies'}</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button></DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <DropdownMenuItem key={size} onClick={() => { setPageSize(size); setPageIndex(0); }} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          <ListPagination hasPrev={safePageIndex > 0} hasNext={start + pageSize < totalFiltered} onPrev={() => setPageIndex((i) => Math.max(0, i - 1))} onNext={() => setPageIndex((i) => Math.min(totalPages - 1, i + 1))} currentPage={safePageIndex + 1} totalPages={Math.max(1, totalPages)} onPageChange={(p) => setPageIndex(Math.max(0, p - 1))} />
-        </div>
-      </div>
+      </ResourceListTableToolbar>
 
       {/* Delete Dialog */}
       <DeleteConfirmDialog

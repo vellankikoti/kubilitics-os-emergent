@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,16 +10,19 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/kubilitics/kubilitics-ai/internal/llm/types"
 )
 
 // Anthropic API constants
 const (
-	DefaultBaseURL     = "https://api.anthropic.com/v1"
-	DefaultModel       = "claude-3-5-sonnet-20241022"
-	DefaultMaxTokens   = 4096
-	DefaultAPIVersion  = "2023-06-01"
-	DefaultTimeout     = 120 * time.Second
+	DefaultBaseURL    = "https://api.anthropic.com/v1"
+	DefaultModel      = "claude-3-5-sonnet-20241022"
+	DefaultMaxTokens  = 4096
+	DefaultAPIVersion = "2023-06-01"
+	DefaultTimeout    = 120 * time.Second
 )
 
 // Model costs per 1K tokens (as of Feb 2026)
@@ -42,54 +46,71 @@ type AnthropicClientImpl struct {
 	httpClient      *http.Client
 }
 
-// Message represents an Anthropic message
-type Message struct {
-	Role    string        `json:"role"`
+// anthMessage represents an Anthropic API message
+type anthMessage struct {
+	Role    string         `json:"role"`
 	Content []ContentBlock `json:"content"`
 }
 
 // ContentBlock can be text or tool_use or tool_result
 type ContentBlock struct {
-	Type  string                 `json:"type"`
-	Text  string                 `json:"text,omitempty"`
-	ID    string                 `json:"id,omitempty"`
-	Name  string                 `json:"name,omitempty"`
-	Input map[string]interface{} `json:"input,omitempty"`
+	Type      string                 `json:"type"`
+	Text      string                 `json:"text,omitempty"`
+	ID        string                 `json:"id,omitempty"`
+	Name      string                 `json:"name,omitempty"`
+	Input     map[string]interface{} `json:"input,omitempty"`
+	ToolUseID string                 `json:"tool_use_id,omitempty"`
+	Content   string                 `json:"content,omitempty"` // for tool_result
 }
 
-// Tool represents an Anthropic tool definition
-type Tool struct {
+// anthTool represents an Anthropic tool definition
+type anthTool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"input_schema"`
 }
 
-// Request represents an Anthropic API request
-type Request struct {
-	Model       string    `json:"model"`
-	MaxTokens   int       `json:"max_tokens"`
-	Messages    []Message `json:"messages"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	System      string    `json:"system,omitempty"`
-	Temperature float64   `json:"temperature,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
+// anthRequest represents an Anthropic API request
+type anthRequest struct {
+	Model     string        `json:"model"`
+	MaxTokens int           `json:"max_tokens"`
+	Messages  []anthMessage `json:"messages"`
+	Tools     []anthTool    `json:"tools,omitempty"`
+	System    string        `json:"system,omitempty"`
+	Stream    bool          `json:"stream,omitempty"`
 }
 
-// Response represents an Anthropic API response
-type Response struct {
-	ID           string         `json:"id"`
-	Type         string         `json:"type"`
-	Role         string         `json:"role"`
-	Content      []ContentBlock `json:"content"`
-	Model        string         `json:"model"`
-	StopReason   string         `json:"stop_reason"`
-	Usage        Usage          `json:"usage"`
+// anthResponse represents an Anthropic API response
+type anthResponse struct {
+	ID         string         `json:"id"`
+	Type       string         `json:"type"`
+	Role       string         `json:"role"`
+	Content    []ContentBlock `json:"content"`
+	Model      string         `json:"model"`
+	StopReason string         `json:"stop_reason"`
+	Usage      anthUsage      `json:"usage"`
 }
 
-// Usage tracks token usage
-type Usage struct {
+// anthUsage tracks token usage
+type anthUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+}
+
+// SSE event types from Anthropic streaming API
+type sseEvent struct {
+	Type  string          `json:"type"`
+	Index int             `json:"index,omitempty"`
+	Delta *sseDelta       `json:"delta,omitempty"`
+	Usage *anthUsage      `json:"usage,omitempty"`
+	ContentBlock *ContentBlock `json:"content_block,omitempty"`
+}
+
+type sseDelta struct {
+	Type        string `json:"type"`
+	Text        string `json:"text,omitempty"`
+	StopReason  string `json:"stop_reason,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
 }
 
 // Capabilities represents model capabilities
@@ -142,25 +163,23 @@ func NewAnthropicClient(apiKey string, model string) (*AnthropicClientImpl, erro
 	}, nil
 }
 
-// Complete implements non-streaming completion
-func (c *AnthropicClientImpl) Complete(ctx context.Context, messages []interface{}, tools []interface{}) (string, []interface{}, error) {
-	// Convert generic messages to Anthropic format
-	anthMessages, err := c.convertMessages(messages)
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to convert messages: %w", err)
-	}
+// Complete implements non-streaming completion using types.Message and types.Tool
+func (c *AnthropicClientImpl) Complete(ctx context.Context, messages []types.Message, tools []types.Tool) (string, []interface{}, error) {
+	// Extract system message if present
+	system, filteredMessages := extractSystem(messages)
 
-	// Convert generic tools to Anthropic format
-	anthTools, err := c.convertTools(tools)
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to convert tools: %w", err)
-	}
+	// Convert to Anthropic message format
+	anthMessages := convertMessages(filteredMessages)
 
-	req := Request{
+	// Convert tools to Anthropic format
+	anthTools := convertTools(tools)
+
+	req := anthRequest{
 		Model:     c.model,
 		MaxTokens: c.maxTokens,
 		Messages:  anthMessages,
 		Tools:     anthTools,
+		System:    system,
 		Stream:    false,
 	}
 
@@ -175,9 +194,10 @@ func (c *AnthropicClientImpl) Complete(ctx context.Context, messages []interface
 	var toolCalls []interface{}
 
 	for _, block := range resp.Content {
-		if block.Type == "text" {
+		switch block.Type {
+		case "text":
 			text += block.Text
-		} else if block.Type == "tool_use" {
+		case "tool_use":
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"id":    block.ID,
 				"name":  block.Name,
@@ -189,64 +209,167 @@ func (c *AnthropicClientImpl) Complete(ctx context.Context, messages []interface
 	return text, toolCalls, nil
 }
 
-// CompleteStream implements streaming completion
-func (c *AnthropicClientImpl) CompleteStream(ctx context.Context, messages []interface{}, tools []interface{}) (chan string, chan interface{}, error) {
+// CompleteStream implements streaming completion with real SSE parsing
+func (c *AnthropicClientImpl) CompleteStream(ctx context.Context, messages []types.Message, tools []types.Tool) (chan string, chan interface{}, error) {
 	textChan := make(chan string, 100)
 	toolChan := make(chan interface{}, 10)
 
+	// Extract system message if present
+	system, filteredMessages := extractSystem(messages)
+
 	// Convert messages and tools
-	anthMessages, err := c.convertMessages(messages)
+	anthMessages := convertMessages(filteredMessages)
+	anthTools := convertTools(tools)
+
+	req := anthRequest{
+		Model:     c.model,
+		MaxTokens: c.maxTokens,
+		Messages:  anthMessages,
+		Tools:     anthTools,
+		System:    system,
+		Stream:    true,
+	}
+
+	reqBody, err := json.Marshal(req)
 	if err != nil {
 		close(textChan)
 		close(toolChan)
-		return nil, nil, fmt.Errorf("failed to convert messages: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	anthTools, err := c.convertTools(tools)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/messages", bytes.NewBuffer(reqBody))
 	if err != nil {
 		close(textChan)
 		close(toolChan)
-		return nil, nil, fmt.Errorf("failed to convert tools: %w", err)
+		return nil, nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Start streaming in goroutine
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", c.apiKey)
+	httpReq.Header.Set("anthropic-version", DefaultAPIVersion)
+
+	// Use a client without timeout for streaming (rely on context cancellation)
+	streamClient := &http.Client{}
+	httpResp, err := streamClient.Do(httpReq)
+	if err != nil {
+		close(textChan)
+		close(toolChan)
+		return nil, nil, fmt.Errorf("streaming request failed: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		close(textChan)
+		close(toolChan)
+		return nil, nil, fmt.Errorf("API error %d: %s", httpResp.StatusCode, string(body))
+	}
+
+	// Parse SSE stream in goroutine
 	go func() {
 		defer close(textChan)
 		defer close(toolChan)
+		defer httpResp.Body.Close()
 
-		// Full streaming implementation would parse SSE events from Anthropic
-		// For now, return placeholder message
-		_ = anthMessages // Use the converted messages
-		_ = anthTools    // Use the converted tools
-		textChan <- "Streaming not yet implemented"
+		// Track current tool use block being assembled
+		var currentToolID, currentToolName string
+		var currentToolInputJSON strings.Builder
+
+		scanner := bufio.NewScanner(httpResp.Body)
+		var eventType string
+
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			line := scanner.Text()
+
+			if strings.HasPrefix(line, "event: ") {
+				eventType = strings.TrimPrefix(line, "event: ")
+				continue
+			}
+
+			if strings.HasPrefix(line, "data: ") {
+				data := strings.TrimPrefix(line, "data: ")
+				if data == "[DONE]" {
+					return
+				}
+
+				var event sseEvent
+				if err := json.Unmarshal([]byte(data), &event); err != nil {
+					continue
+				}
+
+				switch eventType {
+				case "content_block_start":
+					if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
+						currentToolID = event.ContentBlock.ID
+						currentToolName = event.ContentBlock.Name
+						currentToolInputJSON.Reset()
+					}
+
+				case "content_block_delta":
+					if event.Delta == nil {
+						continue
+					}
+					switch event.Delta.Type {
+					case "text_delta":
+						if event.Delta.Text != "" {
+							select {
+							case textChan <- event.Delta.Text:
+							case <-ctx.Done():
+								return
+							}
+						}
+					case "input_json_delta":
+						currentToolInputJSON.WriteString(event.Delta.PartialJSON)
+					}
+
+				case "content_block_stop":
+					// If we were building a tool call, emit it now
+					if currentToolID != "" {
+						var toolInput map[string]interface{}
+						if jsonStr := currentToolInputJSON.String(); jsonStr != "" {
+							_ = json.Unmarshal([]byte(jsonStr), &toolInput)
+						}
+						select {
+						case toolChan <- map[string]interface{}{
+							"id":    currentToolID,
+							"name":  currentToolName,
+							"input": toolInput,
+						}:
+						case <-ctx.Done():
+							return
+						}
+						currentToolID = ""
+						currentToolName = ""
+						currentToolInputJSON.Reset()
+					}
+
+				case "message_stop":
+					return
+				}
+			}
+		}
 	}()
 
 	return textChan, toolChan, nil
 }
 
-// CountTokens estimates token count
-func (c *AnthropicClientImpl) CountTokens(ctx context.Context, messages []interface{}, tools []interface{}) (int, error) {
-	// Anthropic doesn't have a separate token counting API
-	// We approximate based on character count
-	// Real implementation would use tiktoken or similar
-
+// CountTokens estimates token count for the messages and tools
+func (c *AnthropicClientImpl) CountTokens(ctx context.Context, messages []types.Message, tools []types.Tool) (int, error) {
 	totalChars := 0
 	for _, msg := range messages {
-		if msgMap, ok := msg.(map[string]interface{}); ok {
-			if content, ok := msgMap["content"].(string); ok {
-				totalChars += len(content)
-			}
-		}
+		totalChars += len(msg.Content)
 	}
-
 	for _, tool := range tools {
-		if toolMap, ok := tool.(map[string]interface{}); ok {
-			if toolJSON, err := json.Marshal(toolMap); err == nil {
-				totalChars += len(toolJSON)
-			}
+		if toolJSON, err := json.Marshal(tool); err == nil {
+			totalChars += len(toolJSON)
 		}
 	}
-
 	// Rough estimate: 4 characters per token
 	return totalChars / 4, nil
 }
@@ -276,11 +399,10 @@ func (c *AnthropicClientImpl) ValidateToolCall(ctx context.Context, toolName str
 	if toolName == "" {
 		return fmt.Errorf("tool name is required")
 	}
-	// Additional validation would check against tool schemas
 	return nil
 }
 
-// NormalizeToolCall converts Anthropic format to standard format
+// NormalizeToolCall converts Anthropic tool_use format to standard format
 func (c *AnthropicClientImpl) NormalizeToolCall(ctx context.Context, toolCall interface{}) (map[string]interface{}, error) {
 	tcMap, ok := toolCall.(map[string]interface{})
 	if !ok {
@@ -298,78 +420,57 @@ func (c *AnthropicClientImpl) NormalizeToolCall(ctx context.Context, toolCall in
 	}, nil
 }
 
-// convertMessages converts generic messages to Anthropic format
-func (c *AnthropicClientImpl) convertMessages(messages []interface{}) ([]Message, error) {
-	result := make([]Message, 0, len(messages))
-
-	for _, msg := range messages {
-		msgMap, ok := msg.(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("message must be a map")
+// extractSystem pulls out any system message and returns it separately,
+// along with the remaining messages (Anthropic requires system as a top-level field).
+func extractSystem(messages []types.Message) (string, []types.Message) {
+	var system string
+	filtered := make([]types.Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == "system" {
+			system = m.Content
+		} else {
+			filtered = append(filtered, m)
 		}
+	}
+	return system, filtered
+}
 
-		role, _ := msgMap["role"].(string)
-		content, _ := msgMap["content"].(string)
-
-		if role == "" || content == "" {
-			return nil, fmt.Errorf("message must have role and content")
-		}
-
-		// Convert system messages to user messages with system prefix
-		// Anthropic uses a separate system parameter
-		if role == "system" {
-			role = "user"
-			content = "[SYSTEM] " + content
-		}
-
-		result = append(result, Message{
-			Role: role,
+// convertMessages converts []types.Message to Anthropic anthMessage format
+func convertMessages(messages []types.Message) []anthMessage {
+	result := make([]anthMessage, 0, len(messages))
+	for _, m := range messages {
+		result = append(result, anthMessage{
+			Role: m.Role,
 			Content: []ContentBlock{
-				{
-					Type: "text",
-					Text: content,
-				},
+				{Type: "text", Text: m.Content},
 			},
 		})
 	}
-
-	return result, nil
+	return result
 }
 
-// convertTools converts generic tools to Anthropic format
-func (c *AnthropicClientImpl) convertTools(tools []interface{}) ([]Tool, error) {
+// convertTools converts []types.Tool to Anthropic anthTool format
+func convertTools(tools []types.Tool) []anthTool {
 	if len(tools) == 0 {
-		return nil, nil
+		return nil
 	}
-
-	result := make([]Tool, 0, len(tools))
-
-	for _, tool := range tools {
-		toolMap, ok := tool.(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("tool must be a map")
+	result := make([]anthTool, 0, len(tools))
+	for _, t := range tools {
+		schema := t.Parameters
+		if schema == nil {
+			schema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 		}
-
-		name, _ := toolMap["name"].(string)
-		description, _ := toolMap["description"].(string)
-		schema, _ := toolMap["input_schema"].(map[string]interface{})
-
-		if name == "" {
-			return nil, fmt.Errorf("tool must have a name")
-		}
-
-		result = append(result, Tool{
-			Name:        name,
-			Description: description,
+		result = append(result, anthTool{
+			Name:        t.Name,
+			Description: t.Description,
 			InputSchema: schema,
 		})
 	}
-
-	return result, nil
+	return result
 }
 
-// makeRequest makes an HTTP request to Anthropic API
-func (c *AnthropicClientImpl) makeRequest(ctx context.Context, req Request) (*Response, error) {
+// makeRequest makes a non-streaming HTTP request to the Anthropic API
+func (c *AnthropicClientImpl) makeRequest(ctx context.Context, req anthRequest) (*anthResponse, error) {
 	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -399,10 +500,13 @@ func (c *AnthropicClientImpl) makeRequest(ctx context.Context, req Request) (*Re
 		return nil, fmt.Errorf("API error %d: %s", httpResp.StatusCode, string(body))
 	}
 
-	var resp Response
+	var resp anthResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	return &resp, nil
 }
+
+// SetBaseURL overrides the Anthropic API base URL.  Used in tests.
+func (c *AnthropicClientImpl) SetBaseURL(url string) { c.baseURL = url }

@@ -11,6 +11,7 @@ import type {
   ResourceStatus,
   HealthStatus,
   RelationshipType,
+  KubernetesKind,
 } from '../types/topology.types';
 
 /* ── Backend shapes (matches Go JSON tags) ─────────────────────── */
@@ -147,7 +148,7 @@ function normalizeHealth(health?: string): HealthStatus {
 function transformNode(n: BackendTopologyNode): TopologyNode {
   return {
     id: n.id,
-    kind: n.kind as any,
+    kind: n.kind as KubernetesKind,
     namespace: n.namespace || '',
     name: n.name,
     apiVersion: n.apiVersion || 'v1',
@@ -188,15 +189,46 @@ function transformEdge(e: BackendTopologyEdge): TopologyEdge {
  * Transforms backend TopologyGraph to the frontend TopologyGraph format.
  * This is the main adapter used by the API client layer.
  */
-export function adaptTopologyGraph(backendGraph: any): TopologyGraph {
-  if (!backendGraph) throw new Error('Backend graph is null or undefined');
+interface BackendGraphMetadata {
+  clusterId?: string;
+  cluster_id?: string;
+  generatedAt?: string;
+  generated_at?: string;
+  layoutSeed?: string;
+  layout_seed?: string;
+  isComplete?: boolean;
+  is_complete?: boolean;
+  warnings?: Array<{
+    code?: string;
+    message?: string;
+    affectedNodes?: string[];
+    affected_nodes?: string[];
+  }>;
+}
 
-  const nodes: BackendTopologyNode[] = backendGraph.nodes || backendGraph.Nodes || [];
-  const edges: BackendTopologyEdge[] = backendGraph.edges || backendGraph.Edges || [];
-  const metadata = backendGraph.metadata || backendGraph.Metadata || {};
+interface BackendGraph {
+  nodes?: BackendTopologyNode[];
+  Nodes?: BackendTopologyNode[];
+  edges?: BackendTopologyEdge[];
+  Edges?: BackendTopologyEdge[];
+  metadata?: BackendGraphMetadata;
+  Metadata?: BackendGraphMetadata;
+  schemaVersion?: string;
+  schema_version?: string;
+}
+
+export function adaptTopologyGraph(backendGraph: unknown): TopologyGraph {
+  if (!backendGraph || typeof backendGraph !== 'object') {
+    throw new Error('Backend graph is null or undefined');
+  }
+
+  const graph = backendGraph as BackendGraph;
+  const nodes: BackendTopologyNode[] = graph.nodes || graph.Nodes || [];
+  const edges: BackendTopologyEdge[] = graph.edges || graph.Edges || [];
+  const metadata = graph.metadata || graph.Metadata || {};
 
   return {
-    schemaVersion: backendGraph.schemaVersion || backendGraph.schema_version || '1.0',
+    schemaVersion: graph.schemaVersion || graph.schema_version || '1.0',
     nodes: nodes.map(transformNode),
     edges: edges.map(transformEdge),
     metadata: {
@@ -204,7 +236,7 @@ export function adaptTopologyGraph(backendGraph: any): TopologyGraph {
       generatedAt: metadata.generatedAt || metadata.generated_at || new Date().toISOString(),
       layoutSeed: metadata.layoutSeed || metadata.layout_seed || '',
       isComplete: metadata.isComplete ?? metadata.is_complete ?? true,
-      warnings: (metadata.warnings || []).map((w: any) => ({
+      warnings: (metadata.warnings || []).map((w) => ({
         code: w.code || '',
         message: w.message || '',
         affectedNodes: w.affectedNodes || w.affected_nodes || [],

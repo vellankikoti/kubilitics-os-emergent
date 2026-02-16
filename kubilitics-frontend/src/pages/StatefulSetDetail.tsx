@@ -5,7 +5,6 @@ import {
   Clock,
   Server,
   RotateCcw,
-  RefreshCw,
   Download,
   Trash2,
   Copy,
@@ -29,6 +28,7 @@ import {
   Globe,
   SlidersHorizontal,
   Hash,
+  ArrowDown,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -174,7 +174,7 @@ export default function StatefulSetDetail() {
   }, [stsPodsRaw, stsName]);
   const firstStsPodName = stsPods[0]?.metadata?.name ?? '';
 
-  const { data: pvcList } = useK8sResourceList<KubernetesResource & { metadata?: { name?: string }; status?: { phase?: string }; spec?: { storageClassName?: string; resources?: { requests?: { storage?: string } } } }>(
+  const { data: pvcList } = useK8sResourceList<KubernetesResource & { metadata?: { name?: string; creationTimestamp?: string }; status?: { phase?: string; capacity?: { storage?: string } }; spec?: { storageClassName?: string; resources?: { requests?: { storage?: string } } } }>(
     'persistentvolumeclaims',
     namespace ?? undefined,
     { enabled: !!namespace && !!name, limit: 5000 }
@@ -186,6 +186,25 @@ export default function StatefulSetDetail() {
       return pvcName.includes(stsName) && new RegExp(`^[a-z0-9-]+-${stsName}-\\d+$`).test(pvcName);
     });
   }, [pvcList?.items, stsName]);
+  const stsPvcsWithOrdinal = useMemo(() => stsPvcs.map((pvc) => {
+    const pvcName = pvc.metadata?.name ?? '';
+    const match = pvcName.match(new RegExp(`-${stsName}-(\\d+)$`));
+    const ordinal = match ? parseInt(match[1], 10) : null;
+    return { pvc, ordinal };
+  }).sort((a, b) => (a.ordinal ?? -1) - (b.ordinal ?? -1)), [stsPvcs, stsName]);
+  const pvcTotalStorage = useMemo(() => {
+    let totalGi = 0;
+    for (const { pvc } of stsPvcsWithOrdinal) {
+      const raw = (pvc.status as { capacity?: { storage?: string } })?.capacity?.storage ?? '';
+      const m = raw.match(/^(\d+(?:\.\d+)?)\s*Gi?$/i);
+      if (m) totalGi += parseFloat(m[1]);
+      else {
+        const mMi = raw.match(/^(\d+(?:\.\d+)?)\s*Mi?$/i);
+        if (mMi) totalGi += parseFloat(mMi[1]) / 1024;
+      }
+    }
+    return totalGi > 0 ? `${totalGi.toFixed(2)} Gi` : null;
+  }, [stsPvcsWithOrdinal]);
   const logPod = selectedLogPod || firstStsPodName;
   const terminalPod = selectedTerminalPod || firstStsPodName;
   const logPodContainers = (stsPods.find((p) => p.metadata?.name === logPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
@@ -447,7 +466,13 @@ export default function StatefulSetDetail() {
       icon: Hash,
       badge: stsPods.length.toString(),
       content: (
-        <SectionCard icon={Box} title="Pods & Ordinals" tooltip={<p className="text-xs text-muted-foreground">Ordered pod list with ordinal index</p>}>
+        <SectionCard icon={Box} title="Pods & Ordinals" tooltip={<p className="text-xs text-muted-foreground">Ordered pod list with ordinal index and partition state</p>}>
+          {stsPods.length > 0 && updateStrategyType === 'RollingUpdate' && (
+            <div className="flex items-center gap-2 mb-3 text-xs text-muted-foreground">
+              <ArrowDown className="h-4 w-4 shrink-0" aria-hidden />
+              <span>Update direction: highest ordinal first (e.g. {Math.max(0, stsPods.length - 1)} → … → 0)</span>
+            </div>
+          )}
           {stsPods.length === 0 ? (
             <p className="text-sm text-muted-foreground">No pods match this StatefulSet&apos;s selector yet.</p>
           ) : (
@@ -457,6 +482,7 @@ export default function StatefulSetDetail() {
                   <tr>
                     <th className="text-left p-3 font-medium">Ordinal</th>
                     <th className="text-left p-3 font-medium">Name</th>
+                    <th className="text-left p-3 font-medium">Template</th>
                     <th className="text-left p-3 font-medium">Status</th>
                     <th className="text-left p-3 font-medium">Node</th>
                     <th className="text-left p-3 font-medium">IP</th>
@@ -471,16 +497,25 @@ export default function StatefulSetDetail() {
                     const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
                     const podIP = (pod.status as { podIP?: string } | undefined)?.podIP ?? '-';
                     const created = pod.metadata?.creationTimestamp ? calculateAge(pod.metadata.creationTimestamp) : '-';
-                    const ordinal = podName.replace(new RegExp(`^${stsName}-`), '') || '?';
+                    const ordinalStr = podName.replace(new RegExp(`^${stsName}-`), '') || '?';
+                    const ordinalNum = /^\d+$/.test(ordinalStr) ? parseInt(ordinalStr, 10) : -1;
+                    const isNewTemplate = ordinalNum >= partition;
+                    const templateBadge = updateStrategyType === 'RollingUpdate' && partition > 0
+                      ? (isNewTemplate ? <Badge variant="default" className="bg-primary/90 text-primary-foreground text-xs">New Template</Badge> : <Badge variant="secondary" className="text-muted-foreground text-xs">Old Template</Badge>)
+                      : null;
                     return (
                       <tr key={podName} className="border-t">
-                        <td className="p-3"><Badge variant="secondary" className="font-mono">{ordinal}</Badge></td>
+                        <td className="p-3"><Badge variant="secondary" className="font-mono">[{ordinalStr}]</Badge></td>
                         <td className="p-3">
-                          <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">
-                            {podName}
-                          </Link>
+                          <span className="inline-flex items-center gap-2">
+                            <span className="font-mono text-muted-foreground text-xs">[{ordinalStr}]</span>
+                            <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">
+                              {podName}
+                            </Link>
+                          </span>
                         </td>
-                        <td className="p-3">{phase}</td>
+                        <td className="p-3">{templateBadge ?? '—'}</td>
+                        <td className="p-3"><Badge variant={phase === 'Running' ? 'default' : 'secondary'} className="text-xs">{phase}</Badge></td>
                         <td className="p-3 font-mono text-xs">{nodeName}</td>
                         <td className="p-3 font-mono text-xs">{podIP}</td>
                         <td className="p-3">{created}</td>
@@ -491,9 +526,6 @@ export default function StatefulSetDetail() {
               </table>
             </div>
           )}
-          {stsPods.length > 0 && updateStrategyType === 'RollingUpdate' && (
-            <p className="text-xs text-muted-foreground mt-3">RollingUpdate applies in reverse ordinal order (highest first).</p>
-          )}
         </SectionCard>
       ),
     },
@@ -503,29 +535,35 @@ export default function StatefulSetDetail() {
       icon: HardDrive,
       badge: stsPvcs.length.toString(),
       content: (
-        <SectionCard icon={HardDrive} title="PersistentVolumeClaims" tooltip={<p className="text-xs text-muted-foreground">PVCs used by this StatefulSet</p>}>
+        <SectionCard icon={HardDrive} title="PersistentVolumeClaims" tooltip={<p className="text-xs text-muted-foreground">PVCs used by this StatefulSet, per pod ordinal</p>}>
           {volumeClaimTemplates.length === 0 ? (
             <p className="text-sm text-muted-foreground">No volume claim templates defined.</p>
           ) : stsPvcs.length === 0 ? (
             <p className="text-sm text-muted-foreground">No PVCs found for this StatefulSet yet.</p>
           ) : (
             <div className="space-y-3">
-              <div className="rounded-lg border overflow-hidden">
-                <table className="w-full text-sm">
+              <div className="rounded-lg border overflow-x-auto">
+                <table className="w-full text-sm min-w-[600px]">
                   <thead className="bg-muted/50">
                     <tr>
                       <th className="text-left p-3 font-medium">PVC Name</th>
+                      <th className="text-left p-3 font-medium">Bound Pod (ordinal)</th>
                       <th className="text-left p-3 font-medium">Status</th>
-                      <th className="text-left p-3 font-medium">Storage Class</th>
                       <th className="text-left p-3 font-medium">Capacity</th>
+                      <th className="text-left p-3 font-medium">StorageClass</th>
+                      <th className="text-left p-3 font-medium">Age</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {stsPvcs.map((pvc) => {
+                    {stsPvcsWithOrdinal.map(({ pvc, ordinal }) => {
                       const pvcName = pvc.metadata?.name ?? '';
-                      const phase = (pvc.status as { phase?: string })?.phase ?? '-';
+                      const phase = (pvc.status as { phase?: string })?.phase ?? 'Unknown';
                       const storageClass = (pvc.spec as { storageClassName?: string })?.storageClassName ?? 'default';
                       const capacity = (pvc.status as { capacity?: { storage?: string } })?.capacity?.storage ?? '—';
+                      const age = pvc.metadata?.creationTimestamp ? calculateAge(pvc.metadata.creationTimestamp) : '—';
+                      const podLabel = ordinal !== null ? `${stsName}-${ordinal}` : '—';
+                      const statusVariant = phase === 'Bound' ? 'default' : phase === 'Pending' ? 'secondary' : 'destructive';
+                      const statusClassName = phase === 'Bound' ? 'bg-[hsl(142,76%,36%)]/90 text-white border-0' : phase === 'Pending' ? 'bg-amber-500/90 text-white border-0' : phase === 'Lost' ? 'bg-destructive/90 text-destructive-foreground border-0' : '';
                       return (
                         <tr key={pvcName} className="border-t">
                           <td className="p-3">
@@ -533,15 +571,26 @@ export default function StatefulSetDetail() {
                               {pvcName}
                             </Link>
                           </td>
-                          <td className="p-3"><Badge variant={phase === 'Bound' ? 'default' : 'secondary'}>{phase}</Badge></td>
-                          <td className="p-3 font-mono text-xs">{storageClass}</td>
+                          <td className="p-3 font-mono text-xs">
+                            {ordinal !== null ? <Link to={`/pods/${namespace}/${podLabel}`} className="text-primary hover:underline">{podLabel}</Link> : '—'}
+                          </td>
+                          <td className="p-3">
+                            <Badge variant={statusVariant} className={statusClassName || undefined}>{phase}</Badge>
+                          </td>
                           <td className="p-3 font-mono text-xs">{capacity}</td>
+                          <td className="p-3 font-mono text-xs">{storageClass}</td>
+                          <td className="p-3 text-muted-foreground">{age}</td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
               </div>
+              {pvcTotalStorage && (
+                <p className="text-sm font-medium text-muted-foreground">
+                  Total storage: <span className="font-mono text-foreground">{pvcTotalStorage}</span>
+                </p>
+              )}
             </div>
           )}
         </SectionCard>
@@ -818,7 +867,6 @@ export default function StatefulSetDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Scale', icon: Scale, variant: 'outline', onClick: () => setShowScaleDialog(true) },
           { label: 'Restart', icon: RotateCcw, variant: 'outline', onClick: () => setShowRolloutDialog(true) },

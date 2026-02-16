@@ -59,15 +59,20 @@ func main() {
 	}
 	defer repo.Close()
 
-	// Run migrations
-	migrationSQL, err := os.ReadFile("migrations/001_initial_schema.sql")
-	if err != nil {
-		log.Printf("⚠️  Warning: Could not read migration file: %v", err)
-	} else {
+	// Run migrations (001, 002, 003, ...)
+	for _, name := range []string{"001_initial_schema.sql", "002_add_cluster_provider.sql", "003_projects.sql", "004_simplify_project_clusters.sql"} {
+		migrationSQL, err := os.ReadFile(filepath.Join("migrations", name))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			log.Printf("⚠️  Warning: Could not read migration %s: %v", name, err)
+			continue
+		}
 		if err := repo.RunMigrations(string(migrationSQL)); err != nil {
-			log.Printf("⚠️  Warning: Failed to run migrations: %v", err)
+			log.Printf("⚠️  Warning: Failed to run migration %s: %v", name, err)
 		} else {
-			log.Println("✅ Database migrations completed")
+			log.Printf("✅ Migration %s completed", name)
 		}
 	}
 
@@ -91,7 +96,7 @@ func main() {
 				}
 			}
 			if kubeconfigPath != "" {
-				contexts, err := k8s.ListContextNames(kubeconfigPath)
+				contexts, _, err := k8s.GetKubeconfigContexts(kubeconfigPath)
 				if err != nil {
 					log.Printf("⚠️  Could not list kubeconfig contexts: %v", err)
 				} else {
@@ -157,12 +162,25 @@ func main() {
 
 	// Setup HTTP router
 	log.Printf("📊 Resource topology supported for: %v", topology.ResourceTopologyKinds)
+	// Fail fast if Node is missing (e.g. old binary); prevents 500 on Node detail topology.
+	hasNode := false
+	for _, k := range topology.ResourceTopologyKinds {
+		if k == "Node" {
+			hasNode = true
+			break
+		}
+	}
+	if !hasNode {
+		log.Fatal("topology: Node must be in ResourceTopologyKinds; rebuild backend from current source (make clean && make backend)")
+	}
+	projectService := service.NewProjectService(repo, repo)
 	router := mux.NewRouter()
-	handler := rest.NewHandler(clusterService, topologyService, cfg, logsService, eventsService, metricsService, unifiedMetricsService)
+	handler := rest.NewHandler(clusterService, topologyService, cfg, logsService, eventsService, metricsService, unifiedMetricsService, projectService)
 
 	// Deployment rollout routes on main router (full path) so they always match regardless of subrouter path handling
 	router.HandleFunc("/api/v1/clusters/{clusterId}/resources/deployments/{namespace}/{name}/rollout-history", handler.GetDeploymentRolloutHistory).Methods("GET")
 	router.HandleFunc("/api/v1/clusters/{clusterId}/resources/deployments/{namespace}/{name}/rollback", handler.PostDeploymentRollback).Methods("POST")
+	router.HandleFunc("/api/v1/clusters/{clusterId}/shell/stream", handler.GetShellStream).Methods("GET")
 
 	// actualPort is set after we bind; health handler includes it for discovery (e.g. desktop)
 	var actualPort int
@@ -172,10 +190,10 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		body := map[string]interface{}{
-			"status":          "healthy",
-			"service":         "kubilitics-backend",
-			"version":         "1.0.0",
-			"topology_kinds":  topology.ResourceTopologyKinds,
+			"status":         "healthy",
+			"service":        "kubilitics-backend",
+			"version":        "1.0.0",
+			"topology_kinds": topology.ResourceTopologyKinds,
 		}
 		if actualPort != 0 {
 			body["port"] = actualPort
@@ -316,6 +334,9 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 func rolloutPathInterceptor(restHandler *rest.Handler, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+		if strings.Contains(path, "shell/stream") {
+			log.Printf("Interceptor: Incoming shell stream request: %s %s", r.Method, path)
+		}
 		if path == "" {
 			path = "/"
 		}

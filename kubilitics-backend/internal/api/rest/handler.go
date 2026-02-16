@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/kubilitics/kubilitics-backend/internal/config"
 	"github.com/kubilitics/kubilitics-backend/internal/models"
+	"github.com/kubilitics/kubilitics-backend/internal/pkg/drawio"
 	"github.com/kubilitics/kubilitics-backend/internal/pkg/metrics"
 	"github.com/kubilitics/kubilitics-backend/internal/pkg/validate"
 	"github.com/kubilitics/kubilitics-backend/internal/service"
@@ -30,11 +32,12 @@ type Handler struct {
 	eventsService         service.EventsService
 	metricsService        service.MetricsService
 	unifiedMetricsService *service.UnifiedMetricsService
+	projSvc               service.ProjectService
 	cfg                   *config.Config
 }
 
-// NewHandler creates a new HTTP handler. unifiedMetricsService can be nil; then metrics summary uses legacy per-resource endpoints.
-func NewHandler(cs service.ClusterService, ts service.TopologyService, cfg *config.Config, logsService service.LogsService, eventsService service.EventsService, metricsService service.MetricsService, unifiedMetricsService *service.UnifiedMetricsService) *Handler {
+// NewHandler creates a new HTTP handler. unifiedMetricsService can be nil; then metrics summary uses legacy per-resource endpoints. projSvc can be nil; then project routes return 501.
+func NewHandler(cs service.ClusterService, ts service.TopologyService, cfg *config.Config, logsService service.LogsService, eventsService service.EventsService, metricsService service.MetricsService, unifiedMetricsService *service.UnifiedMetricsService, projSvc service.ProjectService) *Handler {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -45,6 +48,7 @@ func NewHandler(cs service.ClusterService, ts service.TopologyService, cfg *conf
 		eventsService:         eventsService,
 		metricsService:        metricsService,
 		unifiedMetricsService: unifiedMetricsService,
+		projSvc:               projSvc,
 		cfg:                   cfg,
 	}
 }
@@ -66,10 +70,23 @@ func (h *Handler) resolveClusterID(ctx context.Context, clusterID string) (strin
 	return "", fmt.Errorf("cluster not found: %s", clusterID)
 }
 
-// SetupRoutes configures API routes
 func SetupRoutes(router *mux.Router, h *Handler) {
+	// Cluster discovery MUST be registered before {clusterId} parameter route
+	router.HandleFunc("/clusters/discover", h.DiscoverClusters).Methods("GET")
+
 	// Capabilities (e.g. resource topology kinds) so clients can verify backend support
 	router.HandleFunc("/capabilities", h.GetCapabilities).Methods("GET")
+
+	// Project routes (multi-cluster, multi-tenancy)
+	router.HandleFunc("/projects", h.ListProjects).Methods("GET")
+	router.HandleFunc("/projects", h.CreateProject).Methods("POST")
+	router.HandleFunc("/projects/{projectId}", h.GetProject).Methods("GET")
+	router.HandleFunc("/projects/{projectId}", h.UpdateProject).Methods("PATCH")
+	router.HandleFunc("/projects/{projectId}", h.DeleteProject).Methods("DELETE")
+	router.HandleFunc("/projects/{projectId}/clusters", h.AddClusterToProject).Methods("POST")
+	router.HandleFunc("/projects/{projectId}/clusters/{clusterId}", h.RemoveClusterFromProject).Methods("DELETE")
+	router.HandleFunc("/projects/{projectId}/namespaces", h.AddNamespaceToProject).Methods("POST")
+	router.HandleFunc("/projects/{projectId}/namespaces/{clusterId}/{namespaceName}", h.RemoveNamespaceFromProject).Methods("DELETE")
 
 	// Cluster routes
 	router.HandleFunc("/clusters", h.ListClusters).Methods("GET")
@@ -77,24 +94,39 @@ func SetupRoutes(router *mux.Router, h *Handler) {
 	router.HandleFunc("/clusters/{clusterId}", h.GetCluster).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}", h.RemoveCluster).Methods("DELETE")
 	router.HandleFunc("/clusters/{clusterId}/summary", h.GetClusterSummary).Methods("GET")
+	router.HandleFunc("/clusters/{clusterId}/overview", h.GetClusterOverview).Methods("GET")
+	router.HandleFunc("/clusters/{clusterId}/workloads", h.GetWorkloadsOverview).Methods("GET")
 
 	// Topology routes
 	router.HandleFunc("/clusters/{clusterId}/topology", h.GetTopology).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}/topology/resource/{kind}/{namespace}/{name}", h.GetResourceTopology).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}/topology/export", h.ExportTopology).Methods("POST")
+	router.HandleFunc("/clusters/{clusterId}/topology/export/drawio", h.GetTopologyExportDrawio).Methods("GET")
+
+	// Global search (command palette): GET /clusters/{clusterId}/search?q=...&limit=25
+	router.HandleFunc("/clusters/{clusterId}/search", h.GetSearch).Methods("GET")
+
+	// Cluster features (e.g. MetalLB detection)
+	router.HandleFunc("/clusters/{clusterId}/features/metallb", h.GetMetalLBFeature).Methods("GET")
+
+	// CRD instances: list custom resources by CRD name (must be before generic resources)
+	router.HandleFunc("/clusters/{clusterId}/crd-instances/{crdName}", h.ListCRDInstances).Methods("GET")
 
 	// Resource routes — specific subpaths must be registered before the generic {kind}/{namespace}/{name} route
 	router.HandleFunc("/clusters/{clusterId}/resources/{kind}", h.ListResources).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}/resources/deployments/{namespace}/{name}/rollout-history", h.GetDeploymentRolloutHistory).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}/resources/deployments/{namespace}/{name}/rollback", h.PostDeploymentRollback).Methods("POST")
-	// Full path so subrouter matches when it receives full path (no prefix strip)
-	router.HandleFunc("/api/v1/clusters/{clusterId}/resources/deployments/{namespace}/{name}/rollout-history", h.GetDeploymentRolloutHistory).Methods("GET")
-	router.HandleFunc("/api/v1/clusters/{clusterId}/resources/deployments/{namespace}/{name}/rollback", h.PostDeploymentRollback).Methods("POST")
 	router.HandleFunc("/clusters/{clusterId}/resources/cronjobs/{namespace}/{name}/trigger", h.PostCronJobTrigger).Methods("POST")
+	router.HandleFunc("/clusters/{clusterId}/resources/cronjobs/{namespace}/{name}/jobs", h.GetCronJobJobs).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}/resources/jobs/{namespace}/{name}/retry", h.PostJobRetry).Methods("POST")
 	router.HandleFunc("/clusters/{clusterId}/resources/services/{namespace}/{name}/endpoints", h.GetServiceEndpoints).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}/resources/configmaps/{namespace}/{name}/consumers", h.GetConfigMapConsumers).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}/resources/secrets/{namespace}/{name}/consumers", h.GetSecretConsumers).Methods("GET")
+	router.HandleFunc("/clusters/{clusterId}/resources/secrets/{namespace}/{name}/tls-info", h.GetSecretTLSInfo).Methods("GET")
+	router.HandleFunc("/clusters/{clusterId}/resources/persistentvolumeclaims/{namespace}/{name}/consumers", h.GetPVCConsumers).Methods("GET")
+	router.HandleFunc("/clusters/{clusterId}/resources/storageclasses/pv-counts", h.GetStorageClassPVCounts).Methods("GET")
+	router.HandleFunc("/clusters/{clusterId}/resources/namespaces/counts", h.GetNamespaceCounts).Methods("GET")
+	router.HandleFunc("/clusters/{clusterId}/resources/serviceaccounts/token-counts", h.GetServiceAccountTokenCounts).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}/resources/{kind}/{namespace}/{name}", h.GetResource).Methods("GET")
 	router.HandleFunc("/clusters/{clusterId}/resources/{kind}/{namespace}/{name}", h.PatchResource).Methods("PATCH")
 	router.HandleFunc("/clusters/{clusterId}/resources/{kind}/{namespace}/{name}", h.DeleteResource).Methods("DELETE")
@@ -123,10 +155,18 @@ func SetupRoutes(router *mux.Router, h *Handler) {
 
 	// Cluster shell (run kubectl commands)
 	router.HandleFunc("/clusters/{clusterId}/shell", h.PostShell).Methods("POST")
+	// Cluster shell metadata (effective context/namespace + capabilities)
+	router.HandleFunc("/clusters/{clusterId}/shell/status", h.GetShellStatus).Methods("GET")
 	// Cluster shell stream (WebSocket PTY — full interactive kubectl cloud shell)
 	router.HandleFunc("/clusters/{clusterId}/shell/stream", h.GetShellStream).Methods("GET")
 	// Shell completion (IDE-style Tab; optional for dropdown)
 	router.HandleFunc("/clusters/{clusterId}/shell/complete", h.GetShellComplete).Methods("GET")
+	// kcli server-side execution (embedded mode foundation)
+	router.HandleFunc("/clusters/{clusterId}/kcli/exec", h.PostKCLIExec).Methods("POST")
+	// kcli stream (WebSocket PTY, default mode=ui)
+	router.HandleFunc("/clusters/{clusterId}/kcli/stream", h.GetKCLIStream).Methods("GET")
+	// kcli completion (IDE-style Tab)
+	router.HandleFunc("/clusters/{clusterId}/kcli/complete", h.GetKCLIComplete).Methods("GET")
 
 	// Download kubeconfig for a cluster
 	router.HandleFunc("/clusters/{clusterId}/kubeconfig", h.GetKubeconfig).Methods("GET")
@@ -145,6 +185,17 @@ func SetupRoutes(router *mux.Router, h *Handler) {
 // ListClusters handles GET /clusters
 func (h *Handler) ListClusters(w http.ResponseWriter, r *http.Request) {
 	clusters, err := h.clusterService.ListClusters(r.Context())
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, clusters)
+}
+
+// DiscoverClusters handles GET /clusters/discover
+func (h *Handler) DiscoverClusters(w http.ResponseWriter, r *http.Request) {
+	clusters, err := h.clusterService.DiscoverClusters(r.Context())
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -321,9 +372,9 @@ func (h *Handler) GetTopology(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetResourceTopology(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clusterID := vars["clusterId"]
-	kind := vars["kind"]
-	namespace := vars["namespace"]
-	name := vars["name"]
+	kind := strings.TrimSpace(vars["kind"])
+	namespace := strings.TrimSpace(vars["namespace"])
+	name := strings.TrimSpace(vars["name"])
 	if !validate.ClusterID(clusterID) {
 		respondError(w, http.StatusBadRequest, "Invalid clusterId")
 		return
@@ -404,6 +455,52 @@ func (h *Handler) ExportTopology(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Write(data)
+}
+
+// GetTopologyExportDrawio handles GET /clusters/{clusterId}/topology/export/drawio
+// Returns { url, mermaid } for opening the topology in draw.io.
+func (h *Handler) GetTopologyExportDrawio(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	clusterID := vars["clusterId"]
+	if !validate.ClusterID(clusterID) {
+		respondError(w, http.StatusBadRequest, "Invalid clusterId")
+		return
+	}
+	resolvedID, err := h.resolveClusterID(r.Context(), clusterID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "mermaid"
+	}
+	if format != "mermaid" && format != "xml" {
+		respondError(w, http.StatusBadRequest, "format must be mermaid or xml")
+		return
+	}
+
+	topology, err := h.topologyService.GetTopology(r.Context(), resolvedID, models.TopologyFilters{}, 0)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	mermaid := drawio.TopologyGraphToMermaid(topology)
+	drawioURL, err := drawio.GenerateDrawioURL(mermaid)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to generate draw.io URL: "+err.Error())
+		return
+	}
+
+	resp := map[string]interface{}{
+		"url": drawioURL,
+	}
+	if format == "mermaid" {
+		resp["mermaid"] = mermaid
+	}
+	respondJSON(w, http.StatusOK, resp)
 }
 
 // pathVarsKey is the context key for path params set by rollout path-intercept middleware.

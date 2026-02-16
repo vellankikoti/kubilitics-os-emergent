@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -33,6 +34,14 @@ const (
 	wsMsgStderr = "stderr"
 	wsMsgExit   = "exit"
 	wsMsgError  = "error"
+
+	execReadLimit   = 1 << 16
+	execPongWait    = 75 * time.Second
+	execPingPeriod  = 25 * time.Second
+	execWriteWait   = 30 * time.Second
+	execDrainWait   = 50 * time.Millisecond
+	execDefaultCols = 80
+	execDefaultRows = 24
 )
 
 type wsInMessage struct {
@@ -82,10 +91,8 @@ func (w *chanWriter) Write(p []byte) (n int, err error) {
 		return 0, nil
 	}
 	d := base64.StdEncoding.EncodeToString(p)
-	select {
-	case w.ch <- wsOutMessage{T: w.typ, D: d}:
-	default:
-	}
+	// Block so we never drop stdout/stderr; back-pressure propagates to the exec stream.
+	w.ch <- wsOutMessage{T: w.typ, D: d}
 	return len(p), nil
 }
 
@@ -127,6 +134,14 @@ func (h *Handler) GetPodExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	log.Printf(
+		"pod exec: connected requestedCluster=%s resolvedCluster=%s ns=%s pod=%s container=%s",
+		clusterID,
+		resolvedID,
+		namespace,
+		name,
+		container,
+	)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -172,25 +187,49 @@ func (h *Handler) GetPodExec(w http.ResponseWriter, r *http.Request) {
 	stdinR, stdinW := io.Pipe()
 	defer func() { _ = stdinW.Close() }()
 
-	outChan := make(chan wsOutMessage, 64)
+	outChan := make(chan wsOutMessage, 256)
 	execDone := make(chan struct{})
 
 	sizeCh := make(chan *remotecommand.TerminalSize, 4)
 	sq := &sizeQueue{ch: sizeCh, ctx: ctx}
-	sq.push(80, 24)
+	sq.push(execDefaultCols, execDefaultRows)
 
 	defer func() {
 		<-execDone
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(execDrainWait)
 		close(outChan)
 	}()
 
+	conn.SetReadLimit(execReadLimit)
+	_ = conn.SetReadDeadline(time.Now().Add(execPongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(execPongWait))
+	})
+
 	go func() {
-		for m := range outChan {
-			b, _ := json.Marshal(m)
-			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+		pingTicker := time.NewTicker(execPingPeriod)
+		defer pingTicker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
 				return
+			case <-pingTicker.C:
+				_ = conn.SetWriteDeadline(time.Now().Add(execWriteWait))
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					cancel()
+					return
+				}
+			case m, ok := <-outChan:
+				if !ok {
+					return
+				}
+				b, _ := json.Marshal(m)
+				_ = conn.SetWriteDeadline(time.Now().Add(execWriteWait))
+				if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+					cancel()
+					return
+				}
 			}
 		}
 	}()
@@ -215,7 +254,10 @@ func (h *Handler) GetPodExec(w http.ResponseWriter, r *http.Request) {
 	executor, err := remotecommand.NewSPDYExecutor(client.Config, "POST", req.URL())
 	if err != nil {
 		close(execDone)
-		_ = conn.WriteJSON(wsOutMessage{T: wsMsgError, D: "Failed to create executor: " + err.Error()})
+		select {
+		case outChan <- wsOutMessage{T: wsMsgError, D: "Failed to create executor: " + err.Error()}:
+		default:
+		}
 		return
 	}
 
@@ -240,8 +282,9 @@ func (h *Handler) GetPodExec(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	conn.SetReadLimit(1 << 16)
+	firstStdinLogged := false
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(execPongWait))
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			cancel()
@@ -258,6 +301,17 @@ func (h *Handler) GetPodExec(w http.ResponseWriter, r *http.Request) {
 		switch msg.T {
 		case wsMsgStdin:
 			if msg.D != "" {
+				if !firstStdinLogged {
+					firstStdinLogged = true
+					log.Printf(
+						"pod exec: first stdin received requestedCluster=%s resolvedCluster=%s ns=%s pod=%s container=%s",
+						clusterID,
+						resolvedID,
+						namespace,
+						name,
+						container,
+					)
+				}
 				dec, err := base64.StdEncoding.DecodeString(msg.D)
 				if err == nil && len(dec) > 0 {
 					_, _ = stdinW.Write(dec)

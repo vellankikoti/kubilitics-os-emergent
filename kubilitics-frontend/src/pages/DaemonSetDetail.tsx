@@ -5,7 +5,6 @@ import {
   Clock,
   Server,
   RotateCcw,
-  RefreshCw,
   Download,
   Trash2,
   CheckCircle2,
@@ -60,6 +59,9 @@ import { useClusterStore } from '@/stores/clusterStore';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { useQuery } from '@tanstack/react-query';
+import { getDaemonSetMetrics } from '@/services/backendApiClient';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { cn } from '@/lib/utils';
 
 interface DaemonSetResource extends KubernetesResource {
   spec?: {
@@ -151,6 +153,33 @@ export default function DaemonSetDetail() {
     return Object.entries(dsMatchLabels).every(([k, v]) => labels[k] === v);
   });
   const firstDsPodName = dsPods[0]?.metadata?.name ?? '';
+
+  const { data: nodesList } = useK8sResourceList<KubernetesResource & { metadata?: { name?: string; labels?: Record<string, string> } }>(
+    'nodes',
+    undefined,
+    { enabled: !!daemonSet?.metadata?.name, limit: 5000 }
+  );
+  const nodeByName = useMemo(() => {
+    const map = new Map<string, { metadata?: { name?: string; labels?: Record<string, string> } }>();
+    for (const n of nodesList?.items ?? []) {
+      const nodeName = n.metadata?.name;
+      if (nodeName) map.set(nodeName, n);
+    }
+    return map;
+  }, [nodesList?.items]);
+  const dsMetricsQuery = useQuery({
+    queryKey: ['backend', 'daemonset-metrics', clusterId, namespace, name],
+    queryFn: () => getDaemonSetMetrics(backendBaseUrl!, clusterId!, namespace!, name!),
+    enabled: !!(isBackendConfigured() && backendBaseUrl && clusterId && namespace && name),
+    staleTime: 15_000,
+  });
+  const podMetricsByName = useMemo(() => {
+    const pods = dsMetricsQuery.data?.pods ?? [];
+    const map: Record<string, { cpu: string; memory: string }> = {};
+    pods.forEach((p) => { map[p.name] = { cpu: p.cpu ?? '–', memory: p.memory ?? '–' }; });
+    return map;
+  }, [dsMetricsQuery.data?.pods]);
+
   const logPod = selectedLogPod || firstDsPodName;
   const terminalPod = selectedTerminalPod || firstDsPodName;
   const logPodContainers = (dsPods.find((p) => p.metadata?.name === logPod) as { spec?: { containers?: Array<{ name: string }> } } | undefined)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
@@ -347,53 +376,63 @@ export default function DaemonSetDetail() {
       label: 'Node Distribution',
       icon: Server,
       content: (
-        <SectionCard icon={Server} title="Node Distribution" tooltip={<p className="text-xs text-muted-foreground">Per-node pod placement and status</p>}>
+        <SectionCard icon={Server} title="Node Distribution" tooltip={<p className="text-xs text-muted-foreground">Per-node pod placement and status. Click a node card for details.</p>}>
           <div className="space-y-4">
-            <div className="flex flex-wrap gap-4 text-sm">
-              <span className="text-muted-foreground">Coverage: <span className="font-medium text-foreground">{dsPods.length}</span> nodes with pod</span>
-              <span className="text-muted-foreground">Desired: <span className="font-medium text-foreground">{desired}</span> nodes</span>
-              <span className="text-muted-foreground">Ready: <span className="font-medium text-foreground">{ready}/{desired}</span></span>
+            <div className="flex flex-wrap gap-6 text-sm">
+              <span className="text-muted-foreground">Eligible Nodes: <span className="font-medium text-foreground">{desired}</span></span>
+              <span className="text-muted-foreground">Covered Nodes: <span className="font-medium text-[hsl(142,76%,36%)]">{ready}</span></span>
+              <span className="text-muted-foreground">Missing Nodes: <span className="font-medium text-destructive">{Math.max(0, desired - ready)}</span></span>
             </div>
             {dsPods.length === 0 ? (
               <p className="text-sm text-muted-foreground">No pods scheduled yet.</p>
             ) : (
-              <div className="rounded-lg border overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="text-left p-3 font-medium">Node</th>
-                      <th className="text-left p-3 font-medium">Pod</th>
-                      <th className="text-left p-3 font-medium">Status</th>
-                      <th className="text-left p-3 font-medium">Age</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dsPods.map((pod) => {
-                      const podName = pod.metadata?.name ?? '';
-                      const podNs = pod.metadata?.namespace ?? namespace ?? '';
-                      const phase = (pod.status as { phase?: string } | undefined)?.phase ?? '-';
-                      const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
-                      const created = pod.metadata?.creationTimestamp ? calculateAge(pod.metadata.creationTimestamp) : '-';
-                      const phaseColor = phase === 'Running' ? 'text-[hsl(142,76%,36%)]' : phase === 'Pending' ? 'text-[hsl(45,93%,47%)]' : 'text-[hsl(0,72%,51%)]';
-                      return (
-                        <tr key={podName} className="border-t">
-                          <td className="p-3">
-                            {nodeName !== '-' ? (
-                              <Link to={`/nodes/${nodeName}`} className="font-mono text-xs text-primary hover:underline">{nodeName}</Link>
-                            ) : (
-                              <span className="font-mono text-xs text-muted-foreground">—</span>
-                            )}
-                          </td>
-                          <td className="p-3">
-                            <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">{podName}</Link>
-                          </td>
-                          <td className={`p-3 font-medium ${phaseColor}`}>{phase}</td>
-                          <td className="p-3 text-muted-foreground">{created}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                {dsPods.map((pod) => {
+                  const podName = pod.metadata?.name ?? '';
+                  const podNs = pod.metadata?.namespace ?? namespace ?? '';
+                  const phase = (pod.status as { phase?: string } | undefined)?.phase ?? 'Unknown';
+                  const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '';
+                  const containerStatuses = (pod.status as { containerStatuses?: Array<{ ready?: boolean }> })?.containerStatuses ?? [];
+                  const allReady = containerStatuses.length > 0 && containerStatuses.every((c) => c.ready);
+                  const cardVariant = phase === 'Running' && allReady ? 'green' : phase === 'Running' || phase === 'Pending' ? 'yellow' : 'red';
+                  const nodeMeta = nodeName ? nodeByName.get(nodeName) : undefined;
+                  const zone = nodeMeta?.metadata?.labels?.['topology.kubernetes.io/zone'] ?? nodeMeta?.metadata?.labels?.['failure-domain.beta.kubernetes.io/zone'] ?? '';
+                  const metrics = podMetricsByName[podName];
+                  return (
+                    <Popover key={podName}>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className={cn(
+                            'rounded-lg border p-3 text-left transition-all hover:ring-2 hover:ring-primary/30 focus:outline-none focus:ring-2 focus:ring-primary',
+                            cardVariant === 'green' && 'border-[hsl(142,76%,36%)]/50 bg-[hsl(142,76%,36%)]/10',
+                            cardVariant === 'yellow' && 'border-amber-500/50 bg-amber-500/10',
+                            cardVariant === 'red' && 'border-destructive/50 bg-destructive/10'
+                          )}
+                        >
+                          <p className="font-mono text-xs font-medium truncate" title={nodeName || '—'}>{nodeName || '—'}</p>
+                          {zone && <p className="text-xs text-muted-foreground mt-0.5">Zone: {zone}</p>}
+                          <p className="text-xs mt-1 truncate text-muted-foreground">{podName}</p>
+                          <Badge variant={cardVariant === 'green' ? 'default' : cardVariant === 'yellow' ? 'secondary' : 'destructive'} className="mt-2 text-xs">{phase}</Badge>
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-72" align="start">
+                        <div className="space-y-2 text-sm">
+                          <p><span className="text-muted-foreground">Node:</span> <Link to={`/nodes/${nodeName}`} className="font-mono text-primary hover:underline">{nodeName || '—'}</Link></p>
+                          <p><span className="text-muted-foreground">Pod:</span> <Link to={`/pods/${podNs}/${podName}`} className="font-mono text-primary hover:underline">{podName}</Link></p>
+                          <p><span className="text-muted-foreground">Status:</span> <Badge variant={phase === 'Running' ? 'default' : 'secondary'} className="text-xs">{phase}</Badge></p>
+                          <div className="flex items-center gap-2 pt-1">
+                            <Cpu className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-muted-foreground">CPU:</span>
+                            <span className="font-mono text-xs">{metrics?.cpu ?? '–'}</span>
+                            <span className="text-muted-foreground ml-2">Memory:</span>
+                            <span className="font-mono text-xs">{metrics?.memory ?? '–'}</span>
+                          </div>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -650,7 +689,6 @@ export default function DaemonSetDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Restart', icon: RotateCcw, variant: 'outline', onClick: () => setShowRolloutDialog(true) },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

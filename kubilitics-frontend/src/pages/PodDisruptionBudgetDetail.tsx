@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Shield, Clock, Download, Trash2, Server, AlertTriangle, RefreshCw, Network } from 'lucide-react';
+import { Shield, Clock, Download, Trash2, Server, AlertTriangle, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -66,11 +66,6 @@ export default function PodDisruptionBudgetDetail() {
   const conditions = resource?.status?.conditions ?? [];
   const labels = resource?.metadata?.labels ?? {};
   const annotations = resource?.metadata?.annotations ?? {};
-
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
 
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
@@ -243,7 +238,6 @@ export default function PodDisruptionBudgetDetail() {
         backLabel="PDBs"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

@@ -11,6 +11,12 @@ const mockCounts: Record<string, number> = {
   daemonsets: 3,
   jobs: 1614,
   cronjobs: 8,
+  podtemplates: 0,
+  controllerrevisions: 0,
+  resourceslices: 0,
+  deviceclasses: 0,
+  ipaddresspools: 0,
+  bgppeers: 0,
   services: 15,
   ingresses: 5,
   ingressclasses: 2,
@@ -23,6 +29,9 @@ const mockCounts: Record<string, number> = {
   persistentvolumeclaims: 4,
   storageclasses: 2,
   volumeattachments: 3,
+  volumesnapshots: 0,
+  volumesnapshotclasses: 0,
+  volumesnapshotcontents: 0,
   nodes: 3,
   namespaces: 22,
   apiservices: 27,
@@ -51,6 +60,12 @@ export interface ResourceCounts {
   daemonsets: number;
   jobs: number;
   cronjobs: number;
+  podtemplates: number;
+  controllerrevisions: number;
+  resourceslices: number;
+  deviceclasses: number;
+  ipaddresspools: number;
+  bgppeers: number;
   services: number;
   ingresses: number;
   ingressclasses: number;
@@ -63,6 +78,9 @@ export interface ResourceCounts {
   persistentvolumeclaims: number;
   storageclasses: number;
   volumeattachments: number;
+  volumesnapshots: number;
+  volumesnapshotclasses: number;
+  volumesnapshotcontents: number;
   nodes: number;
   namespaces: number;
   apiservices: number;
@@ -160,6 +178,36 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
     refetchInterval: 60000,
     limit: SIDEBAR_COUNT_LIMIT,
   });
+  const podtemplates = useK8sResourceList<KubernetesResource>('podtemplates', undefined, {
+    enabled: isConnected,
+    refetchInterval: 60000,
+    limit: SIDEBAR_COUNT_LIMIT,
+  });
+  const controllerrevisions = useK8sResourceList<KubernetesResource>('controllerrevisions', undefined, {
+    enabled: isConnected,
+    refetchInterval: 60000,
+    limit: SIDEBAR_COUNT_LIMIT,
+  });
+  const resourceslices = useK8sResourceList<KubernetesResource>('resourceslices', undefined, {
+    enabled: isConnected,
+    refetchInterval: 60000,
+    limit: SIDEBAR_COUNT_LIMIT,
+  });
+  const deviceclasses = useK8sResourceList<KubernetesResource>('deviceclasses', undefined, {
+    enabled: isConnected,
+    refetchInterval: 60000,
+    limit: SIDEBAR_COUNT_LIMIT,
+  });
+  const ipaddresspools = useK8sResourceList<KubernetesResource>('ipaddresspools', undefined, {
+    enabled: isConnected,
+    refetchInterval: 60000,
+    limit: SIDEBAR_COUNT_LIMIT,
+  });
+  const bgppeers = useK8sResourceList<KubernetesResource>('bgppeers', undefined, {
+    enabled: isConnected,
+    refetchInterval: 60000,
+    limit: SIDEBAR_COUNT_LIMIT,
+  });
   const configmaps = useK8sResourceList<KubernetesResource>('configmaps', undefined, {
     enabled: isConnected,
     refetchInterval: 60000,
@@ -211,6 +259,21 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
     limit: SIDEBAR_COUNT_LIMIT,
   });
   const volumeattachments = useK8sResourceList<KubernetesResource>('volumeattachments', undefined, {
+    enabled: isConnected,
+    refetchInterval: 60000,
+    limit: SIDEBAR_COUNT_LIMIT,
+  });
+  const volumesnapshots = useK8sResourceList<KubernetesResource>('volumesnapshots', undefined, {
+    enabled: isConnected,
+    refetchInterval: 60000,
+    limit: SIDEBAR_COUNT_LIMIT,
+  });
+  const volumesnapshotclasses = useK8sResourceList<KubernetesResource>('volumesnapshotclasses', undefined, {
+    enabled: isConnected,
+    refetchInterval: 60000,
+    limit: SIDEBAR_COUNT_LIMIT,
+  });
+  const volumesnapshotcontents = useK8sResourceList<KubernetesResource>('volumesnapshotcontents', undefined, {
     enabled: isConnected,
     refetchInterval: 60000,
     limit: SIDEBAR_COUNT_LIMIT,
@@ -306,6 +369,12 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
         daemonsets: mockCounts.daemonsets,
         jobs: mockCounts.jobs,
         cronjobs: mockCounts.cronjobs,
+        podtemplates: mockCounts.podtemplates,
+        controllerrevisions: mockCounts.controllerrevisions,
+        resourceslices: mockCounts.resourceslices,
+        deviceclasses: mockCounts.deviceclasses,
+        ipaddresspools: mockCounts.ipaddresspools,
+        bgppeers: mockCounts.bgppeers,
         services: mockCounts.services,
         ingresses: mockCounts.ingresses,
         ingressclasses: mockCounts.ingressclasses,
@@ -318,6 +387,9 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
         persistentvolumeclaims: mockCounts.persistentvolumeclaims,
         storageclasses: mockCounts.storageclasses,
         volumeattachments: mockCounts.volumeattachments,
+        volumesnapshots: mockCounts.volumesnapshots,
+        volumesnapshotclasses: mockCounts.volumesnapshotclasses,
+        volumesnapshotcontents: mockCounts.volumesnapshotcontents,
         nodes: mockCounts.nodes,
         namespaces: mockCounts.namespaces,
         apiservices: mockCounts.apiservices,
@@ -347,6 +419,12 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
       daemonsets: daemonsets.data?.items?.length ?? 0,
       jobs: jobs.data?.items?.length ?? 0,
       cronjobs: cronjobs.data?.items?.length ?? 0,
+      podtemplates: podtemplates.data?.items?.length ?? 0,
+      controllerrevisions: controllerrevisions.data?.items?.length ?? 0,
+      resourceslices: resourceslices.data?.items?.length ?? 0,
+      deviceclasses: deviceclasses.data?.items?.length ?? 0,
+      ipaddresspools: ipaddresspools.data?.items?.length ?? 0,
+      bgppeers: bgppeers.data?.items?.length ?? 0,
       services: services.data?.items?.length ?? 0,
       ingresses: ingresses.data?.items?.length ?? 0,
       ingressclasses: ingressclasses.data?.items?.length ?? 0,
@@ -359,6 +437,9 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
       persistentvolumeclaims: persistentvolumeclaims.data?.items?.length ?? 0,
       storageclasses: storageclasses.data?.items?.length ?? 0,
       volumeattachments: volumeattachments.data?.items?.length ?? 0,
+      volumesnapshots: volumesnapshots.data?.items?.length ?? 0,
+      volumesnapshotclasses: volumesnapshotclasses.data?.items?.length ?? 0,
+      volumesnapshotcontents: volumesnapshotcontents.data?.items?.length ?? 0,
       nodes: nodes.data?.items?.length ?? 0,
       namespaces: namespaces.data?.items?.length ?? 0,
       apiservices: apiservices.data?.items?.length ?? 0,
@@ -387,6 +468,12 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
     daemonsets.data,
     jobs.data,
     cronjobs.data,
+    podtemplates.data,
+    controllerrevisions.data,
+    resourceslices.data,
+    deviceclasses.data,
+    ipaddresspools.data,
+    bgppeers.data,
     services.data,
     ingresses.data,
     ingressclasses.data,
@@ -401,6 +488,9 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
     persistentvolumeclaims.data,
     storageclasses.data,
     volumeattachments.data,
+    volumesnapshots.data,
+    volumesnapshotclasses.data,
+    volumesnapshotcontents.data,
     apiservices.data,
     leases.data,
     serviceaccounts.data,
@@ -427,6 +517,12 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
     daemonsets.isLoading ||
     jobs.isLoading ||
     cronjobs.isLoading ||
+    podtemplates.isLoading ||
+    controllerrevisions.isLoading ||
+    resourceslices.isLoading ||
+    deviceclasses.isLoading ||
+    ipaddresspools.isLoading ||
+    bgppeers.isLoading ||
     services.isLoading ||
     ingresses.isLoading ||
     ingressclasses.isLoading ||
@@ -441,6 +537,9 @@ export function useResourceCounts(): { counts: ResourceCounts; isLoading: boolea
     persistentvolumeclaims.isLoading ||
     storageclasses.isLoading ||
     volumeattachments.isLoading ||
+    volumesnapshots.isLoading ||
+    volumesnapshotclasses.isLoading ||
+    volumesnapshotcontents.isLoading ||
     apiservices.isLoading ||
     leases.isLoading ||
     serviceaccounts.isLoading ||

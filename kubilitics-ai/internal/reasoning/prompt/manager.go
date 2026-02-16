@@ -76,10 +76,5 @@ type PromptManager interface {
 	ListPromptVersions(ctx context.Context) ([]interface{}, error)
 }
 
-// NewPromptManager creates a new prompt manager with dependencies.
-func NewPromptManager() PromptManager {
-	// Load prompt templates from configuration/files
-	// Initialize provider-specific prompts
-	// Set up JSON schema validators
-	return nil
-}
+// NewPromptManager creates a new prompt manager.
+// The concrete implementation is in templates.go.

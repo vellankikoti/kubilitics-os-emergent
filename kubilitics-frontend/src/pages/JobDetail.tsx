@@ -5,7 +5,6 @@ import {
   Clock,
   CheckCircle2,
   XCircle,
-  RefreshCw,
   RotateCw,
   Download,
   Trash2,
@@ -60,7 +59,8 @@ import { useClusterStore } from '@/stores/clusterStore';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { useQuery } from '@tanstack/react-query';
-import { postJobRetry } from '@/services/backendApiClient';
+import { postJobRetry, getJobMetrics } from '@/services/backendApiClient';
+import { parseCpu, parseMemory } from '@/components/resources';
 
 interface JobResource extends KubernetesResource {
   spec?: {
@@ -164,6 +164,68 @@ export default function JobDetail() {
   );
   const jobPods = (podsList?.items ?? []).filter((pod) => (pod.metadata?.labels?.['job-name'] ?? '') === name);
   const firstJobPodName = jobPods[0]?.metadata?.name ?? '';
+
+  const jobMetricsQuery = useQuery({
+    queryKey: ['backend', 'job-metrics', clusterId, namespace, name],
+    queryFn: () => getJobMetrics(backendBaseUrl!, clusterId!, namespace!, name!),
+    enabled: !!(isBackendConfigured() && backendBaseUrl && clusterId && namespace && name),
+    staleTime: 15_000,
+  });
+  const podMetricsByName = useMemo(() => {
+    const pods = jobMetricsQuery.data?.pods ?? [];
+    const map: Record<string, { cpu: string; memory: string }> = {};
+    pods.forEach((p) => { map[p.name] = { cpu: p.cpu ?? '–', memory: p.memory ?? '–' }; });
+    return map;
+  }, [jobMetricsQuery.data?.pods]);
+
+  const executionRows = useMemo(() => jobPods.map((pod) => {
+    const podName = pod.metadata?.name ?? '';
+    const podStatus = pod.status as PodStatusWithContainers | undefined;
+    const firstContainer = podStatus?.containerStatuses?.[0];
+    const startedAt = firstContainer?.state?.running?.startedAt ?? firstContainer?.state?.terminated?.finishedAt ?? pod.metadata?.creationTimestamp;
+    const terminated = firstContainer?.state?.terminated;
+    const phase = (pod.status as { phase?: string })?.phase ?? 'Unknown';
+    const endAt = terminated?.finishedAt ?? (phase === 'Succeeded' || phase === 'Failed' ? startedAt : null);
+    let durationSec = 0;
+    if (startedAt && endAt) {
+      durationSec = Math.max(0, (new Date(endAt).getTime() - new Date(startedAt).getTime()) / 1000);
+    } else if (startedAt) {
+      durationSec = Math.max(0, (Date.now() - new Date(startedAt).getTime()) / 1000);
+    }
+    const terminationReason = terminated?.reason ?? (phase === 'Failed' ? podStatus?.containerStatuses?.map((c) => c.state?.terminated?.reason).filter(Boolean).join(', ') || 'Error' : null);
+    return {
+      pod,
+      podName,
+      nodeName: (pod.spec as { nodeName?: string })?.nodeName ?? '–',
+      startedAt,
+      endAt,
+      durationSec,
+      exitCode: terminated?.exitCode ?? (terminated ? 0 : null),
+      phase,
+      terminationReason,
+    };
+  }), [jobPods]);
+
+  const completedDurations = useMemo(() => executionRows.filter((r) => r.durationSec > 0 && (r.phase === 'Succeeded' || r.phase === 'Failed')).map((r) => r.durationSec), [executionRows]);
+  const avgDurationSec = completedDurations.length > 0 ? completedDurations.reduce((a, b) => a + b, 0) / completedDurations.length : 0;
+  const remaining = Math.max(0, completions - succeeded);
+  const etaSec = remaining > 0 && avgDurationSec > 0 ? remaining * avgDurationSec : 0;
+  const totalDurationSec = useMemo(() => executionRows.reduce((sum, r) => sum + r.durationSec, 0), [executionRows]);
+  const totalResourceEstimate = useMemo(() => {
+    let cpuSec = 0;
+    let memSec = 0;
+    for (const r of executionRows) {
+      const m = podMetricsByName[r.podName];
+      if (m && r.durationSec > 0) {
+        const cpu = parseCpu(m.cpu);
+        const mem = parseMemory(m.memory);
+        if (cpu != null) cpuSec += cpu * r.durationSec;
+        if (mem != null) memSec += mem * r.durationSec;
+      }
+    }
+    return { cpuSec, memSec };
+  }, [executionRows, podMetricsByName]);
+
   const logPod = selectedLogPod || firstJobPodName;
   const terminalPod = selectedTerminalPod || firstJobPodName;
   const logPodContainers = jobPods.find((p) => p.metadata?.name === logPod)?.spec?.containers?.map((c) => c.name) ?? containers.map((c) => c.name);
@@ -394,59 +456,72 @@ export default function JobDetail() {
       label: 'Execution Details',
       icon: Timer,
       content: (
-        <SectionCard icon={Timer} title="Execution Details" tooltip={<p className="text-xs text-muted-foreground">Per-pod execution times and exit codes</p>}>
+        <SectionCard icon={Timer} title="Execution Details" tooltip={<p className="text-xs text-muted-foreground">Per-pod timeline, exit codes, and completion progress</p>}>
           {jobPods.length === 0 ? (
             <p className="text-sm text-muted-foreground">No pods for this Job yet.</p>
           ) : (
-            <div className="rounded-lg border overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="text-left p-3 font-medium">Pod</th>
-                    <th className="text-left p-3 font-medium">Node</th>
-                    <th className="text-left p-3 font-medium">Start Time</th>
-                    <th className="text-left p-3 font-medium">End Time</th>
-                    <th className="text-left p-3 font-medium">Duration</th>
-                    <th className="text-left p-3 font-medium">Exit Code</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {jobPods.map((pod) => {
-                    const podName = pod.metadata?.name ?? '';
-                    const podNs = pod.metadata?.namespace ?? namespace ?? '';
-                    const nodeName = (pod.spec as { nodeName?: string } | undefined)?.nodeName ?? '-';
-                    const created = pod.metadata?.creationTimestamp;
-                    const status = pod.status as PodStatusWithContainers | undefined;
-                    const firstContainer = status?.containerStatuses?.[0];
-                    const startedAt = firstContainer?.state?.running?.startedAt ?? firstContainer?.state?.terminated?.finishedAt ?? created;
-                    const terminated = firstContainer?.state?.terminated;
-                    const phase = (pod.status as { phase?: string } | undefined)?.phase;
-                    const endAt = terminated?.finishedAt ?? (phase === 'Succeeded' || phase === 'Failed' ? startedAt : null);
-                    let durationStr = '-';
-                    if (startedAt && endAt) {
-                      const s = new Date(startedAt).getTime();
-                      const e = new Date(endAt).getTime();
-                      const sec = Math.floor((e - s) / 1000);
-                      durationStr = sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m` : `${Math.floor(sec / 3600)}h`;
-                    } else if (startedAt) {
-                      durationStr = 'Running';
-                    }
-                    const exitCode = terminated?.exitCode ?? (terminated ? 0 : '-');
-                    return (
-                      <tr key={podName} className="border-t">
-                        <td className="p-3">
-                          <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium">{podName}</Link>
-                        </td>
-                        <td className="p-3 font-mono text-xs">{nodeName}</td>
-                        <td className="p-3 text-muted-foreground whitespace-nowrap">{startedAt ? new Date(startedAt).toLocaleString() : '-'}</td>
-                        <td className="p-3 text-muted-foreground whitespace-nowrap">{endAt ? new Date(endAt).toLocaleString() : '-'}</td>
-                        <td className="p-3 font-mono">{durationStr}</td>
-                        <td className="p-3 font-mono">{String(exitCode)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Completion</span>
+                  <span className="font-medium">{succeeded}/{completions}</span>
+                </div>
+                <Progress value={completions > 0 ? (succeeded / completions) * 100 : 0} className="h-2" />
+                {etaSec > 0 && (
+                  <p className="text-xs text-muted-foreground">ETA: ~{etaSec < 60 ? `${Math.round(etaSec)}s` : etaSec < 3600 ? `${Math.round(etaSec / 60)}m` : `${(etaSec / 3600).toFixed(1)}h`} (based on avg completed pod duration)</p>
+                )}
+              </div>
+              <div className="rounded-lg border overflow-x-auto">
+                <table className="w-full text-sm min-w-[700px]">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="text-left p-3 font-medium">Pod Name</th>
+                      <th className="text-left p-3 font-medium">Node</th>
+                      <th className="text-left p-3 font-medium">Start Time</th>
+                      <th className="text-left p-3 font-medium">End Time</th>
+                      <th className="text-left p-3 font-medium">Duration</th>
+                      <th className="text-left p-3 font-medium">Exit Code</th>
+                      <th className="text-left p-3 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {executionRows.map((r) => {
+                      const podNs = r.pod.metadata?.namespace ?? namespace ?? '';
+                      const durationStr = r.durationSec > 0
+                        ? (r.durationSec < 60 ? `${Math.round(r.durationSec)}s` : r.durationSec < 3600 ? `${Math.floor(r.durationSec / 60)}m ${Math.round(r.durationSec % 60)}s` : `${Math.floor(r.durationSec / 3600)}h ${Math.floor((r.durationSec % 3600) / 60)}m`)
+                        : (r.startedAt ? 'Running' : '–');
+                      const statusLabel = r.phase === 'Failed' && r.terminationReason
+                        ? `Failed (${r.terminationReason})`
+                        : r.phase;
+                      return (
+                        <tr key={r.podName} className="border-t">
+                          <td className="p-3">
+                            <Link to={`/pods/${podNs}/${r.podName}`} className="text-primary hover:underline font-medium">{r.podName}</Link>
+                          </td>
+                          <td className="p-3 font-mono text-xs">{r.nodeName}</td>
+                          <td className="p-3 text-muted-foreground whitespace-nowrap">{r.startedAt ? new Date(r.startedAt).toLocaleString() : '–'}</td>
+                          <td className="p-3 text-muted-foreground whitespace-nowrap">{r.endAt ? new Date(r.endAt).toLocaleString() : '–'}</td>
+                          <td className="p-3 font-mono">{durationStr}</td>
+                          <td className="p-3 font-mono">{r.exitCode != null ? String(r.exitCode) : '–'}</td>
+                          <td className="p-3">
+                            <Badge variant={r.phase === 'Succeeded' ? 'default' : r.phase === 'Failed' ? 'destructive' : 'secondary'} className="text-xs" title={r.terminationReason ?? undefined}>
+                              {statusLabel}
+                            </Badge>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex flex-wrap gap-6 text-sm border-t pt-3">
+                <span className="text-muted-foreground">Total pod time: <span className="font-mono font-medium text-foreground">{totalDurationSec < 60 ? `${Math.round(totalDurationSec)}s` : totalDurationSec < 3600 ? `${(totalDurationSec / 60).toFixed(1)}m` : `${(totalDurationSec / 3600).toFixed(1)}h`}</span></span>
+                {(totalResourceEstimate.cpuSec > 0 || totalResourceEstimate.memSec > 0) && (
+                  <span className="text-muted-foreground">
+                    Estimated usage (metrics × duration): <span className="font-mono text-foreground">{totalResourceEstimate.cpuSec > 0 ? ` CPU·s ${totalResourceEstimate.cpuSec.toFixed(1)}` : ''}{totalResourceEstimate.memSec > 0 ? ` Memory·s ${totalResourceEstimate.memSec.toFixed(0)}` : ''}</span>
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </SectionCard>
@@ -674,7 +749,6 @@ export default function JobDetail() {
         }
         actions={[
           { label: 'Retry', icon: RotateCw, variant: 'outline', onClick: handleRetry },
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

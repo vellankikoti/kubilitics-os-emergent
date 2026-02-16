@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Webhook, Clock, Shield, Download, Trash2, AlertTriangle, CheckCircle, RefreshCw, Network } from 'lucide-react';
+import { Webhook, Clock, Shield, Download, Trash2, AlertTriangle, CheckCircle, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
@@ -204,7 +204,6 @@ export default function ValidatingWebhookDetail() {
         backLabel="Validating Webhooks"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {wh.age}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => {} },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

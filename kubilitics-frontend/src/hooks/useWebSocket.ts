@@ -1,15 +1,27 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 export interface Message {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'tool_event';
   content: string;
   timestamp?: Date;
+  toolEvent?: ToolEvent;
+}
+
+/** ToolEvent matches the backend types.ToolEvent JSON shape. */
+export interface ToolEvent {
+  phase: 'calling' | 'result' | 'error';
+  call_id: string;
+  tool_name: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  error?: string;
+  turn_index: number;
 }
 
 export interface WSMessage {
   type: 'text' | 'tool' | 'error' | 'complete' | 'heartbeat';
   content?: string;
-  tool?: any;
+  tool?: ToolEvent;
   error?: string;
   timestamp: string;
 }
@@ -118,8 +130,29 @@ export function useWebSocket(options: UseWebSocketOptions) {
               break;
 
             case 'tool':
-              // Handle tool calls (could be displayed as special messages)
-              console.log('Tool call received:', msg.tool);
+              if (msg.tool) {
+                setMessages((prev) => {
+                  const evt = msg.tool!;
+                  // For "result" and "error" phases, update the matching "calling" entry.
+                  if (evt.phase === 'result' || evt.phase === 'error') {
+                    return prev.map((m) =>
+                      m.toolEvent?.call_id === evt.call_id
+                        ? { ...m, toolEvent: evt }
+                        : m
+                    );
+                  }
+                  // "calling" phase — append a new tool_event message.
+                  return [
+                    ...prev,
+                    {
+                      role: 'tool_event',
+                      content: '',
+                      timestamp: new Date(msg.timestamp),
+                      toolEvent: evt,
+                    },
+                  ];
+                });
+              }
               break;
 
             case 'error':
@@ -195,6 +228,14 @@ export function useWebSocket(options: UseWebSocketOptions) {
     []
   );
 
+  /**
+   * Maximum number of prior turns to send as conversation history.
+   * Mirrors the backend's maxHistoryMessages constant (10 messages = 5 turns).
+   * We send up to 20 prior messages so the backend's own pruning logic
+   * can apply the authoritative token-budget cap.
+   */
+  const HISTORY_WINDOW = 20;
+
   const sendUserMessage = useCallback(
     (content: string, context?: SendMessageOptions['context']) => {
       // Add user message to local state
@@ -204,14 +245,32 @@ export function useWebSocket(options: UseWebSocketOptions) {
         timestamp: new Date(),
       };
 
-      setMessages((prev) => [...prev, userMessage]);
+      // Build the full history window to send to the backend.
+      // We include only user/assistant roles — tool_event and system messages
+      // are UI-only and should not be injected into the LLM prompt.
+      setMessages((prev) => {
+        const llmMessages = prev
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .slice(-HISTORY_WINDOW)
+          .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-      // Send to WebSocket
-      return sendMessage({
-        messages: [{ role: 'user', content }],
-        stream: true,
-        context,
+        // Append the new user message at the end of the history payload.
+        const fullHistory = [...llmMessages, { role: 'user' as const, content }];
+
+        // Fire the WebSocket request immediately (inside the state updater
+        // so we have access to the latest `prev` without a stale closure).
+        sendMessage({
+          messages: fullHistory,
+          stream: true,
+          context,
+        });
+
+        return [...prev, userMessage];
       });
+
+      // Return true to indicate the message was queued.
+      // (Actual send is triggered inside the setMessages callback above.)
+      return true;
     },
     [sendMessage]
   );

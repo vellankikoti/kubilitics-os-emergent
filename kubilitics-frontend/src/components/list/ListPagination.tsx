@@ -1,5 +1,6 @@
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useRelativeTimeAgo } from '@/hooks/useRelativeTimeAgo';
 import { cn } from '@/lib/utils';
 
 export interface ListPaginationProps {
@@ -12,6 +13,10 @@ export interface ListPaginationProps {
   currentPage?: number;
   totalPages?: number;
   onPageChange?: (page: number) => void;
+  /** React Query dataUpdatedAt (ms). When set, shows "Updated X ago" next to pagination; updates every 10s. */
+  dataUpdatedAt?: number;
+  /** When true, shows spinning indicator instead of "Updated X ago". */
+  isFetching?: boolean;
   className?: string;
 }
 
@@ -50,17 +55,32 @@ export function ListPagination({
   currentPage,
   totalPages,
   onPageChange,
+  dataUpdatedAt,
+  isFetching,
   className,
 }: ListPaginationProps) {
   const showPageNumbers =
     currentPage != null && totalPages != null && totalPages > 0 && onPageChange;
   const pages = showPageNumbers ? getPageNumbers(currentPage, totalPages) : [];
+  const relativeTime = useRelativeTimeAgo(dataUpdatedAt);
+  const showUpdatedAt = dataUpdatedAt != null || isFetching;
 
   return (
-    <div className={cn('flex items-center justify-between pt-2 flex-wrap gap-2', className)}>
-      {rangeLabel && (
-        <span className="text-sm text-muted-foreground">{rangeLabel}</span>
-      )}
+    <div className={cn('flex items-center justify-between gap-4 flex-wrap', className)}>
+      <div className="flex items-center gap-3 flex-wrap">
+        {rangeLabel && (
+          <span className="text-sm text-muted-foreground">{rangeLabel}</span>
+        )}
+        {showUpdatedAt && (
+          <span className="text-sm text-muted-foreground flex items-center gap-1.5" aria-live="polite">
+            {isFetching ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
+            ) : (
+              <span>Updated {relativeTime}</span>
+            )}
+          </span>
+        )}
+      </div>
       <div className="flex items-center gap-1">
         <Button variant="outline" size="sm" className="gap-1" onClick={onPrev} disabled={!hasPrev}>
           <ChevronLeft className="h-4 w-4" />

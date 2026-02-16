@@ -16,53 +16,53 @@ import type { StylesheetStyle } from 'cytoscape';
 
 export const NODE_COLORS: Record<string, { bg: string; border: string; glow: string; text: string }> = {
   // Core Workloads - Vibrant, distinct colors
-  Deployment:             { bg: '#FF6B35', border: '#E85A2A', glow: 'rgba(255, 107, 53, 0.4)', text: '#fff' }, // Vibrant orange
-  ReplicaSet:             { bg: '#9B59B6', border: '#8E44AD', glow: 'rgba(155, 89, 182, 0.4)', text: '#fff' }, // Rich purple
-  Pod:                    { bg: '#3498DB', border: '#2980B9', glow: 'rgba(52, 152, 219, 0.4)', text: '#fff' }, // Bright blue
-  Service:                { bg: '#2ECC71', border: '#27AE60', glow: 'rgba(46, 204, 113, 0.4)', text: '#fff' }, // Fresh green
-  Ingress:                { bg: '#26A69A', border: '#00897B', glow: 'rgba(38, 166, 154, 0.4)', text: '#fff' }, // Teal/Green matching reference
-  
+  Deployment: { bg: '#FF6B35', border: '#E85A2A', glow: 'rgba(255, 107, 53, 0.4)', text: '#fff' }, // Vibrant orange
+  ReplicaSet: { bg: '#9B59B6', border: '#8E44AD', glow: 'rgba(155, 89, 182, 0.4)', text: '#fff' }, // Rich purple
+  Pod: { bg: '#3498DB', border: '#2980B9', glow: 'rgba(52, 152, 219, 0.4)', text: '#fff' }, // Bright blue
+  Service: { bg: '#2ECC71', border: '#27AE60', glow: 'rgba(46, 204, 113, 0.4)', text: '#fff' }, // Fresh green
+  Ingress: { bg: '#26A69A', border: '#00897B', glow: 'rgba(38, 166, 154, 0.4)', text: '#fff' }, // Teal/Green matching reference
+
   // Stateful & Daemon - Distinct blues
-  StatefulSet:            { bg: '#1E88E5', border: '#1565C0', glow: 'rgba(30, 136, 229, 0.4)', text: '#fff' },
-  DaemonSet:              { bg: '#5E35B1', border: '#512DA8', glow: 'rgba(94, 53, 177, 0.4)', text: '#fff' },
-  PodGroup:               { bg: '#42A5F5', border: '#1E88E5', glow: 'rgba(66, 165, 245, 0.4)', text: '#fff' },
-  
+  StatefulSet: { bg: '#1E88E5', border: '#1565C0', glow: 'rgba(30, 136, 229, 0.4)', text: '#fff' },
+  DaemonSet: { bg: '#5E35B1', border: '#512DA8', glow: 'rgba(94, 53, 177, 0.4)', text: '#fff' },
+  PodGroup: { bg: '#42A5F5', border: '#1E88E5', glow: 'rgba(66, 165, 245, 0.4)', text: '#fff' },
+
   // Storage - Teal/Cyan family
-  ConfigMap:              { bg: '#FFC107', border: '#FFB300', glow: 'rgba(255, 193, 7, 0.4)', text: '#000' }, // Bright amber
-  Secret:                 { bg: '#E53935', border: '#C62828', glow: 'rgba(229, 57, 53, 0.4)', text: '#fff' }, // Rich red
-  PersistentVolumeClaim:  { bg: '#00ACC1', border: '#00838F', glow: 'rgba(0, 172, 193, 0.4)', text: '#fff' },
-  PersistentVolume:       { bg: '#0097A7', border: '#006064', glow: 'rgba(0, 151, 167, 0.4)', text: '#fff' },
-  StorageClass:           { bg: '#00BCD4', border: '#0097A7', glow: 'rgba(0, 188, 212, 0.4)', text: '#fff' },
-  
+  ConfigMap: { bg: '#FFC107', border: '#FFB300', glow: 'rgba(255, 193, 7, 0.4)', text: '#000' }, // Bright amber
+  Secret: { bg: '#E53935', border: '#C62828', glow: 'rgba(229, 57, 53, 0.4)', text: '#fff' }, // Rich red
+  PersistentVolumeClaim: { bg: '#00ACC1', border: '#00838F', glow: 'rgba(0, 172, 193, 0.4)', text: '#fff' },
+  PersistentVolume: { bg: '#0097A7', border: '#006064', glow: 'rgba(0, 151, 167, 0.4)', text: '#fff' },
+  StorageClass: { bg: '#00BCD4', border: '#0097A7', glow: 'rgba(0, 188, 212, 0.4)', text: '#fff' },
+
   // Infrastructure
-  Node:                   { bg: '#D32F2F', border: '#B71C1C', glow: 'rgba(211, 47, 47, 0.4)', text: '#fff' }, // Deep red
-  Namespace:              { bg: '#7B1FA2', border: '#6A1B9A', glow: 'rgba(123, 31, 162, 0.4)', text: '#fff' }, // Deep purple
-  
+  Node: { bg: '#D32F2F', border: '#B71C1C', glow: 'rgba(211, 47, 47, 0.4)', text: '#fff' }, // Deep red
+  Namespace: { bg: '#7B1FA2', border: '#6A1B9A', glow: 'rgba(123, 31, 162, 0.4)', text: '#fff' }, // Deep purple
+
   // Jobs
-  Job:                    { bg: '#F57C00', border: '#E65100', glow: 'rgba(245, 124, 0, 0.4)', text: '#fff' },
-  CronJob:                { bg: '#FF9800', border: '#F57C00', glow: 'rgba(255, 152, 0, 0.4)', text: '#fff' },
-  
+  Job: { bg: '#F57C00', border: '#E65100', glow: 'rgba(245, 124, 0, 0.4)', text: '#fff' },
+  CronJob: { bg: '#FF9800', border: '#F57C00', glow: 'rgba(255, 152, 0, 0.4)', text: '#fff' },
+
   // RBAC - Pink/Magenta family
-  ServiceAccount:         { bg: '#AD1457', border: '#880E4F', glow: 'rgba(173, 20, 87, 0.4)', text: '#fff' },
-  Role:                   { bg: '#EC407A', border: '#C2185B', glow: 'rgba(236, 64, 122, 0.4)', text: '#fff' },
-  ClusterRole:            { bg: '#C2185B', border: '#AD1457', glow: 'rgba(194, 24, 91, 0.4)', text: '#fff' },
-  RoleBinding:            { bg: '#F06292', border: '#EC407A', glow: 'rgba(240, 98, 146, 0.4)', text: '#fff' },
-  ClusterRoleBinding:     { bg: '#E91E63', border: '#C2185B', glow: 'rgba(233, 30, 99, 0.4)', text: '#fff' },
-  
+  ServiceAccount: { bg: '#AD1457', border: '#880E4F', glow: 'rgba(173, 20, 87, 0.4)', text: '#fff' },
+  Role: { bg: '#EC407A', border: '#C2185B', glow: 'rgba(236, 64, 122, 0.4)', text: '#fff' },
+  ClusterRole: { bg: '#C2185B', border: '#AD1457', glow: 'rgba(194, 24, 91, 0.4)', text: '#fff' },
+  RoleBinding: { bg: '#F06292', border: '#EC407A', glow: 'rgba(240, 98, 146, 0.4)', text: '#fff' },
+  ClusterRoleBinding: { bg: '#E91E63', border: '#C2185B', glow: 'rgba(233, 30, 99, 0.4)', text: '#fff' },
+
   // Networking & Policy
-  NetworkPolicy:          { bg: '#FF6F00', border: '#E65100', glow: 'rgba(255, 111, 0, 0.4)', text: '#fff' },
-  HorizontalPodAutoscaler:{ bg: '#0288D1', border: '#01579B', glow: 'rgba(2, 136, 209, 0.4)', text: '#fff' },
-  
+  NetworkPolicy: { bg: '#FF6F00', border: '#E65100', glow: 'rgba(255, 111, 0, 0.4)', text: '#fff' },
+  HorizontalPodAutoscaler: { bg: '#0288D1', border: '#01579B', glow: 'rgba(2, 136, 209, 0.4)', text: '#fff' },
+
   // Endpoints
-  Endpoints:              { bg: '#546E7A', border: '#37474F', glow: 'rgba(84, 110, 122, 0.3)', text: '#fff' },
-  EndpointSlice:          { bg: '#607D8B', border: '#455A64', glow: 'rgba(96, 125, 139, 0.3)', text: '#fff' },
-  
+  Endpoints: { bg: '#546E7A', border: '#37474F', glow: 'rgba(84, 110, 122, 0.3)', text: '#fff' },
+  EndpointSlice: { bg: '#607D8B', border: '#455A64', glow: 'rgba(96, 125, 139, 0.3)', text: '#fff' },
+
   // Quotas
-  ResourceQuota:          { bg: '#795548', border: '#5D4037', glow: 'rgba(121, 85, 72, 0.3)', text: '#fff' },
-  LimitRange:             { bg: '#8D6E63', border: '#6D4C41', glow: 'rgba(141, 110, 99, 0.3)', text: '#fff' },
-  
+  ResourceQuota: { bg: '#795548', border: '#5D4037', glow: 'rgba(121, 85, 72, 0.3)', text: '#fff' },
+  LimitRange: { bg: '#8D6E63', border: '#6D4C41', glow: 'rgba(141, 110, 99, 0.3)', text: '#fff' },
+
   // Container
-  Container:              { bg: '#81D4FA', border: '#4FC3F7', glow: 'rgba(129, 212, 250, 0.3)', text: '#01579B' },
+  Container: { bg: '#81D4FA', border: '#4FC3F7', glow: 'rgba(129, 212, 250, 0.3)', text: '#01579B' },
 };
 
 // ─── Node Sizes ───────────────────────────────────────────────
@@ -93,24 +93,24 @@ const NODE_SIZES: Record<string, { w: number; h: number }> = {
 // ─── Node Shapes ──────────────────────────────────────────────
 
 const NODE_SHAPES: Record<string, string> = {
-  Namespace: 'round-rectangle',
-  Ingress: 'diamond',
-  Service: 'diamond',
-  Deployment: 'round-rectangle',
-  StatefulSet: 'round-rectangle',
-  DaemonSet: 'round-rectangle',
-  ReplicaSet: 'round-rectangle',
-  PodGroup: 'round-rectangle',
+  Namespace: 'ellipse',
+  Ingress: 'ellipse',
+  Service: 'ellipse',
+  Deployment: 'ellipse',
+  StatefulSet: 'ellipse',
+  DaemonSet: 'ellipse',
+  ReplicaSet: 'ellipse',
+  PodGroup: 'ellipse',
   Pod: 'ellipse',
   Container: 'ellipse',
-  ConfigMap: 'round-rectangle',
-  Secret: 'round-rectangle',
-  PersistentVolumeClaim: 'barrel',
-  PersistentVolume: 'barrel',
-  StorageClass: 'round-rectangle',
-  Node: 'round-rectangle',
-  Job: 'round-rectangle',
-  CronJob: 'round-rectangle',
+  ConfigMap: 'ellipse',
+  Secret: 'ellipse',
+  PersistentVolumeClaim: 'ellipse',
+  PersistentVolume: 'ellipse',
+  StorageClass: 'ellipse',
+  Node: 'ellipse',
+  Job: 'ellipse',
+  CronJob: 'ellipse',
 };
 
 // ─── Full Kind Names ──────────────────────────────────────
@@ -364,6 +364,38 @@ export function getStylesheet(): StylesheetStyle[] {
       style: { 'border-color': '#E74C3C', 'border-width': 3.5, 'shadow-color': 'rgba(231, 76, 60, 0.5)' } as any,
     },
 
+    // ─── Blast radius overlay ─────────────────────────
+    {
+      selector: 'node.blast-target',
+      style: { 'border-color': '#DC2626', 'border-width': 5, 'shadow-color': 'rgba(220, 38, 38, 0.7)', 'shadow-blur': 24, 'z-index': 500 } as any,
+    },
+    {
+      selector: 'node.blast-direct',
+      style: { 'border-color': '#EA580C', 'border-width': 4, 'shadow-color': 'rgba(234, 88, 12, 0.5)', 'shadow-blur': 20, 'z-index': 400 } as any,
+    },
+    {
+      selector: 'node.blast-transitive',
+      style: { 'border-color': '#CA8A04', 'border-width': 3.5, 'shadow-color': 'rgba(202, 138, 4, 0.4)', 'z-index': 300 } as any,
+    },
+    {
+      selector: 'node.blast-dim',
+      style: { 'opacity': 0.2, 'text-opacity': 0.1 } as any,
+    },
+
+    // ─── Insight overlay (value 0-100: green=good, yellow=mid, red=bad) ─────
+    {
+      selector: 'node.overlay-green',
+      style: { 'border-color': '#16A34A', 'border-width': 3.5, 'shadow-color': 'rgba(22, 163, 74, 0.4)' } as any,
+    },
+    {
+      selector: 'node.overlay-yellow',
+      style: { 'border-color': '#CA8A04', 'border-width': 3.5, 'shadow-color': 'rgba(202, 138, 4, 0.4)' } as any,
+    },
+    {
+      selector: 'node.overlay-red',
+      style: { 'border-color': '#DC2626', 'border-width': 3.5, 'shadow-color': 'rgba(220, 38, 38, 0.4)' } as any,
+    },
+
     // ─── Hidden ──────────────────────────────────────
     {
       selector: 'node.hidden',
@@ -535,6 +567,20 @@ export function getStylesheet(): StylesheetStyle[] {
         'opacity': 0.08,
         'text-opacity': 0,
       },
+    },
+
+    // ─── Blast radius edges ───────────────────────────
+    {
+      selector: 'edge.blast-affected',
+      style: { 'line-color': '#EA580C', 'target-arrow-color': '#EA580C', 'width': 3.5, 'opacity': 1, 'z-index': 350 } as any,
+    },
+    {
+      selector: 'edge.blast-alternative',
+      style: { 'line-color': '#16A34A', 'target-arrow-color': '#16A34A', 'width': 3, 'opacity': 1, 'z-index': 340 } as any,
+    },
+    {
+      selector: 'edge.blast-dim',
+      style: { 'opacity': 0.12, 'text-opacity': 0 } as any,
     },
 
     // ─── Highlighted edges ───────────────────────────

@@ -88,11 +88,5 @@ type RollbackManager interface {
 	SetDegradationThreshold(ctx context.Context, metric string, threshold float64) error
 }
 
-// NewRollbackManager creates a new rollback manager with dependencies.
-func NewRollbackManager() RollbackManager {
-	// Initialize time-series query engine
-	// Initialize action tracking store
-	// Set default degradation thresholds
-	// Start background monitoring workers
-	return nil
-}
+// NewRollbackManager creates a new rollback manager.
+// The concrete implementation is in manager_impl.go.

@@ -83,8 +83,5 @@ type ContextBuilder interface {
 	GetContextMetadata(ctx context.Context) (interface{}, error)
 }
 
-// NewContextBuilder creates a new context builder with dependencies.
-func NewContextBuilder() ContextBuilder {
-	// Inject World Model, Backend Proxy, Analytics Engine, Audit Logger, Prompt Manager
-	return nil
-}
+// NewContextBuilder creates a stub context builder.
+// Use NewContextBuilderWithProxy (builder_impl.go) for a fully wired implementation.

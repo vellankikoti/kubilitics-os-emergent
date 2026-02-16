@@ -1,12 +1,13 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Database, Clock, Server, Download, Trash2, HardDrive, RefreshCw, Info, Network, Loader2, Edit, FileCode, GitCompare } from 'lucide-react';
+import { Database, Clock, Server, Download, Trash2, HardDrive, Info, Network, Loader2, Edit, FileCode, GitCompare } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
+  ResourceOverviewMetadata,
   SectionCard,
   YamlViewer,
   YamlCompareViewer,
@@ -69,11 +70,6 @@ export default function VolumeAttachmentDetail() {
   useEffect(() => {
     if (!name?.trim()) navigate('/volumeattachments', { replace: true });
   }, [name, navigate]);
-
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
 
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
@@ -154,6 +150,10 @@ export default function VolumeAttachmentDetail() {
       icon: Info,
       content: (
         <div className="space-y-6">
+          <ResourceOverviewMetadata
+            metadata={va?.metadata ?? { name: vaName }}
+            createdLabel={age}
+          />
           <SectionCard icon={Database} title="Attachment information" tooltip={<p className="text-xs text-muted-foreground">Volume attachment status and references</p>}>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
               <div><p className="text-muted-foreground mb-1">Attacher</p><p className="font-mono text-xs">{attacher}</p></div>
@@ -218,9 +218,10 @@ export default function VolumeAttachmentDetail() {
         status={status}
         backLink="/volumeattachments"
         backLabel="Volume Attachments"
-        headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}{isConnected && <Badge variant="outline" className="ml-2 text-xs">Live</Badge>}</span>}
+        createdLabel={age}
+        createdAt={va?.metadata?.creationTimestamp}
+        headerMetadata={isConnected ? <span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Badge variant="outline" className="text-xs">Live</Badge></span> : undefined}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Edit', icon: Edit, variant: 'outline', onClick: () => { setActiveTab('yaml'); setSearchParams((p) => { const n = new URLSearchParams(p); n.set('tab', 'yaml'); return n; }, { replace: true }); } },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

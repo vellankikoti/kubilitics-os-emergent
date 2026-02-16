@@ -19,8 +19,9 @@ import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/back
 import { useClusterStore } from '@/stores/clusterStore';
 import { postJobRetry } from '@/services/backendApiClient';
 import { DeleteConfirmDialog, UsageBar, parseCpu, parseMemory, calculatePodResourceMax } from '@/components/resources';
-import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, TableColumnHeaderWithFilterAndSort } from '@/components/list';
+import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, ListPageHeader, TableColumnHeaderWithFilterAndSort, TableFilterCell, AgeCell, TableEmptyState, TableSkeletonRows, CopyNameDropdownItem, NamespaceBadge, ResourceListTableToolbar } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 import { useWorkloadMetricsMap } from '@/hooks/useWorkloadMetricsMap';
 import type { StatusPillVariant } from '@/components/list';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
@@ -65,6 +66,7 @@ interface Job {
   backoffLimit: number;
   owner: string;
   age: string;
+  creationTimestamp?: string;
   cpu: string;
   memory: string;
 }
@@ -90,6 +92,22 @@ const JOBS_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'cpu', defaultWidth: 120, minWidth: 85 },
   { id: 'memory', defaultWidth: 130, minWidth: 90 },
   { id: 'age', defaultWidth: 100, minWidth: 65 },
+];
+
+const JOBS_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'status', label: 'Status' },
+  { id: 'completions', label: 'Completions' },
+  { id: 'parallelism', label: 'Parallelism' },
+  { id: 'active', label: 'Active' },
+  { id: 'succeeded', label: 'Succeeded' },
+  { id: 'failed', label: 'Failed' },
+  { id: 'duration', label: 'Duration' },
+  { id: 'backoffLimit', label: 'Backoff Limit' },
+  { id: 'owner', label: 'Owner' },
+  { id: 'cpu', label: 'CPU' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'age', label: 'Age' },
 ];
 
 const jobStatusToVariant: Record<Job['status'], StatusPillVariant> = {
@@ -134,6 +152,7 @@ function transformResource(resource: JobResource): Job {
     backoffLimit: spec.backoffLimit ?? 6,
     owner,
     age: calculateAge(resource.metadata.creationTimestamp),
+    creationTimestamp: resource.metadata?.creationTimestamp,
     cpu: '-',
     memory: '-',
   };
@@ -150,14 +169,17 @@ export default function Jobs() {
   const [listView, setListView] = useState<ListView>('flat');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [showTableFilters, setShowTableFilters] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
   const { isConnected } = useConnectionStatus();
   const backendBaseUrl = getEffectiveBackendBaseUrl(useBackendConfigStore((s) => s.backendBaseUrl));
   const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
-  const clusterId = useClusterStore((s) => s.activeCluster)?.id ?? useBackendConfigStore((s) => s.currentClusterId);
-  const { data, isLoading, refetch } = useK8sResourceList<JobResource>('jobs', undefined, { limit: 5000 });
+  const activeCluster = useClusterStore((s) => s.activeCluster);
+  const currentClusterId = useBackendConfigStore((s) => s.currentClusterId);
+  const clusterId = activeCluster?.id ?? currentClusterId;
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useK8sResourceList<JobResource>('jobs', undefined, { limit: 5000 });
   const deleteResource = useDeleteK8sResource('jobs');
   const createResource = useCreateK8sResource('jobs');
 
@@ -199,7 +221,7 @@ export default function Jobs() {
       defaultSortKey: 'name' as const,
       defaultSortOrder: 'asc' as const,
       columns: [
-        { columnId: 'name', getValue: (j: Job) => j.name, sortable: true, filterable: false },
+        { columnId: 'name', getValue: (j: Job) => j.name, sortable: true, filterable: true },
         { columnId: 'namespace', getValue: (j: Job) => j.namespace, sortable: true, filterable: true },
         { columnId: 'status', getValue: (j: Job) => j.status, sortable: true, filterable: true },
         { columnId: 'completions', getValue: (j: Job) => j.completions, sortable: true, filterable: false },
@@ -209,7 +231,7 @@ export default function Jobs() {
         { columnId: 'failed', getValue: (j: Job) => j.failed, sortable: true, filterable: false },
         { columnId: 'duration', getValue: (j: Job) => j.duration, sortable: true, filterable: false, compare: (a, b) => parseDurationSec(a.duration) - parseDurationSec(b.duration) },
         { columnId: 'backoffLimit', getValue: (j: Job) => j.backoffLimit, sortable: true, filterable: false },
-        { columnId: 'owner', getValue: (j: Job) => j.owner, sortable: true, filterable: false },
+        { columnId: 'owner', getValue: (j: Job) => j.owner, sortable: true, filterable: true },
         { columnId: 'cpu', getValue: (j: Job) => j.cpu, sortable: true, filterable: false },
         { columnId: 'memory', getValue: (j: Job) => j.memory, sortable: true, filterable: false },
         { columnId: 'age', getValue: (j: Job) => j.age, sortable: true, filterable: false },
@@ -220,6 +242,7 @@ export default function Jobs() {
   const {
     filteredAndSortedItems: filteredItems,
     distinctValuesByColumn,
+    valueCountsByColumn,
     columnFilters,
     setColumnFilter,
     sortKey,
@@ -228,6 +251,12 @@ export default function Jobs() {
     clearAllFilters,
     hasActiveFilters,
   } = useTableFiltersAndSort(itemsAfterSearchAndNs, jobsTableConfig);
+
+  const columnVisibility = useColumnVisibility({
+    tableId: 'jobs',
+    columns: JOBS_COLUMNS_FOR_VISIBILITY,
+    alwaysVisible: ['name'],
+  });
 
   const totalFiltered = filteredItems.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
@@ -379,39 +408,38 @@ spec:
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="p-2.5 rounded-xl bg-primary/10"><JobIcon className="h-6 w-6 text-primary" /></div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Jobs</h1>
-            <p className="text-sm text-muted-foreground">
-              {filteredItems.length} jobs across {namespaces.length - 1} namespaces
-              {!isConnected && <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]"><WifiOff className="h-3 w-3" /> Connect cluster</span>}
-            </p>
+      <ListPageHeader
+        icon={<JobIcon className="h-6 w-6 text-primary" />}
+        title="Jobs"
+        resourceCount={filteredItems.length}
+        subtitle={namespaces.length > 1 ? `across ${namespaces.length - 1} namespaces` : undefined}
+        demoMode={!isConnected}
+        isLoading={isLoading}
+        onRefresh={() => refetch()}
+        createLabel="Create Job"
+        onCreate={() => setShowCreateWizard(true)}
+        actions={
+          <>
+            <ResourceExportDropdown
+              items={filteredItems}
+              selectedKeys={selectedItems}
+              getKey={(i) => `${i.namespace}/${i.name}`}
+              config={jobExportConfig}
+              selectionLabel={selectedItems.size > 0 ? 'Selected jobs' : 'All visible jobs'}
+              onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+            />
+            {selectedItems.size > 0 && (
+              <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}><Trash2 className="h-4 w-4" />Delete</Button>
+            )}
+          </>
+        }
+        leftExtra={selectedItems.size > 0 ? (
+          <div className="flex items-center gap-2 ml-2 pl-2 border-l border-border">
+            <span className="text-sm text-muted-foreground">{selectedItems.size} selected</span>
+            <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelectedItems(new Set())}>Clear</Button>
           </div>
-          {selectedItems.size > 0 && (
-            <div className="flex items-center gap-2 ml-2 pl-2 border-l border-border">
-              <span className="text-sm text-muted-foreground">{selectedItems.size} selected</span>
-              <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelectedItems(new Set())}>Clear</Button>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <ResourceExportDropdown
-            items={filteredItems}
-            selectedKeys={selectedItems}
-            getKey={(i) => `${i.namespace}/${i.name}`}
-            config={jobExportConfig}
-            selectionLabel={selectedItems.size > 0 ? 'Selected jobs' : 'All visible jobs'}
-            onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
-          />
-          {selectedItems.size > 0 && (
-            <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}><Trash2 className="h-4 w-4" />Delete</Button>
-          )}
-          <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>{isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}</Button>
-          <Button className="gap-2" onClick={() => setShowCreateWizard(true)}><Plus className="h-4 w-4" />Create Job</Button>
-        </div>
-      </div>
+        ) : undefined}
+      />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <ListPageStatCard label="Total" value={stats.total} icon={JobIcon} iconColor="text-primary" selected={!columnFilters.status?.size} onClick={() => setColumnFilter('status', null)} className={cn(!columnFilters.status?.size && 'ring-2 ring-primary')} />
@@ -421,6 +449,8 @@ spec:
         <ListPageStatCard label="Completion Rate" value={stats.completionRatePct + '%'} icon={Gauge} iconColor="text-cyan-500" valueClassName="text-cyan-600" />
       </div>
 
+      <ResourceListTableToolbar
+        globalFilterBar={
       <ResourceCommandBar
         scope={
           <div className="w-full min-w-0">
@@ -449,22 +479,63 @@ spec:
           </div>
         }
         structure={<ListViewSegmentedControl value={listView} onChange={(v) => setListView(v as ListView)} options={[{ id: 'flat', label: 'Flat', icon: List }, { id: 'byNamespace', label: 'By Namespace', icon: Layers }]} label="" ariaLabel="List structure" />}
-        className="mb-2"
+        className="mb-0"
       />
-
-      <div className="border border-border rounded-xl overflow-x-auto bg-card">
+        }
+        hasActiveFilters={hasActiveFilters}
+        onClearAllFilters={clearAllFilters}
+        showTableFilters={showTableFilters}
+        onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+        columns={JOBS_COLUMNS_FOR_VISIBILITY}
+        visibleColumns={columnVisibility.visibleColumns}
+        onColumnToggle={columnVisibility.setColumnVisible}
+        footer={
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-2">
+                  {pageSize} per page
+                  <ChevronDown className="h-4 w-4 opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>
+                    {size} per page
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <ListPagination
+            hasPrev={pagination.hasPrev}
+            hasNext={pagination.hasNext}
+            onPrev={pagination.onPrev}
+            onNext={pagination.onNext}
+            rangeLabel={undefined}
+            currentPage={pagination.currentPage}
+            totalPages={pagination.totalPages}
+            onPageChange={pagination.onPageChange}
+            dataUpdatedAt={dataUpdatedAt}
+            isFetching={isFetching}
+          />
+        </div>
+        }
+      >
         <ResizableTableProvider tableId="jobs" columnConfig={JOBS_TABLE_COLUMNS}>
         <Table className="table-fixed" style={{ minWidth: 1850 }}>
-          <TableHeader><TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+          <TableHeader><TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
             <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
             <ResizableTableHead columnId="name">
               <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
             </ResizableTableHead>
             <ResizableTableHead columnId="namespace">
-              <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} />
+              <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
             </ResizableTableHead>
             <ResizableTableHead columnId="status">
-              <TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} />
+              <TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
             </ResizableTableHead>
             <ResizableTableHead columnId="completions">
               <TableColumnHeaderWithFilterAndSort columnId="completions" label="Completions" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
@@ -500,12 +571,53 @@ spec:
               <TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
             </ResizableTableHead>
             <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
-          </TableRow></TableHeader>
+          </TableRow>
+          {showTableFilters && (
+            <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+              <TableCell className="w-10 p-1.5" />
+              <ResizableTableCell columnId="name" className="p-1.5">
+                <TableFilterCell columnId="name" label="Name" distinctValues={distinctValuesByColumn.name ?? []} selectedFilterValues={columnFilters.name ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.name} />
+              </ResizableTableCell>
+              <ResizableTableCell columnId="namespace" className="p-1.5">
+                <TableFilterCell columnId="namespace" label="Namespace" distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.namespace} />
+              </ResizableTableCell>
+              <ResizableTableCell columnId="status" className="p-1.5">
+                <TableFilterCell columnId="status" label="Status" distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.status} />
+              </ResizableTableCell>
+              <ResizableTableCell columnId="completions" className="p-1.5" />
+              <ResizableTableCell columnId="parallelism" className="p-1.5" />
+              <ResizableTableCell columnId="active" className="p-1.5" />
+              <ResizableTableCell columnId="succeeded" className="p-1.5" />
+              <ResizableTableCell columnId="failed" className="p-1.5" />
+              <ResizableTableCell columnId="duration" className="p-1.5" />
+              <ResizableTableCell columnId="backoffLimit" className="p-1.5" />
+              <ResizableTableCell columnId="owner" className="p-1.5">
+                <TableFilterCell columnId="owner" label="Owner" distinctValues={distinctValuesByColumn.owner ?? []} selectedFilterValues={columnFilters.owner ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.owner} />
+              </ResizableTableCell>
+              <ResizableTableCell columnId="cpu" className="p-1.5" />
+              <ResizableTableCell columnId="memory" className="p-1.5" />
+              <ResizableTableCell columnId="age" className="p-1.5" />
+              <TableCell className="w-12 p-1.5" />
+            </TableRow>
+          )}
+          </TableHeader>
           <TableBody>
             {isLoading && isConnected ? (
-              <TableRow><TableCell colSpan={16} className="h-32 text-center"><div className="flex flex-col items-center gap-2"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><p className="text-sm text-muted-foreground">Loading...</p></div></TableCell></TableRow>
+              <TableSkeletonRows columnCount={16} />
             ) : itemsOnPage.length === 0 ? (
-              <TableRow><TableCell colSpan={16} className="h-32 text-center text-muted-foreground"><div className="flex flex-col items-center gap-2"><Briefcase className="h-8 w-8 opacity-50" /><p>No jobs found</p>{(searchQuery || hasActiveFilters) && <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>}</div></TableCell></TableRow>
+              <TableRow>
+                <TableCell colSpan={16} className="h-40 text-center">
+                  <TableEmptyState
+                    icon={<Briefcase className="h-8 w-8" />}
+                    title="No Jobs found"
+                    subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Get started by creating a Job for one-off or batch workloads.'}
+                    hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                    onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                    createLabel="Create Job"
+                    onCreate={() => setShowCreateWizard(true)}
+                  />
+                </TableCell>
+              </TableRow>
             ) : listView === 'flat' ? itemsOnPage.map((item, idx) => {
               const StatusIcon = statusConfig[item.status]?.icon || Clock;
               const key = `${item.namespace}/${item.name}`;
@@ -521,7 +633,7 @@ spec:
                 <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
                   <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
                   <ResizableTableCell columnId="name"><Link to={`/jobs/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><JobIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
-                  <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
+                  <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={item.namespace} className="font-normal truncate block w-fit max-w-full" /></ResizableTableCell>
                   <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={jobStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>
                   <ResizableTableCell columnId="completions" className="min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
@@ -552,10 +664,11 @@ spec:
                       <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={jobResourceMaxMap[key]?.memoryMax} />
                     </div>
                   </ResizableTableCell>
-                  <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
+                  <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>
                   <TableCell>
                     <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Job actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-48">
+                        <CopyNameDropdownItem name={item.name} namespace={item.namespace} />
                         <DropdownMenuItem onClick={() => navigate(`/jobs/${item.namespace}/${item.name}`)} className="gap-2">View Details</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => navigate(`/pods?namespace=${item.namespace}`)} className="gap-2"><Box className="h-4 w-4" />View Pods</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => navigate(`/jobs/${item.namespace}/${item.name}?tab=logs`)} className="gap-2"><FileText className="h-4 w-4" />View Logs</DropdownMenuItem>
@@ -594,7 +707,7 @@ spec:
                     <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
                       <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
                       <ResizableTableCell columnId="name"><Link to={`/jobs/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><JobIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
-                      <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
+                      <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={item.namespace} className="font-normal truncate block w-fit max-w-full" /></ResizableTableCell>
                       <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={jobStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>
                       <ResizableTableCell columnId="completions" className="min-w-0">
                         <div className="flex items-center gap-2 min-w-0">
@@ -625,10 +738,11 @@ spec:
                           <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={jobResourceMaxMap[key]?.memoryMax} />
                         </div>
                       </ResizableTableCell>
-                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
+                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>
                       <TableCell>
                         <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Job actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-48">
+                            <CopyNameDropdownItem name={item.name} namespace={item.namespace} />
                             <DropdownMenuItem onClick={() => navigate(`/jobs/${item.namespace}/${item.name}`)} className="gap-2">View Details</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => navigate(`/pods?namespace=${item.namespace}`)} className="gap-2"><Box className="h-4 w-4" />View Pods</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => navigate(`/jobs/${item.namespace}/${item.name}?tab=logs`)} className="gap-2"><FileText className="h-4 w-4" />View Logs</DropdownMenuItem>
@@ -646,44 +760,7 @@ spec:
           </TableBody>
         </Table>
         </ResizableTableProvider>
-      </div>
-
-      <div className="pt-4 pb-2 border-t border-border mt-2">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-2">
-                  {pageSize} per page
-                  <ChevronDown className="h-4 w-4 opacity-50" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <DropdownMenuItem
-                    key={size}
-                    onClick={() => handlePageSizeChange(size)}
-                    className={cn(pageSize === size && 'bg-accent')}
-                  >
-                    {size} per page
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          <ListPagination
-            hasPrev={pagination.hasPrev}
-            hasNext={pagination.hasNext}
-            onPrev={pagination.onPrev}
-            onNext={pagination.onNext}
-            rangeLabel={undefined}
-            currentPage={pagination.currentPage}
-            totalPages={pagination.totalPages}
-            onPageChange={pagination.onPageChange}
-          />
-        </div>
-      </div>
+      </ResourceListTableToolbar>
 
       {showCreateWizard && (
         <ResourceCreator

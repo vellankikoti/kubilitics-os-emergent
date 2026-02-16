@@ -46,6 +46,11 @@ export interface HierarchicalNode {
 // Re-export for convenience
 export type { TopologyNode, TopologyEdge, ResourceType } from './D3TopologyCanvas';
 
+/** Max nodes for tree layout; above this we show a message to avoid renderer crash / freeze */
+const MAX_TREE_NODES = 200;
+/** Nodes to create per animation frame (keeps main thread responsive) */
+const NODES_PER_FRAME = 35;
+
 export interface D3HierarchicalTopologyCanvasProps {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
@@ -168,10 +173,11 @@ export function D3HierarchicalTopologyCanvas({
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [zoomLevel, setZoomLevel] = useState(100);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  const [overNodeLimit, setOverNodeLimit] = useState(false);
 
-  // Build hierarchical tree structure from nodes and edges
+  // Build hierarchical tree structure from nodes and edges (skip when over limit to avoid memory spike)
   const treeRoot = useMemo(() => {
-    if (nodes.length === 0) return null;
+    if (nodes.length === 0 || nodes.length > MAX_TREE_NODES) return null;
 
     // Build node map
     const nodeMap = new Map<string, HierarchicalNode>();
@@ -318,249 +324,235 @@ export function D3HierarchicalTopologyCanvas({
     return map;
   }, [edges]);
 
-  // Render D3 tree
+  // Render D3 tree — deferred so tab switch stays responsive (avoids main-thread freeze)
   useEffect(() => {
     if (!svgRef.current || !treeRoot) return;
 
-    const svg = d3.select(svgRef.current);
+    const nodeCount = nodes.length;
+    if (nodeCount > MAX_TREE_NODES) {
+      setOverNodeLimit(true);
+      return;
+    }
+    setOverNodeLimit(false);
+
+    let cancelled = false;
+    const svgEl = svgRef.current;
     const { width, height } = dimensions;
 
-    // Clear previous content
-    svg.selectAll('*').remove();
+    const runLayout = () => {
+      if (cancelled || !svgEl) return;
+      const svg = d3.select(svgEl);
 
-    // Create defs for gradients and markers
-    const defs = svg.append('defs');
-    
-    // Arrow marker
-    defs.append('marker')
-      .attr('id', 'arrowhead-hierarchical')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 15)
-      .attr('refY', 0)
-      .attr('markerWidth', 6)
-      .attr('markerHeight', 6)
-      .attr('orient', 'auto')
-      .append('path')
-      .attr('d', 'M0,-5L10,0L0,5')
-      .attr('fill', '#666');
+      // Clear previous content
+      svg.selectAll('*').remove();
 
-    // Create container group for zoom/pan
-    const g = svg.append('g').attr('class', 'topology-container');
+      // Create defs for gradients and markers
+      const defs = svg.append('defs');
+      defs.append('marker')
+        .attr('id', 'arrowhead-hierarchical')
+        .attr('viewBox', '0 -5 10 10')
+        .attr('refX', 15)
+        .attr('refY', 0)
+        .attr('markerWidth', 6)
+        .attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M0,-5L10,0L0,5')
+        .attr('fill', '#666');
 
-    // Add zoom behavior
-    const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.2, 4])
-      .on('zoom', (event) => {
-        g.attr('transform', event.transform);
-        setZoomLevel(Math.round(event.transform.k * 100));
+      const g = svg.append('g').attr('class', 'topology-container');
+
+      const zoom = d3.zoom<SVGSVGElement, unknown>()
+        .scaleExtent([0.2, 4])
+        .on('zoom', (event) => {
+          g.attr('transform', event.transform);
+          setZoomLevel(Math.round(event.transform.k * 100));
+        });
+
+      zoomRef.current = zoom;
+      svg.call(zoom);
+
+      const hierarchy = d3.hierarchy(treeRoot, (d: HierarchicalNode) => d.children);
+      const treeLayout = d3.tree<HierarchicalNode>()
+        .size([height - 120, width - 200])
+        .separation((a, b) => (a.parent === b.parent ? 1.2 : 1.5));
+      const treeData = treeLayout(hierarchy);
+
+      const visibleDescendants = treeData.descendants().filter((d: any) => d.data?.id !== '__virtual_root__');
+
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      visibleDescendants.forEach((d: any) => {
+        if (d.x < minX) minX = d.x;
+        if (d.x > maxX) maxX = d.x;
+        if (d.y < minY) minY = d.y;
+        if (d.y > maxY) maxY = d.y;
       });
 
-    zoomRef.current = zoom;
-    svg.call(zoom);
+      const treeWidth = maxX - minX || width - 200;
+      const treeHeight = maxY - minY || height - 120;
+      const treeCenterX = (minX + maxX) / 2 || (width - 200) / 2;
+      const treeCenterY = (minY + maxY) / 2 || (height - 120) / 2;
+      const padding = 60;
+      const scale = Math.min(
+        (width - padding * 2) / treeWidth,
+        (height - padding * 2) / treeHeight,
+        1
+      );
+      const translateX = width / 2 - treeCenterX * scale;
+      const translateY = padding - minY * scale;
+      const initialTransform = d3.zoomIdentity.translate(translateX, translateY).scale(scale);
+      svg.call(zoom.transform as any, initialTransform);
 
-    // Skip virtual root if it exists
-    const actualRoot = treeRoot.id === '__virtual_root__' 
-      ? (treeRoot.children && treeRoot.children[0]) || treeRoot
-      : treeRoot;
+      const linksGroup = g.append('g').attr('class', 'links');
+      const nodesGroup = g.append('g').attr('class', 'nodes');
 
-    if (!actualRoot) return;
+      const visibleLinks = treeData.links().filter((d: any) => (d as any).source.data?.id !== '__virtual_root__');
+      linksGroup.selectAll<SVGPathElement, any>('path')
+        .data(visibleLinks)
+        .enter()
+        .append('path')
+        .attr('d', (d: any) => {
+          const source = d.source as any;
+          const target = d.target as any;
+          return `M${source.y},${source.x}L${target.y},${target.x}`;
+        })
+        .attr('fill', 'none')
+        .attr('stroke', '#999')
+        .attr('stroke-width', 1.5)
+        .attr('stroke-opacity', 0.6)
+        .attr('marker-end', 'url(#arrowhead-hierarchical)');
 
-    // Create D3 hierarchy
-    const hierarchy = d3.hierarchy(actualRoot, (d: HierarchicalNode) => d.children);
-    
-    // Calculate tree layout
-    const treeLayout = d3.tree<HierarchicalNode>()
-      .size([height - 120, width - 200])
-      .separation((a, b) => {
-        // More separation for siblings at same level
-        return a.parent === b.parent ? 1.2 : 1.5;
-      });
+      linksGroup.selectAll<SVGTextElement, any>('text')
+        .data(visibleLinks)
+        .enter()
+        .append('text')
+        .attr('x', (d: any) => {
+          const source = d.source as any;
+          const target = d.target as any;
+          return (source.y + target.y) / 2;
+        })
+        .attr('y', (d: any) => {
+          const source = d.source as any;
+          const target = d.target as any;
+          return (source.x + target.x) / 2;
+        })
+        .attr('dy', -5)
+        .attr('text-anchor', 'middle')
+        .attr('font-size', 10)
+        .attr('fill', '#666')
+        .attr('font-weight', 500)
+        .text((d: any) => {
+          const source = d.source as HierarchicalNode;
+          const target = d.target as HierarchicalNode;
+          const edge = edgeMap.get(`${source.id}-${target.id}`);
+          let label = edge?.label || 'Manages';
+          if (label.toLowerCase() === 'owns') label = 'Creates';
+          return label;
+        });
 
-    const treeData = treeLayout(hierarchy);
+      const addNodeBatch = (endIndex: number) => {
+        if (cancelled) return;
+        const slice = visibleDescendants.slice(0, endIndex);
+        const node = nodesGroup.selectAll<SVGGElement, any>('g.node')
+          .data(slice, (d: any) => d.data.id)
+          .enter()
+          .append('g')
+          .attr('class', 'node')
+          .attr('transform', (d: any) => `translate(${d.y},${d.x})`)
+          .style('cursor', 'pointer')
+          .on('mouseenter', (event, d: any) => {
+            setHoveredNode(d.data.id);
+            d3.select(event.currentTarget).select('circle.node-circle').attr('stroke-width', 3);
+          })
+          .on('mouseleave', (event) => {
+            setHoveredNode(null);
+            d3.select(event.currentTarget).select('circle.node-circle').attr('stroke-width', 2);
+          })
+          .on('click', (event, d: any) => {
+            event.stopPropagation();
+            onNodeClick?.(d.data);
+          });
 
-    // Calculate bounds for auto-fit
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    treeData.descendants().forEach((d: any) => {
-      if (d.x < minX) minX = d.x;
-      if (d.x > maxX) maxX = d.x;
-      if (d.y < minY) minY = d.y;
-      if (d.y > maxY) maxY = d.y;
-    });
+        node.append('circle')
+          .attr('r', (d: any) => {
+            const style = resourceStyles[d.data.type] || resourceStyles.pod;
+            return style.radius + 6;
+          })
+          .attr('fill', (d: any) => {
+            if (d.data.isCurrent || hoveredNode === d.data.id) {
+              const style = resourceStyles[d.data.type] || resourceStyles.pod;
+              return style.color;
+            }
+            return 'transparent';
+          })
+          .attr('opacity', 0.2)
+          .attr('class', 'node-glow');
 
-    const treeWidth = maxX - minX || width - 200;
-    const treeHeight = maxY - minY || height - 120;
-    const treeCenterX = (minX + maxX) / 2 || (width - 200) / 2;
-    const treeCenterY = (minY + maxY) / 2 || (height - 120) / 2;
+        node.append('circle')
+          .attr('r', (d: any) => {
+            const style = resourceStyles[d.data.type] || resourceStyles.pod;
+            return style.radius;
+          })
+          .attr('fill', (d: any) => {
+            const style = resourceStyles[d.data.type] || resourceStyles.pod;
+            return style.color;
+          })
+          .attr('stroke', (d: any) => (d.data.isCurrent ? '#000' : '#fff'))
+          .attr('stroke-width', (d: any) => d.data.isCurrent ? 3 : 2)
+          .attr('class', 'node-circle');
 
-    // Auto-fit to viewport
-    const padding = 60;
-    const scale = Math.min(
-      (width - padding * 2) / treeWidth,
-      (height - padding * 2) / treeHeight,
-      1
-    );
-    const translateX = width / 2 - treeCenterX * scale;
-    const translateY = padding - minY * scale;
+        node.filter((d: any) => d.data.status === 'healthy')
+          .append('circle')
+          .attr('r', 6)
+          .attr('cx', (d: any) => {
+            const style = resourceStyles[d.data.type] || resourceStyles.pod;
+            return style.radius * 0.6;
+          })
+          .attr('cy', (d: any) => {
+            const style = resourceStyles[d.data.type] || resourceStyles.pod;
+            return -style.radius * 0.6;
+          })
+          .attr('fill', '#2ECC71')
+          .attr('stroke', '#fff')
+          .attr('stroke-width', 1.5);
 
-    const initialTransform = d3.zoomIdentity
-      .translate(translateX, translateY)
-      .scale(scale);
+        node.append('text')
+          .attr('y', (d: any) => {
+            const style = resourceStyles[d.data.type] || resourceStyles.pod;
+            return style.radius + 18;
+          })
+          .attr('text-anchor', 'middle')
+          .attr('font-size', 12)
+          .attr('font-weight', 600)
+          .attr('fill', '#1a1a1a')
+          .text((d: any) => (d.data && (resourceLabels[d.data.type] || d.data.type)) || 'Resource');
 
-    svg.call(zoom.transform as any, initialTransform);
+        node.append('text')
+          .attr('y', (d: any) => {
+            const style = resourceStyles[d.data.type] || resourceStyles.pod;
+            return style.radius + 32;
+          })
+          .attr('text-anchor', 'middle')
+          .attr('font-size', 10)
+          .attr('fill', '#666')
+          .text((d: any) => {
+            const name = d.data?.name ?? '';
+            return name.length > 20 ? name.slice(0, 17) + '...' : name;
+          });
 
-    // Create links group
-    const linksGroup = g.append('g').attr('class', 'links');
-    
-    // Create nodes group
-    const nodesGroup = g.append('g').attr('class', 'nodes');
+        const next = Math.min(endIndex + NODES_PER_FRAME, visibleDescendants.length);
+        if (next > endIndex) requestAnimationFrame(() => addNodeBatch(next));
+      };
 
-    // Draw links (edges)
-    const link = linksGroup.selectAll<SVGPathElement, any>('path')
-      .data(treeData.links())
-      .enter()
-      .append('path')
-      .attr('d', (d: any) => {
-        const source = d.source as any;
-        const target = d.target as any;
-        return `M${source.y},${source.x}L${target.y},${target.x}`;
-      })
-      .attr('fill', 'none')
-      .attr('stroke', '#999')
-      .attr('stroke-width', 1.5)
-      .attr('stroke-opacity', 0.6)
-      .attr('marker-end', 'url(#arrowhead-hierarchical)');
+      addNodeBatch(Math.min(NODES_PER_FRAME, visibleDescendants.length));
+    };
 
-    // Add edge labels
-    const linkLabels = linksGroup.selectAll<SVGTextElement, any>('text')
-      .data(treeData.links())
-      .enter()
-      .append('text')
-      .attr('x', (d: any) => {
-        const source = d.source as any;
-        const target = d.target as any;
-        return (source.y + target.y) / 2;
-      })
-      .attr('y', (d: any) => {
-        const source = d.source as any;
-        const target = d.target as any;
-        return (source.x + target.x) / 2;
-      })
-      .attr('dy', -5)
-      .attr('text-anchor', 'middle')
-      .attr('font-size', 10)
-      .attr('fill', '#666')
-      .attr('font-weight', 500)
-      .text((d: any) => {
-        const source = d.source as HierarchicalNode;
-        const target = d.target as HierarchicalNode;
-        const edge = edgeMap.get(`${source.id}-${target.id}`);
-        // Map "Owns" to "Creates" for display, keep other labels as-is
-        let label = edge?.label || 'Manages';
-        if (label.toLowerCase() === 'owns') {
-          label = 'Creates';
-        }
-        return label;
-      });
-
-    // Draw nodes
-    const node = nodesGroup.selectAll<SVGGElement, any>('g')
-      .data(treeData.descendants())
-      .enter()
-      .append('g')
-      .attr('class', 'node')
-      .attr('transform', (d: any) => `translate(${d.y},${d.x})`)
-      .style('cursor', 'pointer')
-      .on('mouseenter', (event, d: any) => {
-        setHoveredNode(d.data.id);
-        d3.select(event.currentTarget).select('circle').attr('stroke-width', 3);
-      })
-      .on('mouseleave', (event) => {
-        setHoveredNode(null);
-        d3.select(event.currentTarget).select('circle').attr('stroke-width', 2);
-      })
-      .on('click', (event, d: any) => {
-        event.stopPropagation();
-        onNodeClick?.(d.data);
-      });
-
-    // Add outer glow for current/hovered nodes
-    node.append('circle')
-      .attr('r', (d: any) => {
-        const style = resourceStyles[d.data.type] || resourceStyles.pod;
-        return style.radius + 6;
-      })
-      .attr('fill', (d: any) => {
-        if (d.data.isCurrent || hoveredNode === d.data.id) {
-          const style = resourceStyles[d.data.type] || resourceStyles.pod;
-          return style.color;
-        }
-        return 'transparent';
-      })
-      .attr('opacity', 0.2)
-      .attr('class', 'node-glow');
-
-    // Add main circle
-    node.append('circle')
-      .attr('r', (d: any) => {
-        const style = resourceStyles[d.data.type] || resourceStyles.pod;
-        return style.radius;
-      })
-      .attr('fill', (d: any) => {
-        const style = resourceStyles[d.data.type] || resourceStyles.pod;
-        return style.color;
-      })
-      .attr('stroke', (d: any) => {
-        if (d.data.isCurrent) {
-          return '#000';
-        }
-        return '#fff';
-      })
-      .attr('stroke-width', (d: any) => d.data.isCurrent ? 3 : 2)
-      .attr('class', 'node-circle');
-
-    // Add health status indicator (green circle for healthy)
-    node.filter((d: any) => d.data.status === 'healthy')
-      .append('circle')
-      .attr('r', 6)
-      .attr('cx', (d: any) => {
-        const style = resourceStyles[d.data.type] || resourceStyles.pod;
-        return style.radius * 0.6;
-      })
-      .attr('cy', (d: any) => {
-        const style = resourceStyles[d.data.type] || resourceStyles.pod;
-        return -style.radius * 0.6;
-      })
-      .attr('fill', '#2ECC71') // Green for healthy
-      .attr('stroke', '#fff')
-      .attr('stroke-width', 1.5);
-
-    // Add resource type label (top line - bold)
-    node.append('text')
-      .attr('y', (d: any) => {
-        const style = resourceStyles[d.data.type] || resourceStyles.pod;
-        return style.radius + 18;
-      })
-      .attr('text-anchor', 'middle')
-      .attr('font-size', 12)
-      .attr('font-weight', 600)
-      .attr('fill', '#1a1a1a')
-      .text((d: any) => resourceLabels[d.data.type] || d.data.type);
-
-    // Add resource name label (bottom line - smaller, muted)
-    node.append('text')
-      .attr('y', (d: any) => {
-        const style = resourceStyles[d.data.type] || resourceStyles.pod;
-        return style.radius + 32;
-      })
-      .attr('text-anchor', 'middle')
-      .attr('font-size', 10)
-      .attr('fill', '#666')
-      .text((d: any) => {
-        const name = d.data.name;
-        return name.length > 20 ? name.slice(0, 17) + '...' : name;
-      });
-
-  }, [svgRef, treeRoot, dimensions, edgeMap, hoveredNode, onNodeClick]);
+    const rafId = requestAnimationFrame(() => runLayout());
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
+  }, [nodes.length, svgRef, treeRoot, dimensions, edgeMap, onNodeClick]);
 
   const handleZoomIn = useCallback(() => {
     if (!svgRef.current || !zoomRef.current) return;
@@ -589,11 +581,21 @@ export function D3HierarchicalTopologyCanvas({
 
   return (
     <div ref={containerRef} className={cn('relative w-full h-full bg-white', className)}>
+      {overNodeLimit ? (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 bg-slate-50/95 rounded-lg border border-gray-200 z-10">
+          <Layers className="h-12 w-12 text-amber-500" />
+          <p className="text-sm font-medium text-gray-800 text-center max-w-sm">
+            D3 Standard tree supports up to {MAX_TREE_NODES} nodes (this graph has {nodes.length}). Use <strong>Cytoscape Layout</strong> or <strong>3D</strong> for large graphs.
+          </p>
+          <p className="text-xs text-gray-500">You can switch tabs freely; the app will not freeze.</p>
+        </div>
+      ) : null}
       <svg
         ref={svgRef}
         width={dimensions.width}
         height={dimensions.height}
         className="w-full h-full"
+        style={{ visibility: overNodeLimit ? 'hidden' : 'visible' }}
       />
       
       {/* Resource count badge */}

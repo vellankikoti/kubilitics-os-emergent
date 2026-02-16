@@ -128,7 +128,9 @@ export function useResourceEvents(
 ) {
   const baseUrl = getEffectiveBackendBaseUrl();
   const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured());
-  const clusterId = useClusterStore((s) => s.activeCluster)?.id ?? useBackendConfigStore((s) => s.currentClusterId);
+  const activeCluster = useClusterStore((s) => s.activeCluster);
+  const currentClusterId = useBackendConfigStore((s) => s.currentClusterId);
+  const clusterId = activeCluster?.id ?? currentClusterId;
   const useBackend = !!(isBackendConfigured && clusterId && name && (namespace !== undefined || kind === 'IngressClass'));
 
   const backendQuery = useQuery({

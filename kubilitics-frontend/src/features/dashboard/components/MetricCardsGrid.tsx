@@ -5,9 +5,6 @@ import {
     Activity,
     Layers,
     Globe,
-    ArrowUp,
-    ArrowDown,
-    Minus,
     FolderKanban,
     Shield,
     FileText,
@@ -15,18 +12,7 @@ import {
     Timer,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import { useResourceCounts } from "@/hooks/useResourceCounts";
-
-const sparklineData = [
-    { value: 40 },
-    { value: 30 },
-    { value: 60 },
-    { value: 45 },
-    { value: 70 },
-    { value: 55 },
-    { value: 85 },
-];
 
 export const MetricCardsGrid = () => {
     const { counts } = useResourceCounts();
@@ -35,134 +21,104 @@ export const MetricCardsGrid = () => {
         title: string;
         value: number;
         href: string;
-        trend: string;
-        trendDir: "up" | "down" | "neutral";
         icon: typeof Server;
         borderClass: string;
         bgClass: string;
         iconBg: string;
         iconColor: string;
-        chartColor: string;
     }> = [
             // — Infrastructure —
             {
                 title: "Nodes",
                 value: counts.nodes,
                 href: "/nodes",
-                trend: "+2",
-                trendDir: "up" as const,
                 icon: Server,
                 borderClass: "border-l-blue-500",
                 bgClass: "bg-gradient-to-br from-blue-500/8 via-transparent to-transparent",
                 iconBg: "bg-blue-500/15",
                 iconColor: "text-blue-600",
-                chartColor: "#2563EB",
             },
             {
                 title: "Pods",
                 value: counts.pods,
                 href: "/pods",
-                trend: "+12",
-                trendDir: "up" as const,
                 icon: Activity,
                 borderClass: "border-l-violet-500",
                 bgClass: "bg-gradient-to-br from-violet-500/8 via-transparent to-transparent",
                 iconBg: "bg-violet-500/15",
                 iconColor: "text-violet-600",
-                chartColor: "#7C3AED",
             },
             {
                 title: "Deployments",
                 value: counts.deployments,
-                href: "/workloads/deployments",
-                trend: "0",
-                trendDir: "neutral" as const,
+                href: "/deployments",
                 icon: Layers,
                 borderClass: "border-l-indigo-500",
                 bgClass: "bg-gradient-to-br from-indigo-500/8 via-transparent to-transparent",
                 iconBg: "bg-indigo-500/15",
                 iconColor: "text-indigo-600",
-                chartColor: "#4F46E5",
             },
             // — Networking & Organization —
             {
                 title: "Services",
                 value: counts.services,
-                href: "/network/services",
-                trend: "+1",
-                trendDir: "up" as const,
+                href: "/services",
                 icon: Globe,
                 borderClass: "border-l-cyan-500",
                 bgClass: "bg-gradient-to-br from-cyan-500/8 via-transparent to-transparent",
                 iconBg: "bg-cyan-500/15",
                 iconColor: "text-cyan-600",
-                chartColor: "#0891B2",
             },
             {
                 title: "DaemonSets",
                 value: counts.daemonsets,
-                href: "/workloads/daemonsets",
-                trend: "0",
-                trendDir: "neutral" as const,
+                href: "/daemonsets",
                 icon: Shield,
                 borderClass: "border-l-rose-500",
                 bgClass: "bg-gradient-to-br from-rose-500/8 via-transparent to-transparent",
                 iconBg: "bg-rose-500/15",
                 iconColor: "text-rose-600",
-                chartColor: "#E11D48",
             },
             {
                 title: "Namespaces",
                 value: counts.namespaces,
                 href: "/namespaces",
-                trend: "+1",
-                trendDir: "up" as const,
                 icon: FolderKanban,
                 borderClass: "border-l-emerald-500",
                 bgClass: "bg-gradient-to-br from-emerald-500/8 via-transparent to-transparent",
                 iconBg: "bg-emerald-500/15",
                 iconColor: "text-emerald-600",
-                chartColor: "#059669",
             },
             // — Configuration & Security —
             {
                 title: "ConfigMaps",
                 value: counts.configmaps,
-                href: "/configuration/configmaps",
-                trend: "+3",
-                trendDir: "up" as const,
+                href: "/configmaps",
                 icon: FileText,
                 borderClass: "border-l-amber-500",
                 bgClass: "bg-gradient-to-br from-amber-500/8 via-transparent to-transparent",
                 iconBg: "bg-amber-500/15",
                 iconColor: "text-amber-600",
-                chartColor: "#D97706",
             },
             {
                 title: "Secrets",
                 value: counts.secrets,
-                href: "/configuration/secrets",
-                trend: "0",
-                trendDir: "neutral" as const,
+                href: "/secrets",
                 icon: KeyRound,
                 borderClass: "border-l-fuchsia-500",
                 bgClass: "bg-gradient-to-br from-fuchsia-500/8 via-transparent to-transparent",
                 iconBg: "bg-fuchsia-500/15",
                 iconColor: "text-fuchsia-600",
-                chartColor: "#C026D3",
             },
             {
                 title: "CronJobs",
                 value: counts.cronjobs,
-                href: "/workloads/cronjobs",
-                trend: "+1",
-                trendDir: "up" as const,
+                href: "/cronjobs",
                 icon: Timer,
                 borderClass: "border-l-orange-500",
                 bgClass: "bg-gradient-to-br from-orange-500/8 via-transparent to-transparent",
                 iconBg: "bg-orange-500/15",
                 iconColor: "text-orange-600",
-                chartColor: "#EA580C",
             },
         ];
 
@@ -189,53 +145,11 @@ export const MetricCardsGrid = () => {
                             </div>
                         </CardHeader>
                         <CardContent className="z-10 relative px-5 pb-5">
-                            <div className="flex items-baseline justify-between gap-2">
-                                <div className="text-3xl font-bold tracking-tight text-foreground tabular-nums">
-                                    {metric.value}
-                                </div>
-                                <div className="h-10 w-24 shrink-0">
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <AreaChart data={sparklineData}>
-                                            <defs>
-                                                <linearGradient id={`gradient-${metric.title}`} x1="0" y1="0" x2="0" y2="1">
-                                                    <stop offset="0%" stopColor={metric.chartColor} stopOpacity={0.4} />
-                                                    <stop offset="100%" stopColor={metric.chartColor} stopOpacity={0} />
-                                                </linearGradient>
-                                            </defs>
-                                            <Area
-                                                type="monotone"
-                                                dataKey="value"
-                                                stroke={metric.chartColor}
-                                                strokeWidth={2}
-                                                fill={`url(#gradient-${metric.title})`}
-                                                isAnimationActive={false}
-                                            />
-                                        </AreaChart>
-                                    </ResponsiveContainer>
-                                </div>
+                            <div className="text-3xl font-bold tracking-tight text-foreground tabular-nums">
+                                {metric.value}
                             </div>
-                            <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1 flex-wrap">
-                                {metric.trendDir === "up" && (
-                                    <ArrowUp className="w-3 h-3 text-emerald-600 shrink-0" />
-                                )}
-                                {metric.trendDir === "down" && (
-                                    <ArrowDown className="w-3 h-3 text-rose-600 shrink-0" />
-                                )}
-                                {metric.trendDir === "neutral" && (
-                                    <Minus className="w-3 h-3 text-muted-foreground shrink-0" />
-                                )}
-                                <span
-                                    className={
-                                        metric.trendDir === "up"
-                                            ? "text-emerald-600 font-semibold"
-                                            : metric.trendDir === "down"
-                                                ? "text-rose-600 font-semibold"
-                                                : "text-muted-foreground"
-                                    }
-                                >
-                                    {metric.trend}
-                                </span>
-                                <span className="opacity-80">from last check</span>
+                            <p className="text-xs text-muted-foreground mt-2">
+                                Live count from cluster
                             </p>
                         </CardContent>
                     </Card>

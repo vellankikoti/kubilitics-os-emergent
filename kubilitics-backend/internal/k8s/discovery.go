@@ -71,14 +71,16 @@ func GetGVRForType(resourceType string) (schema.GroupVersionResource, error) {
 		"resourcequotas":         {Group: "", Version: "v1", Resource: "resourcequotas"},
 		"limitranges":            {Group: "", Version: "v1", Resource: "limitranges"},
 		"replicationcontrollers": {Group: "", Version: "v1", Resource: "replicationcontrollers"},
+		"podtemplates":             {Group: "", Version: "v1", Resource: "podtemplates"},
 	}
 
 	// Apps resources
 	appsResources := map[string]schema.GroupVersionResource{
-		"deployments":  {Group: "apps", Version: "v1", Resource: "deployments"},
-		"replicasets":  {Group: "apps", Version: "v1", Resource: "replicasets"},
-		"statefulsets": {Group: "apps", Version: "v1", Resource: "statefulsets"},
-		"daemonsets":   {Group: "apps", Version: "v1", Resource: "daemonsets"},
+		"deployments":           {Group: "apps", Version: "v1", Resource: "deployments"},
+		"replicasets":           {Group: "apps", Version: "v1", Resource: "replicasets"},
+		"statefulsets":          {Group: "apps", Version: "v1", Resource: "statefulsets"},
+		"daemonsets":            {Group: "apps", Version: "v1", Resource: "daemonsets"},
+		"controllerrevisions":   {Group: "apps", Version: "v1", Resource: "controllerrevisions"},
 	}
 
 	// Batch resources
@@ -99,6 +101,18 @@ func GetGVRForType(resourceType string) (schema.GroupVersionResource, error) {
 		"endpointslices": {Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
 	}
 
+	// DRA resources (Dynamic Resource Allocation - K8s 1.31+)
+	draResources := map[string]schema.GroupVersionResource{
+		"resourceslices":  {Group: "resource.k8s.io", Version: "v1alpha3", Resource: "resourceslices"},
+		"deviceclasses":   {Group: "resource.k8s.io", Version: "v1", Resource: "deviceclasses"},
+	}
+
+	// MetalLB CRDs (bare-metal load balancer — common in on-prem)
+	metallbResources := map[string]schema.GroupVersionResource{
+		"ipaddresspools": {Group: "metallb.io", Version: "v1beta1", Resource: "ipaddresspools"},
+		"bgppeers":       {Group: "metallb.io", Version: "v1beta2", Resource: "bgppeers"},
+	}
+
 	// RBAC resources
 	rbacResources := map[string]schema.GroupVersionResource{
 		"roles":               {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"},
@@ -111,6 +125,13 @@ func GetGVRForType(resourceType string) (schema.GroupVersionResource, error) {
 	storageResources := map[string]schema.GroupVersionResource{
 		"storageclasses":     {Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"},
 		"volumeattachments":  {Group: "storage.k8s.io", Version: "v1", Resource: "volumeattachments"},
+	}
+
+	// Snapshot resources (CSI Volume Snapshots - CRDs)
+	snapshotResources := map[string]schema.GroupVersionResource{
+		"volumesnapshots":        {Group: "snapshot.storage.k8s.io", Version: "v1", Resource: "volumesnapshots"},
+		"volumesnapshotclasses":  {Group: "snapshot.storage.k8s.io", Version: "v1", Resource: "volumesnapshotclasses"},
+		"volumesnapshotcontents": {Group: "snapshot.storage.k8s.io", Version: "v1", Resource: "volumesnapshotcontents"},
 	}
 
 	// Autoscaling resources
@@ -166,10 +187,19 @@ func GetGVRForType(resourceType string) (schema.GroupVersionResource, error) {
 	if gvr, ok := discoveryResources[resourceType]; ok {
 		return gvr, nil
 	}
+	if gvr, ok := draResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := metallbResources[resourceType]; ok {
+		return gvr, nil
+	}
 	if gvr, ok := rbacResources[resourceType]; ok {
 		return gvr, nil
 	}
 	if gvr, ok := storageResources[resourceType]; ok {
+		return gvr, nil
+	}
+	if gvr, ok := snapshotResources[resourceType]; ok {
 		return gvr, nil
 	}
 	if gvr, ok := autoscalingResources[resourceType]; ok {

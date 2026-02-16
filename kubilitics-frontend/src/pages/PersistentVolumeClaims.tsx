@@ -14,6 +14,7 @@ import {
   Trash2,
   List,
   Layers,
+  CheckSquare,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,14 +40,22 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
+import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { Link, useNavigate } from 'react-router-dom';
-import { ResourceCommandBar, ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ListPageStatCard, TableColumnHeaderWithFilterAndSort, StatusPill, type StatusPillVariant, resourceTableRowClassName, ROW_MOTION } from '@/components/list';
+import { ResourceCommandBar, ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ListPageStatCard, ListPageHeader, TableColumnHeaderWithFilterAndSort, TableFilterCell, StatusPill, type StatusPillVariant, resourceTableRowClassName, ROW_MOTION, AgeCell, TableEmptyState, TableSkeletonRows, NamespaceBadge, ResourceListTableToolbar } from '@/components/list';
+import { StorageIcon } from '@/components/icons/KubernetesIcons';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 import { usePaginatedResourceList, useDeleteK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
+import { useClusterStore } from '@/stores/clusterStore';
+import { getPVCConsumers } from '@/services/backendApiClient';
+import { useQueries } from '@tanstack/react-query';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
 import { DeleteConfirmDialog } from '@/components/resources';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 
 interface PVC {
@@ -58,7 +67,9 @@ interface PVC {
   used: string;
   accessModes: string[];
   storageClass: string;
+  volumeMode: string;
   age: string;
+  creationTimestamp?: string;
 }
 
 interface K8sPVC extends KubernetesResource {
@@ -66,11 +77,13 @@ interface K8sPVC extends KubernetesResource {
     volumeName?: string;
     storageClassName?: string;
     accessModes?: string[];
+    volumeMode?: string;
     resources?: { requests?: { storage?: string } };
   };
   status?: {
     phase?: string;
     capacity?: { storage?: string };
+    conditions?: Array<{ type?: string }>;
   };
 }
 
@@ -100,7 +113,21 @@ const PVC_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'accessModes', defaultWidth: 120, minWidth: 80 },
   { id: 'storageClass', defaultWidth: 130, minWidth: 90 },
   { id: 'volume', defaultWidth: 160, minWidth: 90 },
+  { id: 'volumeMode', defaultWidth: 100, minWidth: 70 },
+  { id: 'usedBy', defaultWidth: 90, minWidth: 70 },
   { id: 'age', defaultWidth: 90, minWidth: 56 },
+];
+
+const PVC_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'status', label: 'Status' },
+  { id: 'capacity', label: 'Capacity' },
+  { id: 'used', label: 'Used' },
+  { id: 'accessModes', label: 'Access Modes' },
+  { id: 'storageClass', label: 'Storage Class' },
+  { id: 'volume', label: 'Volume' },
+  { id: 'volumeMode', label: 'Volume Mode' },
+  { id: 'age', label: 'Age' },
 ];
 
 type ListView = 'flat' | 'byNamespace';
@@ -115,21 +142,25 @@ function mapPVC(pvc: K8sPVC): PVC {
     used: pvc.status?.capacity?.storage || '—',
     accessModes: (pvc.spec?.accessModes || []).map(formatAccessMode),
     storageClass: pvc.spec?.storageClassName || '—',
+    volumeMode: pvc.spec?.volumeMode || 'Filesystem',
     age: calculateAge(pvc.metadata?.creationTimestamp),
+    creationTimestamp: pvc.metadata?.creationTimestamp,
   };
 }
 
 export default function PersistentVolumeClaims() {
   const navigate = useNavigate();
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = usePaginatedResourceList<K8sPVC>('persistentvolumeclaims');
+  const { data, isLoading, refetch, pagination: hookPagination } = usePaginatedResourceList<K8sPVC>('persistentvolumeclaims');
   const deleteResource = useDeleteK8sResource('persistentvolumeclaims');
-  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: PVC | null }>({ open: false, item: null });
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: PVC | null; bulk?: boolean }>({ open: false, item: null });
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
   const [listView, setListView] = useState<ListView>('flat');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [showTableFilters, setShowTableFilters] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
@@ -169,6 +200,8 @@ export default function PersistentVolumeClaims() {
       { columnId: 'accessModes', getValue: (i) => i.accessModes.join(', '), sortable: true, filterable: false },
       { columnId: 'storageClass', getValue: (i) => i.storageClass, sortable: true, filterable: true },
       { columnId: 'volume', getValue: (i) => i.volume, sortable: true, filterable: false },
+      { columnId: 'volumeMode', getValue: (i) => i.volumeMode, sortable: true, filterable: true },
+      { columnId: 'usedBy', getValue: () => '', sortable: false, filterable: false },
       { columnId: 'age', getValue: (i) => i.age, sortable: true, filterable: false },
     ],
     []
@@ -177,6 +210,7 @@ export default function PersistentVolumeClaims() {
   const {
     filteredAndSortedItems: filteredItems,
     distinctValuesByColumn,
+    valueCountsByColumn,
     columnFilters,
     setColumnFilter,
     sortKey,
@@ -185,12 +219,46 @@ export default function PersistentVolumeClaims() {
     clearAllFilters,
     hasActiveFilters,
   } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: tableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const columnVisibility = useColumnVisibility({ tableId: 'persistentvolumeclaims', columns: PVC_COLUMNS_FOR_VISIBILITY, alwaysVisible: ['name'] });
 
   const totalFiltered = filteredItems.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
   const safePageIndex = Math.min(pageIndex, totalPages - 1);
   const start = safePageIndex * pageSize;
   const itemsOnPage = filteredItems.slice(start, start + pageSize);
+
+  const backendBaseUrl = getEffectiveBackendBaseUrl(useBackendConfigStore((s) => s.backendBaseUrl));
+  const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
+  const activeCluster = useClusterStore((s) => s.activeCluster);
+  const currentClusterId = useBackendConfigStore((s) => s.currentClusterId);
+  const clusterId = activeCluster?.id ?? currentClusterId;
+
+  const consumersQueries = useQueries({
+    queries: itemsOnPage.map((p) => ({
+      queryKey: ['pvc-consumers', clusterId, p.namespace, p.name],
+      queryFn: () => getPVCConsumers(backendBaseUrl!, clusterId!, p.namespace, p.name),
+      enabled: !!(isBackendConfigured() && clusterId && p.name && p.namespace),
+      staleTime: 60_000,
+    })),
+  });
+  const consumersCountByKey = useMemo(() => {
+    const m: Record<string, number> = {};
+    consumersQueries.forEach((q, i) => {
+      if (q.data && itemsOnPage[i]) {
+        const c = q.data;
+        const total =
+          (c.pods?.length ?? 0) +
+          (c.deployments?.length ?? 0) +
+          (c.statefulSets?.length ?? 0) +
+          (c.daemonSets?.length ?? 0) +
+          (c.jobs?.length ?? 0) +
+          (c.cronJobs?.length ?? 0);
+        const key = `${itemsOnPage[i].namespace}/${itemsOnPage[i].name}`;
+        m[key] = total;
+      }
+    });
+    return m;
+  }, [consumersQueries, itemsOnPage]);
 
   useEffect(() => {
     if (safePageIndex !== pageIndex) setPageIndex(safePageIndex);
@@ -210,6 +278,8 @@ export default function PersistentVolumeClaims() {
     currentPage: safePageIndex + 1,
     totalPages: Math.max(1, totalPages),
     onPageChange: (p: number) => setPageIndex(Math.max(0, Math.min(p - 1, totalPages - 1))),
+    dataUpdatedAt: hookPagination?.dataUpdatedAt,
+    isFetching: hookPagination?.isFetching,
   };
 
   const groupedOnPage = useMemo(() => {
@@ -235,19 +305,38 @@ export default function PersistentVolumeClaims() {
   };
 
   const handleDelete = async () => {
-    if (!deleteDialog.item) return;
     try {
-      await deleteResource.mutateAsync({
-        name: deleteDialog.item.name,
-        namespace: deleteDialog.item.namespace,
-      });
+      if (deleteDialog.bulk && selectedItems.size > 0) {
+        for (const key of selectedItems) {
+          const [ns, n] = key.split('/');
+          if (n && ns) await deleteResource.mutateAsync({ name: n, namespace: ns });
+        }
+        toast.success(`Deleted ${selectedItems.size} PVC(s)`);
+        setSelectedItems(new Set());
+      } else if (deleteDialog.item) {
+        await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
+        toast.success('PersistentVolumeClaim deleted');
+      }
       setDeleteDialog({ open: false, item: null });
       refetch();
-      toast.success('PersistentVolumeClaim deleted');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Delete failed');
     }
   };
+
+  const toggleSelection = (pvc: PVC) => {
+    const key = `${pvc.namespace}/${pvc.name}`;
+    const next = new Set(selectedItems);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setSelectedItems(next);
+  };
+  const toggleAll = () => {
+    if (selectedItems.size === itemsOnPage.length) setSelectedItems(new Set());
+    else setSelectedItems(new Set(itemsOnPage.map((p) => `${p.namespace}/${p.name}`)));
+  };
+  const isAllSelected = itemsOnPage.length > 0 && selectedItems.size === itemsOnPage.length;
+  const isSomeSelected = selectedItems.size > 0 && selectedItems.size < itemsOnPage.length;
 
   const handleAction = (action: string, item: PVC) => {
     if (action === 'Delete') setDeleteDialog({ open: true, item });
@@ -283,8 +372,9 @@ export default function PersistentVolumeClaims() {
         initial={ROW_MOTION.initial}
         animate={ROW_MOTION.animate}
         transition={ROW_MOTION.transition(idx)}
-        className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5')}
+        className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', selectedItems.has(key) && 'bg-primary/5')}
       >
+        <TableCell><Checkbox checked={selectedItems.has(key)} onCheckedChange={() => toggleSelection(item)} aria-label={`Select ${item.name}`} /></TableCell>
         <ResizableTableCell columnId="name">
           <Link to={`/persistentvolumeclaims/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate">
             <Database className="h-4 w-4 text-muted-foreground flex-shrink-0" />
@@ -292,7 +382,7 @@ export default function PersistentVolumeClaims() {
           </Link>
         </ResizableTableCell>
         <ResizableTableCell columnId="namespace">
-          <Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge>
+          <NamespaceBadge namespace={item.namespace} className="font-normal truncate block w-fit max-w-full" />
         </ResizableTableCell>
         <ResizableTableCell columnId="status">
           <StatusPill label={item.status} variant={pvcStatusVariant[item.status] || 'neutral'} />
@@ -300,23 +390,43 @@ export default function PersistentVolumeClaims() {
         <ResizableTableCell columnId="capacity">
           <Badge variant="secondary" className="font-mono text-xs">{item.capacity}</Badge>
         </ResizableTableCell>
-        <ResizableTableCell columnId="used" className="font-mono text-sm">{item.used}</ResizableTableCell>
+        <ResizableTableCell columnId="used" className="font-mono text-sm">
+          {item.used !== '—' ? item.used : (
+            <Tooltip>
+              <TooltipTrigger asChild><span className="text-muted-foreground">—</span></TooltipTrigger>
+              <TooltipContent><p className="text-xs">Used capacity from status when bound; requires storage provider for live usage.</p></TooltipContent>
+            </Tooltip>
+          )}
+        </ResizableTableCell>
         <ResizableTableCell columnId="accessModes" className="font-mono text-sm">{item.accessModes.join(', ') || '—'}</ResizableTableCell>
         <ResizableTableCell columnId="storageClass">
           {item.storageClass !== '—' ? (
-            <button type="button" className="font-mono text-xs text-primary hover:underline" onClick={() => navigate(`/storageclasses/${item.storageClass}`)}>{item.storageClass}</button>
+            <Link to={`/storageclasses/${item.storageClass}`} className="font-mono text-xs text-primary hover:underline">{item.storageClass}</Link>
           ) : (
             <span className="text-muted-foreground">—</span>
           )}
         </ResizableTableCell>
         <ResizableTableCell columnId="volume" className="font-mono text-sm">
           {item.volume !== '—' ? (
-            <button type="button" className="text-primary hover:underline" onClick={() => navigate(`/persistentvolumes/${item.volume}`)}>{item.volume}</button>
+            <Link to={`/persistentvolumes/${item.volume}`} className="text-primary hover:underline">{item.volume}</Link>
           ) : (
             <span className="text-muted-foreground">—</span>
           )}
         </ResizableTableCell>
-        <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
+        <ResizableTableCell columnId="volumeMode"><Badge variant="secondary" className="font-normal">{item.volumeMode}</Badge></ResizableTableCell>
+        <ResizableTableCell columnId="usedBy">
+          {!isBackendConfigured() || !clusterId ? (
+            <span className="text-muted-foreground">—</span>
+          ) : consumersCountByKey[key] !== undefined ? (
+            <Tooltip>
+              <TooltipTrigger asChild><span className="font-mono text-sm">{consumersCountByKey[key]}</span></TooltipTrigger>
+              <TooltipContent><p className="text-xs">{consumersCountByKey[key]} workload(s) use this PVC</p></TooltipContent>
+            </Tooltip>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </ResizableTableCell>
+        <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>
         <TableCell>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -342,32 +452,59 @@ export default function PersistentVolumeClaims() {
   return (
     <>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="p-2.5 rounded-xl bg-primary/10"><Database className="h-6 w-6 text-primary" /></div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Persistent Volume Claims</h1>
-              <p className="text-sm text-muted-foreground">
-                {filteredItems.length} PVCs across {namespaceCount} namespaces
-                {!isConnected && <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]"><WifiOff className="h-3 w-3" /> Connect cluster</span>}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <ResourceExportDropdown items={filteredItems} selectedKeys={new Set()} getKey={(pvc) => `${pvc.namespace}/${pvc.name}`} config={exportConfig} selectionLabel="All visible PVCs" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
-            <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>{isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}</Button>
-            <Button className="gap-2" onClick={() => setShowCreateWizard(true)}><Plus className="h-4 w-4" /> Create</Button>
-          </div>
-        </div>
+        <ListPageHeader
+          icon={<StorageIcon className="h-6 w-6 text-primary" />}
+          title="Persistent Volume Claims"
+          resourceCount={filteredItems.length}
+          subtitle={namespaceCount > 0 ? `across ${namespaceCount} namespaces` : undefined}
+          demoMode={!isConnected}
+          isLoading={isLoading}
+          onRefresh={() => refetch()}
+          createLabel="Create"
+          onCreate={() => setShowCreateWizard(true)}
+          actions={
+            <>
+              <ResourceExportDropdown items={filteredItems} selectedKeys={selectedItems} getKey={(pvc) => `${pvc.namespace}/${pvc.name}`} config={exportConfig} selectionLabel={selectedItems.size > 0 ? 'Selected PVCs' : 'All visible PVCs'} onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
+              {selectedItems.size > 0 && (
+                <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete {selectedItems.size} selected
+                </Button>
+              )}
+            </>
+          }
+        />
 
         <div className={cn('grid grid-cols-2 sm:grid-cols-5 gap-4', !isConnected && 'opacity-60')}>
-          <ListPageStatCard label="Total PVCs" value={stats.total} icon={Database} iconColor="text-primary" />
-          <ListPageStatCard label="Bound" value={stats.bound} icon={Database} iconColor="text-green-600" />
-          <ListPageStatCard label="Pending" value={stats.pending} icon={Database} iconColor="text-amber-600" />
-          <ListPageStatCard label="Lost" value={stats.lost} icon={Database} iconColor="text-destructive" />
-          <ListPageStatCard label="Expanding" value={stats.expanding} icon={Database} iconColor="text-muted-foreground" />
+          <ListPageStatCard label="Total PVCs" value={stats.total} icon={Database} iconColor="text-primary" selected={!hasActiveFilters} onClick={clearAllFilters} className={cn(!hasActiveFilters && 'ring-2 ring-primary')} />
+          <ListPageStatCard label="Bound" value={stats.bound} icon={Database} iconColor="text-[hsl(142,76%,36%)]" valueClassName="text-[hsl(142,76%,36%)]" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Bound')} onClick={() => setColumnFilter('status', new Set(['Bound']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Bound') && 'ring-2 ring-[hsl(142,76%,36%)]')} />
+          <ListPageStatCard label="Pending" value={stats.pending} icon={Database} iconColor="text-amber-600" valueClassName="text-amber-600" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Pending')} onClick={() => setColumnFilter('status', new Set(['Pending']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Pending') && 'ring-2 ring-amber-600')} />
+          <ListPageStatCard label="Lost" value={stats.lost} icon={Database} iconColor="text-destructive" valueClassName="text-destructive" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Lost')} onClick={() => setColumnFilter('status', new Set(['Lost']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Lost') && 'ring-2 ring-destructive')} />
+          <ListPageStatCard label="Expanding" value={stats.expanding} icon={Database} iconColor="text-[hsl(217,91%,60%)]" valueClassName="text-[hsl(217,91%,60%)]" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Expanding')} onClick={() => setColumnFilter('status', new Set(['Expanding']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Expanding') && 'ring-2 ring-[hsl(217,91%,60%)]')} />
         </div>
 
+        {/* Bulk Actions Bar */}
+        {selectedItems.size > 0 && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between p-3 bg-primary/5 border border-primary/20 rounded-lg">
+            <Badge variant="secondary" className="gap-1.5">
+              <CheckSquare className="h-3.5 w-3.5" />
+              {selectedItems.size} selected
+            </Badge>
+            <div className="flex items-center gap-2">
+              <ResourceExportDropdown items={filteredItems} selectedKeys={selectedItems} getKey={(pvc) => `${pvc.namespace}/${pvc.name}`} config={exportConfig} selectionLabel="Selected PVCs" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} triggerLabel={`Export (${selectedItems.size})`} />
+              <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete selected
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedItems(new Set())}>
+                Clear
+              </Button>
+            </div>
+          </motion.div>
+        )}
+
+        <ResourceListTableToolbar
+          globalFilterBar={
         <ResourceCommandBar
           scope={
             <div className="w-full min-w-0">
@@ -398,31 +535,83 @@ export default function PersistentVolumeClaims() {
           structure={
             <ListViewSegmentedControl value={listView} onChange={(v) => setListView(v as ListView)} options={[{ id: 'flat', label: 'Flat', icon: List }, { id: 'byNamespace', label: 'By Namespace', icon: Layers }]} label="" ariaLabel="List structure" />
           }
-          className="mb-2"
         />
-
-        <div className="border border-border rounded-xl overflow-x-auto bg-card">
+          }
+          hasActiveFilters={hasActiveFilters}
+          onClearAllFilters={clearAllFilters}
+          showTableFilters={showTableFilters}
+          onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+          columns={PVC_COLUMNS_FOR_VISIBILITY}
+          visibleColumns={columnVisibility.visibleColumns}
+          onColumnToggle={columnVisibility.setColumnVisible}
+          footer={
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button></DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>)}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} dataUpdatedAt={pagination.dataUpdatedAt} isFetching={pagination.isFetching} />
+          </div>
+          }
+        >
           <ResizableTableProvider tableId="persistentvolumeclaims" columnConfig={PVC_TABLE_COLUMNS}>
             <Table className="table-fixed" style={{ minWidth: 1100 }}>
               <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+                <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
+                  <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} aria-label="Select all" className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
                   <ResizableTableHead columnId="name"><TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
-                  <ResizableTableHead columnId="namespace"><TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} /></ResizableTableHead>
-                  <ResizableTableHead columnId="status"><TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} /></ResizableTableHead>
+                  <ResizableTableHead columnId="namespace"><TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="status"><TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <ResizableTableHead columnId="capacity"><TableColumnHeaderWithFilterAndSort columnId="capacity" label="Capacity" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <ResizableTableHead columnId="used"><TableColumnHeaderWithFilterAndSort columnId="used" label="Used" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <ResizableTableHead columnId="accessModes" title="Access Modes"><TableColumnHeaderWithFilterAndSort columnId="accessModes" label="Access Modes" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
-                  <ResizableTableHead columnId="storageClass"><TableColumnHeaderWithFilterAndSort columnId="storageClass" label="Storage Class" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.storageClass ?? []} selectedFilterValues={columnFilters.storageClass ?? new Set()} onFilterChange={setColumnFilter} /></ResizableTableHead>
+                  <ResizableTableHead columnId="storageClass"><TableColumnHeaderWithFilterAndSort columnId="storageClass" label="Storage Class" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <ResizableTableHead columnId="volume"><TableColumnHeaderWithFilterAndSort columnId="volume" label="Volume" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="volumeMode"><TableColumnHeaderWithFilterAndSort columnId="volumeMode" label="Volume Mode" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="usedBy" title="Used By"><span className="text-xs font-medium text-muted-foreground">Used By</span></ResizableTableHead>
                   <ResizableTableHead columnId="age"><TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
                 </TableRow>
+                {showTableFilters && (
+                  <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                    <TableCell className="w-10 p-1.5" />
+                    <ResizableTableCell columnId="name" className="p-1.5" />
+                    <ResizableTableCell columnId="namespace" className="p-1.5"><TableFilterCell columnId="namespace" label="Namespace" distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.namespace} /></ResizableTableCell>
+                    <ResizableTableCell columnId="status" className="p-1.5"><TableFilterCell columnId="status" label="Status" distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.status} /></ResizableTableCell>
+                    <ResizableTableCell columnId="capacity" className="p-1.5" />
+                    <ResizableTableCell columnId="used" className="p-1.5" />
+                    <ResizableTableCell columnId="accessModes" className="p-1.5" />
+                    <ResizableTableCell columnId="storageClass" className="p-1.5"><TableFilterCell columnId="storageClass" label="Storage Class" distinctValues={distinctValuesByColumn.storageClass ?? []} selectedFilterValues={columnFilters.storageClass ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.storageClass} /></ResizableTableCell>
+                    <ResizableTableCell columnId="volume" className="p-1.5" />
+                    <ResizableTableCell columnId="volumeMode" className="p-1.5"><TableFilterCell columnId="volumeMode" label="Volume Mode" distinctValues={distinctValuesByColumn.volumeMode ?? []} selectedFilterValues={columnFilters.volumeMode ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.volumeMode} /></ResizableTableCell>
+                    <ResizableTableCell columnId="usedBy" className="p-1.5" />
+                    <ResizableTableCell columnId="age" className="p-1.5" />
+                    <TableCell className="w-12 p-1.5" />
+                  </TableRow>
+                )}
               </TableHeader>
               <TableBody>
                 {isLoading && isConnected ? (
-                  <TableRow><TableCell colSpan={10} className="h-32 text-center"><div className="flex flex-col items-center gap-2"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><p className="text-sm text-muted-foreground">Loading...</p></div></TableCell></TableRow>
+                  <TableSkeletonRows columnCount={13} />
                 ) : filteredItems.length === 0 ? (
-                  <TableRow><TableCell colSpan={10} className="h-32 text-center text-muted-foreground"><div className="flex flex-col items-center gap-2"><Database className="h-8 w-8 opacity-50" /><p>No PVCs found</p>{(searchQuery || hasActiveFilters) && <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>}</div></TableCell></TableRow>
+                  <TableRow>
+                    <TableCell colSpan={13} className="h-40 text-center">
+                      <TableEmptyState
+                        icon={<Database className="h-8 w-8" />}
+                        title="No PVCs found"
+                        subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Create a PersistentVolumeClaim to request storage.'}
+                        hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                        onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                        createLabel="Create PersistentVolumeClaim"
+                        onCreate={() => setShowCreateWizard(true)}
+                      />
+                    </TableCell>
+                  </TableRow>
                 ) : listView === 'flat' ? (
                   itemsOnPage.map((item, idx) => renderRow(item, idx))
                 ) : (
@@ -430,7 +619,7 @@ export default function PersistentVolumeClaims() {
                     const isCollapsed = collapsedGroups.has(group.groupKey);
                     return [
                       <TableRow key={group.groupKey} className="bg-muted/30 hover:bg-muted/40 cursor-pointer border-b border-border/60" onClick={() => toggleGroup(group.groupKey)}>
-                        <TableCell colSpan={10} className="py-2">
+                        <TableCell colSpan={13} className="py-2">
                           <div className="flex items-center gap-2 font-medium">
                             {isCollapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />}
                             Namespace: {group.label}
@@ -445,27 +634,12 @@ export default function PersistentVolumeClaims() {
               </TableBody>
             </Table>
           </ResizableTableProvider>
-        </div>
-
-        <div className="pt-4 pb-2 border-t border-border mt-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button></DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {PAGE_SIZE_OPTIONS.map((size) => <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>)}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} />
-          </div>
-        </div>
+        </ResourceListTableToolbar>
         <p className="text-xs text-muted-foreground mt-1">{listView === 'flat' ? 'flat list' : 'grouped by namespace'}</p>
       </motion.div>
 
       {showCreateWizard && <ResourceCreator resourceKind="PersistentVolumeClaim" defaultYaml={DEFAULT_YAMLS.PersistentVolumeClaim} onClose={() => setShowCreateWizard(false)} onApply={() => { toast.success('PersistentVolumeClaim created'); setShowCreateWizard(false); refetch(); }} />}
-      <DeleteConfirmDialog open={deleteDialog.open} onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null })} resourceType="PersistentVolumeClaim" resourceName={deleteDialog.item?.name || ''} namespace={deleteDialog.item?.namespace} onConfirm={handleDelete} requireNameConfirmation />
+      <DeleteConfirmDialog open={deleteDialog.open} onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null, bulk: open ? deleteDialog.bulk : false })} resourceType="PersistentVolumeClaim" resourceName={deleteDialog.bulk ? `${selectedItems.size} selected` : (deleteDialog.item?.name || '')} namespace={deleteDialog.bulk ? undefined : deleteDialog.item?.namespace} onConfirm={handleDelete} requireNameConfirmation={!deleteDialog.bulk} />
     </>
   );
 }

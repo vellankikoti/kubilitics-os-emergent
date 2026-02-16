@@ -1,11 +1,13 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Gauge, Clock, Download, Trash2, Box, RefreshCw, Network } from 'lucide-react';
+import { Gauge, Clock, Download, Trash2, Box, Network, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import {
   ResourceDetailLayout,
   YamlViewer,
@@ -46,6 +48,13 @@ function getUsagePercent(used: string, hard: string): number | null {
   return Math.round((uNum / hNum) * 100);
 }
 
+function usageBarIndicatorClass(pct: number | null): string {
+  if (pct == null) return 'bg-muted-foreground/40';
+  if (pct >= 100) return 'bg-destructive';
+  if (pct >= 80) return 'bg-amber-500';
+  return 'bg-[hsl(142,76%,36%)]';
+}
+
 export default function ResourceQuotaDetail() {
   const { namespace, name } = useParams<{ namespace: string; name: string }>();
   const navigate = useNavigate();
@@ -80,10 +89,18 @@ export default function ResourceQuotaDetail() {
     return maxPct;
   }, [hard, used]);
 
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
+  const usageRows = useMemo(() => {
+    return Object.keys(hard)
+      .sort()
+      .map((resource) => {
+        const hardVal = hard[resource] ?? '';
+        const usedVal = used[resource] ?? '0';
+        const percent = getUsagePercent(usedVal, hardVal);
+        return { resource, used: usedVal, hard: hardVal, percent };
+      });
+  }, [hard, used]);
+
+  const nearingLimitResources = useMemo(() => usageRows.filter((r) => r.percent != null && r.percent > 80), [usageRows]);
 
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
@@ -173,6 +190,74 @@ export default function ResourceQuotaDetail() {
         </div>
       ),
     },
+    {
+      id: 'usage',
+      label: 'Usage',
+      icon: Gauge,
+      content: (
+        <div className="space-y-6">
+          {nearingLimitResources.length > 0 && (
+            <Alert variant="destructive" className="border-amber-500/50 bg-amber-500/10">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Nearing limit</AlertTitle>
+              <AlertDescription>
+                The following resources are above 80% of their hard limit: <span className="font-mono font-medium">{nearingLimitResources.map((r) => r.resource).join(', ')}</span>. Consider increasing quotas or reducing usage.
+              </AlertDescription>
+            </Alert>
+          )}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Per-resource usage</CardTitle>
+              <p className="text-sm text-muted-foreground">Used vs hard limit for each quota resource. Bars are green (&lt;80%), amber (80–99%), or red (≥100%).</p>
+            </CardHeader>
+            <CardContent>
+              {usageRows.length === 0 ? (
+                <p className="text-muted-foreground text-sm">No hard limits defined.</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40">
+                      <TableHead className="font-medium">Resource</TableHead>
+                      <TableHead className="font-medium">Used</TableHead>
+                      <TableHead className="font-medium">Hard limit</TableHead>
+                      <TableHead className="font-medium w-24">Usage %</TableHead>
+                      <TableHead className="font-medium min-w-[180px]">Bar</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {usageRows.map((row) => (
+                      <TableRow key={row.resource}>
+                        <TableCell className="font-mono text-sm">{row.resource}</TableCell>
+                        <TableCell className="font-mono text-sm">{row.used}</TableCell>
+                        <TableCell className="font-mono text-sm">{row.hard}</TableCell>
+                        <TableCell>
+                          {row.percent != null ? (
+                            <span className={row.percent >= 100 ? 'text-destructive font-medium' : row.percent >= 80 ? 'text-amber-600 font-medium' : 'text-[hsl(142,76%,36%)] font-medium'}>
+                              {row.percent}%
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">–</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {row.percent != null ? (
+                            <div className="flex items-center gap-2">
+                              <Progress value={Math.min(row.percent, 100)} className="h-2.5 flex-1 max-w-[160px]" indicatorClassName={usageBarIndicatorClass(row.percent)} />
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">–</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      ),
+    },
     { id: 'events', label: 'Events', content: <EventsSection events={events} /> },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={quotaName} /> },
     { id: 'compare', label: 'Compare', content: <YamlCompareViewer versions={yamlVersions} resourceName={quotaName} /> },
@@ -218,7 +303,6 @@ export default function ResourceQuotaDetail() {
         backLabel="Resource Quotas"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

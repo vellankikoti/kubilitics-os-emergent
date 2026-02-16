@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import {
+  Home,
   LayoutDashboard,
   Box,
   Layers,
@@ -10,6 +11,7 @@ import {
   Settings,
   Shield,
   Activity,
+  History,
   Network,
   FileText,
   ChevronRight,
@@ -29,11 +31,14 @@ import {
   Cpu,
   Lock,
   Zap,
+  Camera,
   HardDrive as StorageIcon
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useResourceCounts } from '@/hooks/useResourceCounts';
+import { useMetalLBInstalled } from '@/hooks/useMetalLBInstalled';
+import { useRecentlyVisitedReadOnly } from '@/hooks/useRecentlyVisited';
 
 const SIDEBAR_COLLAPSED_KEY = 'kubilitics-sidebar-collapsed';
 
@@ -112,44 +117,62 @@ interface NavGroupProps {
   isSectionActive?: boolean;
   /** Controlled: whether this section is currently open */
   isOpen: boolean;
+  /** Optional route to navigate to when header is clicked */
+  to?: string;
   /** Callback when section header is clicked */
   onToggle: (sectionId: string) => void;
 }
 
-function NavGroup({ label, sectionId, children, icon: Icon, isSectionActive = false, isOpen, onToggle }: NavGroupProps) {
-  return (
-    <div className="space-y-1">
-      <button
-        onClick={() => onToggle(sectionId)}
-        aria-expanded={isOpen}
-        aria-controls={`nav-group-${sectionId}`}
-        className={cn(
-          "flex items-center justify-between w-full px-4 py-3 rounded-xl transition-all duration-300 group shadow-sm border",
-          isSectionActive
-            ? "bg-gradient-to-r from-primary to-blue-600 text-primary-foreground shadow-lg shadow-blue-500/20 border-transparent"
-            : isOpen
-              ? "bg-muted/50 text-foreground border-border/50"
-              : "bg-card hover:bg-muted/50 text-foreground border-transparent hover:border-border/50"
-        )}
-      >
-        <div className="flex items-center gap-3">
-          <div className={cn(
-            "p-1.5 rounded-lg transition-colors",
-            isSectionActive ? "bg-primary-foreground/20 text-primary-foreground" : isOpen ? "bg-muted text-foreground" : "bg-muted text-foreground/90 group-hover:bg-background group-hover:text-foreground"
-          )}>
-            <Icon className="h-5 w-5" />
-          </div>
+function NavGroup({ label, sectionId, children, icon: Icon, isSectionActive = false, isOpen, to, onToggle }: NavGroupProps) {
+  const headerContent = (
+    <div className={cn(
+      "flex items-center justify-between w-full px-4 py-3 rounded-xl transition-all duration-300 group shadow-sm border",
+      isSectionActive
+        ? "bg-gradient-to-r from-primary to-blue-600 text-primary-foreground shadow-lg shadow-blue-500/20 border-transparent"
+        : isOpen
+          ? "bg-muted/50 text-foreground border-border/50"
+          : "bg-card hover:bg-muted/50 text-foreground border-transparent hover:border-border/50"
+    )}>
+      <div className="flex items-center gap-3">
+        <div className={cn(
+          "p-1.5 rounded-lg transition-colors",
+          isSectionActive ? "bg-primary-foreground/20 text-primary-foreground" : isOpen ? "bg-muted text-foreground" : "bg-muted text-foreground/90 group-hover:bg-background group-hover:text-foreground"
+        )}>
+          <Icon className="h-5 w-5" />
+        </div>
         <span className={cn(
           "text-base font-normal tracking-wide uppercase",
           isSectionActive ? "text-primary-foreground" : "text-foreground"
         )}>
           {label}
         </span>
-        </div>
-        <ChevronRight
-          className={cn('h-5 w-5 transition-transform duration-300', isSectionActive ? 'text-primary-foreground' : 'text-foreground/80 group-hover:text-foreground', isOpen && 'rotate-90')}
-        />
-      </button>
+      </div>
+      <ChevronRight
+        className={cn('h-5 w-5 transition-transform duration-300', isSectionActive ? 'text-primary-foreground' : 'text-foreground/80 group-hover:text-foreground', isOpen && 'rotate-90')}
+      />
+    </div>
+  );
+
+  return (
+    <div className="space-y-1">
+      {to ? (
+        <NavLink
+          to={to}
+          onClick={() => onToggle(sectionId)}
+          className="block"
+        >
+          {headerContent}
+        </NavLink>
+      ) : (
+        <button
+          onClick={() => onToggle(sectionId)}
+          aria-expanded={isOpen}
+          aria-controls={`nav-group-${sectionId}`}
+          className="w-full"
+        >
+          {headerContent}
+        </button>
+      )}
 
       <AnimatePresence initial={false}>
         {isOpen && (
@@ -219,9 +242,30 @@ function isPathIn(pathname: string, prefixes: string[]) {
   return prefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
-const WORKLOAD_PATHS = ['/pods', '/deployments', '/replicasets', '/statefulsets', '/daemonsets', '/jobs', '/cronjobs'];
-const NETWORKING_PATHS = ['/services', '/ingresses', '/ingressclasses', '/endpoints', '/endpointslices', '/networkpolicies'];
-const STORAGE_PATHS = ['/configmaps', '/secrets', '/persistentvolumes', '/persistentvolumeclaims', '/storageclasses', '/volumeattachments'];
+/** Shows "Syncing resources..." for max 10s to avoid endless loading when queries hang */
+function SyncingIndicator({ isLoading }: { isLoading: boolean }) {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    if (isLoading) {
+      setShow(true);
+      const id = setTimeout(() => setShow(false), 10000);
+      return () => clearTimeout(id);
+    } else {
+      setShow(false);
+    }
+  }, [isLoading]);
+  if (!isLoading || !show) return null;
+  return (
+    <div className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-blue-600 bg-blue-50/50 dark:bg-blue-950/30 dark:text-blue-400 rounded-lg animate-pulse border border-blue-100 dark:border-blue-900/50">
+      <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+      <span>Syncing resources...</span>
+    </div>
+  );
+}
+
+const WORKLOAD_PATHS = ['/pods', '/deployments', '/replicasets', '/statefulsets', '/daemonsets', '/jobs', '/cronjobs', '/podtemplates', '/controllerrevisions', '/resourceslices', '/deviceclasses', '/device-classes'];
+const NETWORKING_PATHS = ['/services', '/ingresses', '/ingressclasses', '/endpoints', '/endpointslices', '/networkpolicies', '/ipaddresspools', '/bgppeers'];
+const STORAGE_PATHS = ['/configmaps', '/secrets', '/persistentvolumes', '/persistentvolumeclaims', '/storageclasses', '/volumeattachments', '/volumesnapshots', '/volume-snapshots', '/volumesnapshotclasses', '/volume-snapshot-classes', '/volumesnapshotcontents', '/volume-snapshot-contents'];
 const CLUSTER_PATHS = ['/nodes', '/namespaces', '/events', '/apiservices', '/leases'];
 const SECURITY_PATHS = ['/serviceaccounts', '/roles', '/clusterroles', '/rolebindings', '/clusterrolebindings', '/priorityclasses'];
 const RESOURCES_PATHS = ['/resourcequotas', '/limitranges'];
@@ -246,7 +290,7 @@ type SectionId = typeof SECTION_IDS[keyof typeof SECTION_IDS] | null;
 
 // Map route paths to their parent section IDs
 function getSectionForPath(pathname: string): SectionId {
-  if (isPathIn(pathname, WORKLOAD_PATHS)) return SECTION_IDS.WORKLOADS;
+  if (pathname === '/workloads' || isPathIn(pathname, WORKLOAD_PATHS)) return SECTION_IDS.WORKLOADS;
   if (isPathIn(pathname, NETWORKING_PATHS)) return SECTION_IDS.NETWORKING;
   if (isPathIn(pathname, STORAGE_PATHS)) return SECTION_IDS.STORAGE;
   if (isPathIn(pathname, CLUSTER_PATHS)) return SECTION_IDS.CLUSTER;
@@ -261,13 +305,17 @@ function getSectionForPath(pathname: string): SectionId {
 function SidebarContent({
   counts,
   isLoading,
+  metallbInstalled,
 }: {
   counts: ReturnType<typeof useResourceCounts>['counts'];
   isLoading: boolean;
+  metallbInstalled: boolean;
 }) {
   const location = useLocation();
   const pathname = location.pathname;
+  const isHomeActive = pathname === '/home';
   const isDashboardActive = pathname === '/dashboard';
+  const isTopologyActive = pathname === '/topology';
 
   // Centralized state for accordion: track which section is currently open
   const [openSection, setOpenSection] = useState<SectionId>(() => {
@@ -306,6 +354,18 @@ function SidebarContent({
     <div className="flex flex-col gap-6 pb-6 w-full">
       <div className="space-y-1.5">
         <NavLink
+          to="/home"
+          className={cn(
+            "flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group border shadow-sm",
+            isHomeActive
+              ? "bg-gradient-to-r from-primary to-blue-600 text-primary-foreground shadow-lg shadow-blue-500/20 border-transparent"
+              : "bg-card text-foreground hover:bg-muted/50 border-transparent hover:border-border/50"
+          )}
+        >
+          <Home className="h-6 w-6" />
+          <span className="font-normal text-base">Home</span>
+        </NavLink>
+        <NavLink
           to="/dashboard"
           className={cn(
             "flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group border shadow-sm",
@@ -317,25 +377,33 @@ function SidebarContent({
           <LayoutDashboard className="h-6 w-6" />
           <span className="font-normal text-base">Dashboard</span>
         </NavLink>
+        <NavLink
+          to="/topology"
+          className={cn(
+            "flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group border shadow-sm",
+            isTopologyActive
+              ? "bg-gradient-to-r from-primary to-blue-600 text-primary-foreground shadow-lg shadow-blue-500/20 border-transparent"
+              : "bg-card text-foreground hover:bg-muted/50 border-transparent hover:border-border/50"
+          )}
+        >
+          <Network className="h-6 w-6" />
+          <span className="font-normal text-base">Topology</span>
+        </NavLink>
       </div>
 
-      {/* Connection indicator */}
-      {isLoading && (
-        <div className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-blue-600 bg-blue-50/50 rounded-lg animate-pulse border border-blue-100">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          <span>Syncing resources...</span>
-        </div>
-      )}
+      {/* Connection indicator — cap display at 10s to avoid endless "Syncing" when queries hang */}
+      <SyncingIndicator isLoading={isLoading} />
 
       <div className="space-y-5">
         {/* Workloads */}
-        <NavGroup 
-          label="Workloads" 
+        <NavGroup
+          label="Workloads"
           sectionId={SECTION_IDS.WORKLOADS}
-          icon={Cpu} 
+          to="/workloads"
+          icon={Cpu}
           isOpen={openSection === SECTION_IDS.WORKLOADS}
           onToggle={handleSectionToggle}
-          isSectionActive={isPathIn(pathname, WORKLOAD_PATHS)}
+          isSectionActive={isPathIn(pathname, WORKLOAD_PATHS) || pathname === '/workloads'}
         >
           <NavItem to="/pods" icon={Box} label="Pods" count={counts.pods} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
           <NavItem to="/deployments" icon={Container} label="Deployments" count={counts.deployments} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
@@ -344,13 +412,17 @@ function SidebarContent({
           <NavItem to="/daemonsets" icon={Layers} label="DaemonSets" count={counts.daemonsets} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
           <NavItem to="/jobs" icon={Activity} label="Jobs" count={counts.jobs} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
           <NavItem to="/cronjobs" icon={Clock} label="CronJobs" count={counts.cronjobs} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/podtemplates" icon={Layers} label="Pod Templates" count={counts.podtemplates} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/controllerrevisions" icon={History} label="Controller Revisions" count={counts.controllerrevisions} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/resourceslices" icon={Cpu} label="Resource Slices" count={counts.resourceslices} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
+          <NavItem to="/deviceclasses" icon={Cpu} label="Device Classes" count={counts.deviceclasses} onNavigate={() => handleNavItemClick(SECTION_IDS.WORKLOADS)} />
         </NavGroup>
 
         {/* Networking */}
-        <NavGroup 
-          label="Networking" 
+        <NavGroup
+          label="Networking"
           sectionId={SECTION_IDS.NETWORKING}
-          icon={Globe} 
+          icon={Globe}
           isOpen={openSection === SECTION_IDS.NETWORKING}
           onToggle={handleSectionToggle}
           isSectionActive={isPathIn(pathname, NETWORKING_PATHS)}
@@ -361,13 +433,19 @@ function SidebarContent({
           <NavItem to="/endpoints" icon={Globe} label="Endpoints" count={counts.endpoints} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
           <NavItem to="/endpointslices" icon={Network} label="Endpoint Slices" count={counts.endpointslices} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
           <NavItem to="/networkpolicies" icon={Shield} label="Network Policies" count={counts.networkpolicies} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
+          {metallbInstalled && (
+            <>
+              <NavItem to="/ipaddresspools" icon={Network} label="IP Address Pools" count={counts.ipaddresspools} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
+              <NavItem to="/bgppeers" icon={Network} label="BGP Peers" count={counts.bgppeers} onNavigate={() => handleNavItemClick(SECTION_IDS.NETWORKING)} />
+            </>
+          )}
         </NavGroup>
 
         {/* Storage */}
-        <NavGroup 
-          label="Storage" 
+        <NavGroup
+          label="Storage"
           sectionId={SECTION_IDS.STORAGE}
-          icon={StorageIcon} 
+          icon={StorageIcon}
           isOpen={openSection === SECTION_IDS.STORAGE}
           onToggle={handleSectionToggle}
           isSectionActive={isPathIn(pathname, STORAGE_PATHS)}
@@ -378,13 +456,16 @@ function SidebarContent({
           <NavItem to="/persistentvolumeclaims" icon={Database} label="PVCs" count={counts.persistentvolumeclaims} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
           <NavItem to="/storageclasses" icon={Database} label="Storage Classes" count={counts.storageclasses} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
           <NavItem to="/volumeattachments" icon={HardDrive} label="Volume Attachments" count={counts.volumeattachments} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
+          <NavItem to="/volumesnapshots" icon={Camera} label="Volume Snapshots" count={counts.volumesnapshots} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
+          <NavItem to="/volumesnapshotclasses" icon={Camera} label="Snapshot Classes" count={counts.volumesnapshotclasses} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
+          <NavItem to="/volumesnapshotcontents" icon={HardDrive} label="Snapshot Contents" count={counts.volumesnapshotcontents} onNavigate={() => handleNavItemClick(SECTION_IDS.STORAGE)} />
         </NavGroup>
 
         {/* Cluster */}
-        <NavGroup 
-          label="Cluster" 
+        <NavGroup
+          label="Cluster"
           sectionId={SECTION_IDS.CLUSTER}
-          icon={Server} 
+          icon={Server}
           isOpen={openSection === SECTION_IDS.CLUSTER}
           onToggle={handleSectionToggle}
           isSectionActive={isPathIn(pathname, CLUSTER_PATHS)}
@@ -397,10 +478,10 @@ function SidebarContent({
         </NavGroup>
 
         {/* Security & Access */}
-        <NavGroup 
-          label="Security" 
+        <NavGroup
+          label="Security"
           sectionId={SECTION_IDS.SECURITY}
-          icon={Lock} 
+          icon={Lock}
           isOpen={openSection === SECTION_IDS.SECURITY}
           onToggle={handleSectionToggle}
           isSectionActive={isPathIn(pathname, SECURITY_PATHS)}
@@ -414,10 +495,10 @@ function SidebarContent({
         </NavGroup>
 
         {/* Resource Management */}
-        <NavGroup 
-          label="Resources" 
+        <NavGroup
+          label="Resources"
           sectionId={SECTION_IDS.RESOURCES}
-          icon={Gauge} 
+          icon={Gauge}
           isOpen={openSection === SECTION_IDS.RESOURCES}
           onToggle={handleSectionToggle}
           isSectionActive={isPathIn(pathname, RESOURCES_PATHS)}
@@ -427,10 +508,10 @@ function SidebarContent({
         </NavGroup>
 
         {/* Scaling & Policies */}
-        <NavGroup 
-          label="Scaling" 
+        <NavGroup
+          label="Scaling"
           sectionId={SECTION_IDS.SCALING}
-          icon={Zap} 
+          icon={Zap}
           isOpen={openSection === SECTION_IDS.SCALING}
           onToggle={handleSectionToggle}
           isSectionActive={isPathIn(pathname, SCALING_PATHS)}
@@ -441,10 +522,10 @@ function SidebarContent({
         </NavGroup>
 
         {/* Custom Resources */}
-        <NavGroup 
-          label="CRDs" 
+        <NavGroup
+          label="CRDs"
           sectionId={SECTION_IDS.CRDS}
-          icon={FileCode} 
+          icon={FileCode}
           isOpen={openSection === SECTION_IDS.CRDS}
           onToggle={handleSectionToggle}
           isSectionActive={isPathIn(pathname, CRD_PATHS)}
@@ -454,10 +535,10 @@ function SidebarContent({
         </NavGroup>
 
         {/* Admission Control */}
-        <NavGroup 
-          label="Admission" 
+        <NavGroup
+          label="Admission"
           sectionId={SECTION_IDS.ADMISSION}
-          icon={Webhook} 
+          icon={Webhook}
           isOpen={openSection === SECTION_IDS.ADMISSION}
           onToggle={handleSectionToggle}
           isSectionActive={isPathIn(pathname, ADMISSION_PATHS)}
@@ -470,18 +551,97 @@ function SidebarContent({
   );
 }
 
+const SECTION_ROUTES = ['/workloads', '/topology', ...WORKLOAD_PATHS, ...NETWORKING_PATHS, ...STORAGE_PATHS, ...CLUSTER_PATHS, ...SECURITY_PATHS, ...RESOURCES_PATHS, ...SCALING_PATHS, ...CRD_PATHS, ...ADMISSION_PATHS];
+
+// ─── Recently Viewed (TASK-094) ───────────────────────────────────────────────
+
+/** Map resource kind string to a lucide icon component for the sidebar. */
+function kindToIcon(kind: string): React.ElementType {
+  switch (kind) {
+    case 'pods': return Box;
+    case 'deployments': return Container;
+    case 'replicasets': return Layers;
+    case 'statefulsets': return Layers;
+    case 'daemonsets': return Layers;
+    case 'jobs': return Activity;
+    case 'cronjobs': return Clock;
+    case 'services': return Globe;
+    case 'ingresses': return Route;
+    case 'configmaps': return Settings;
+    case 'secrets': return Key;
+    case 'nodes': return Server;
+    case 'namespaces': return Layers;
+    case 'events': return AlertTriangle;
+    case 'persistentvolumeclaims': return HardDrive;
+    case 'persistentvolumes': return HardDrive;
+    case 'storageclasses': return Database;
+    case 'customresourcedefinitions': return FileCode;
+    case 'topology': return Network;
+    default: return FileText;
+  }
+}
+
+function RecentlyViewedSection() {
+  const visits = useRecentlyVisitedReadOnly();
+
+  if (visits.length === 0) return null;
+
+  return (
+    <div className="shrink-0 px-5 pb-2 pt-2 border-t border-border/60">
+      <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-1 pb-1.5">
+        Recent
+      </div>
+      <div className="space-y-0.5">
+        {visits.map((visit) => {
+          const Icon = kindToIcon(visit.kind);
+          return (
+            <NavLink
+              key={visit.path}
+              to={visit.path}
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-all duration-150 group',
+                  isActive
+                    ? 'bg-primary/5 text-primary font-medium'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                )
+              }
+            >
+              <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
+              <span className="truncate flex-1" title={visit.label}>{visit.label}</span>
+            </NavLink>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function Sidebar() {
   const { counts, isLoading } = useResourceCounts();
+  const { installed: metallbInstalled } = useMetalLBInstalled();
   const [collapsed, setCollapsed] = useSidebarCollapsed();
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const location = useLocation();
-  const isSettingsActive = location.pathname.startsWith('/settings');
+  const pathname = location.pathname;
+  const isSettingsActive = pathname.startsWith('/settings');
+
+  // Expand sidebar when navigating to a section route (e.g. Workloads) so user sees full nav
+  useEffect(() => {
+    const isSectionRoute = SECTION_ROUTES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+    if (isSectionRoute && collapsed) {
+      setCollapsed(false);
+    }
+  }, [pathname, collapsed, setCollapsed]);
 
   const fullContent = (
     <div className="flex flex-col flex-1 min-h-0 bg-sidebar/30">
       <div className="flex-1 min-h-0 overflow-y-auto px-5 py-6 scrollbar-thin scrollbar-thumb-border/40 hover:scrollbar-thumb-border/80">
-        <SidebarContent counts={counts} isLoading={isLoading} />
+        <SidebarContent counts={counts} isLoading={isLoading} metallbInstalled={metallbInstalled} />
       </div>
+      {/* Recently Viewed — TASK-094: last 5 visited resource pages */}
+      <RecentlyViewedSection />
+
       {/* Fixed footer: Settings + Collapse — always visible at bottom */}
       <div className="shrink-0 px-5 pb-4 pt-2 border-t border-border/60 space-y-1.5">
         <NavLink
@@ -524,6 +684,8 @@ export function Sidebar() {
           aria-label="Navigation rail"
         >
           <NavItemIconOnly to="/dashboard" icon={LayoutDashboard} label="Dashboard" iconColor="text-blue-600 group-hover:text-blue-700" />
+          <NavItemIconOnly to="/topology" icon={Network} label="Topology" iconColor="text-violet-600 group-hover:text-violet-700" />
+          <NavItemIconOnly to="/workloads" icon={Cpu} label="Workloads" iconColor="text-amber-600 group-hover:text-amber-700" />
           <div className="w-12 h-px bg-border/50 my-2" />
           <NavItemIconOnly to="/pods" icon={Box} label="Pods" iconColor="text-emerald-600 group-hover:text-emerald-700" />
           <NavItemIconOnly to="/nodes" icon={Server} label="Nodes" iconColor="text-sky-600 group-hover:text-sky-700" />

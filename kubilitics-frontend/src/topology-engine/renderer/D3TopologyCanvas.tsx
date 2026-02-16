@@ -104,6 +104,8 @@ export interface D3TopologyCanvasProps {
 
 type GroupingMode = 'none' | 'namespace' | 'type';
 
+const MAX_FORCE_NODES = 250;
+
 // Resource type styling
 const resourceStyles: Record<ResourceType, { color: string; radius: number }> = {
   pod: { color: 'hsl(199, 89%, 48%)', radius: 24 },
@@ -257,6 +259,7 @@ export function D3TopologyCanvas({
   const [showMiniMap, setShowMiniMap] = useState(true);
   const [hasAutoFitted, setHasAutoFitted] = useState(false);
   const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);
+  const trafficAnimationFrameRef = useRef<number | null>(null);
 
   // Calculate groups based on grouping mode
   const groups = useMemo((): globalThis.Map<string, GroupNode> => {
@@ -432,15 +435,20 @@ export function D3TopologyCanvas({
     return () => window.removeEventListener('resize', updateDimensions);
   }, []);
 
-  // Initialize D3 force simulation
+  const overNodeCap = d3Nodes.length > MAX_FORCE_NODES;
+
+  // Initialize D3 force simulation (deferred to rAF to avoid blocking; capped for large graphs)
   useEffect(() => {
-    if (!svgRef.current || d3Nodes.length === 0) return;
+    if (!svgRef.current || d3Nodes.length === 0 || overNodeCap) return;
 
-    const svg = d3.select(svgRef.current);
-    const { width, height } = dimensions;
+    let cancelled = false;
+    const rafId = requestAnimationFrame(() => {
+      if (cancelled || !svgRef.current) return;
+      const svg = d3.select(svgRef.current);
+      const { width, height } = dimensions;
 
-    // Clear previous content
-    svg.selectAll('*').remove();
+      // Clear previous content
+      svg.selectAll('*').remove();
 
     // Create defs for gradients and markers
     const defs = svg.append('defs');
@@ -699,9 +707,8 @@ export function D3TopologyCanvas({
     simulationRef.current = simulation;
 
     // Animate traffic particles
-    let trafficAnimationFrame: number;
     const animateTraffic = () => {
-      if (!showTraffic) return;
+      if (!showTraffic || cancelled) return;
       
       const time = Date.now();
       d3Links.filter(l => l.traffic && l.traffic > 0).forEach((linkData, i) => {
@@ -725,7 +732,7 @@ export function D3TopologyCanvas({
         }
       });
       
-      trafficAnimationFrame = requestAnimationFrame(animateTraffic);
+      trafficAnimationFrameRef.current = requestAnimationFrame(animateTraffic);
     };
     
     if (showTraffic) {
@@ -782,7 +789,7 @@ export function D3TopologyCanvas({
       node.attr('transform', d => `translate(${d.x},${d.y})`);
       
       // Auto-fit after simulation has stabilized initially (around 100 ticks)
-      if (tickCount === 100 && !hasAutoFitted) {
+      if (tickCount === 100 && !hasAutoFitted && !cancelled) {
         autoFitToScreen();
         setHasAutoFitted(true);
       }
@@ -806,14 +813,18 @@ export function D3TopologyCanvas({
       d.fy = null;
     }
 
-    // Cleanup
+    }); // end requestAnimationFrame
+
     return () => {
-      simulation.stop();
-      if (trafficAnimationFrame) {
-        cancelAnimationFrame(trafficAnimationFrame);
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+      simulationRef.current?.stop();
+      if (trafficAnimationFrameRef.current != null) {
+        cancelAnimationFrame(trafficAnimationFrameRef.current);
+        trafficAnimationFrameRef.current = null;
       }
     };
-  }, [d3Nodes, d3Links, dimensions, onNodeClick, toggleGroup, showTraffic, hasAutoFitted]);
+  }, [d3Nodes, d3Links, dimensions, onNodeClick, toggleGroup, showTraffic, overNodeCap]);
 
   // Control simulation
   const toggleSimulation = useCallback(() => {
@@ -1141,6 +1152,14 @@ export function D3TopologyCanvas({
           </Button>
         )}
         
+        {overNodeCap && (
+          <div className="absolute inset-0 flex items-center justify-center bg-muted/50 rounded-lg p-6 text-center">
+            <p className="text-sm font-medium text-muted-foreground max-w-md">
+              This graph has {d3Nodes.length} nodes. Force-directed layout is limited to {MAX_FORCE_NODES} nodes for performance.
+              Use Cytoscape Layout or 3D tab for larger graphs.
+            </p>
+          </div>
+        )}
         <motion.svg
           ref={svgRef}
           initial={{ opacity: 0 }}

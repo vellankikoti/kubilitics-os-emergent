@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -26,8 +27,77 @@ const (
 type CacheStats struct {
 	LocalHits    int64
 	RemoteHits   int64
+	CacheHits    int64
 	Misses       int64
 	TotalQueries int64
+}
+
+// cacheEntry holds a cached value with its expiry time.
+type cacheEntry struct {
+	value     interface{}
+	expiresAt time.Time
+}
+
+// resourceCache is a simple TTL-based in-memory cache.
+type resourceCache struct {
+	mu      sync.RWMutex
+	entries map[string]cacheEntry
+	ttl     time.Duration
+}
+
+func newResourceCache(ttl time.Duration) *resourceCache {
+	c := &resourceCache{
+		entries: make(map[string]cacheEntry),
+		ttl:     ttl,
+	}
+	// Background GC to evict expired entries every 2×TTL
+	go func() {
+		ticker := time.NewTicker(2 * ttl)
+		defer ticker.Stop()
+		for range ticker.C {
+			c.evict()
+		}
+	}()
+	return c
+}
+
+func (c *resourceCache) get(key string) (interface{}, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.entries[key]
+	if !ok || time.Now().After(e.expiresAt) {
+		return nil, false
+	}
+	return e.value, true
+}
+
+func (c *resourceCache) set(key string, value interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = cacheEntry{value: value, expiresAt: time.Now().Add(c.ttl)}
+}
+
+func (c *resourceCache) invalidate(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, key)
+}
+
+func (c *resourceCache) evict() {
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, e := range c.entries {
+		if now.After(e.expiresAt) {
+			delete(c.entries, k)
+		}
+	}
+}
+
+func (c *resourceCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]cacheEntry)
 }
 
 // Proxy provides a unified interface to backend operations
@@ -45,6 +115,7 @@ type Proxy struct {
 	// Cache configuration
 	queryMode   QueryMode
 	cacheMaxAge time.Duration
+	cache       *resourceCache
 
 	// Statistics
 	stats CacheStats
@@ -72,6 +143,7 @@ func NewProxy(cfg *config.Config, auditLog audit.Logger) (*Proxy, error) {
 	// Create World Model
 	wm := worldmodel.NewWorldModel()
 
+	cacheTTL := 30 * time.Second
 	return &Proxy{
 		config:      cfg,
 		grpcClient:  grpcCli,
@@ -79,6 +151,7 @@ func NewProxy(cfg *config.Config, auditLog audit.Logger) (*Proxy, error) {
 		auditLog:    auditLog,
 		queryMode:   QueryModeAuto,
 		cacheMaxAge: 5 * time.Minute,
+		cache:       newResourceCache(cacheTTL),
 		stopChan:    make(chan struct{}),
 	}, nil
 }
@@ -160,7 +233,8 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("failed to disconnect from backend: %w", err)
 	}
 
-	// Clear World Model
+	// Clear caches
+	p.cache.clear()
 	p.worldModel.Clear()
 
 	p.auditLog.Log(ctx, audit.NewEvent(audit.EventServerShutdown).
@@ -180,24 +254,33 @@ func (p *Proxy) GetResource(ctx context.Context, kind, namespace, name string) (
 	mode := p.queryMode
 	p.mu.RUnlock()
 
-	// Increment total queries
 	p.mu.Lock()
 	p.stats.TotalQueries++
 	p.mu.Unlock()
 
-	// Try local cache first if mode allows
+	cacheKey := fmt.Sprintf("res:%s:%s:%s", kind, namespace, name)
+
+	// Try TTL cache first (fastest)
+	if v, ok := p.cache.get(cacheKey); ok {
+		p.mu.Lock()
+		p.stats.CacheHits++
+		p.mu.Unlock()
+		return v.(*pb.Resource), nil
+	}
+
+	// Try world model
 	if mode == QueryModeLocal || mode == QueryModeAuto {
 		resource, err := p.worldModel.GetResource(ctx, kind, namespace, name)
 		if err == nil {
-			// Cache hit
 			p.mu.Lock()
 			p.stats.LocalHits++
 			p.mu.Unlock()
+			p.cache.set(cacheKey, resource)
 			return resource, nil
 		}
 	}
 
-	// Fallback to remote if AUTO mode or REMOTE mode
+	// Fallback to remote
 	if mode == QueryModeRemote || mode == QueryModeAuto {
 		resource, err := p.grpcClient.GetResource(ctx, kind, namespace, name)
 		if err != nil {
@@ -211,6 +294,7 @@ func (p *Proxy) GetResource(ctx context.Context, kind, namespace, name string) (
 		p.stats.RemoteHits++
 		p.mu.Unlock()
 
+		p.cache.set(cacheKey, resource)
 		return resource, nil
 	}
 
@@ -227,24 +311,33 @@ func (p *Proxy) ListResources(ctx context.Context, kind, namespace string) ([]*p
 	mode := p.queryMode
 	p.mu.RUnlock()
 
-	// Increment total queries
 	p.mu.Lock()
 	p.stats.TotalQueries++
 	p.mu.Unlock()
 
-	// Try local cache first if mode allows
+	cacheKey := fmt.Sprintf("list:%s:%s", kind, namespace)
+
+	// Try TTL cache first
+	if v, ok := p.cache.get(cacheKey); ok {
+		p.mu.Lock()
+		p.stats.CacheHits++
+		p.mu.Unlock()
+		return v.([]*pb.Resource), nil
+	}
+
+	// Try world model
 	if mode == QueryModeLocal || mode == QueryModeAuto {
 		resources, err := p.worldModel.ListResources(ctx, kind, namespace)
 		if err == nil && len(resources) > 0 {
-			// Cache hit
 			p.mu.Lock()
 			p.stats.LocalHits++
 			p.mu.Unlock()
+			p.cache.set(cacheKey, resources)
 			return resources, nil
 		}
 	}
 
-	// Fallback to remote if AUTO mode or REMOTE mode
+	// Fallback to remote
 	if mode == QueryModeRemote || mode == QueryModeAuto {
 		result, err := p.grpcClient.ListResources(ctx, kind, namespace, nil)
 		if err != nil {
@@ -258,6 +351,7 @@ func (p *Proxy) ListResources(ctx context.Context, kind, namespace string) ([]*p
 		p.stats.RemoteHits++
 		p.mu.Unlock()
 
+		p.cache.set(cacheKey, result.Items)
 		return result.Items, nil
 	}
 
@@ -407,6 +501,7 @@ func (p *Proxy) GetStats() map[string]interface{} {
 		"query_mode":        p.queryMode,
 		"total_queries":     p.stats.TotalQueries,
 		"local_hits":        p.stats.LocalHits,
+		"ttl_cache_hits":    p.stats.CacheHits,
 		"remote_hits":       p.stats.RemoteHits,
 		"misses":            p.stats.Misses,
 		"cache_hit_rate":    fmt.Sprintf("%.2f%%", hitRate),
@@ -502,4 +597,82 @@ func (p *Proxy) processUpdates(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// GetWorldModelStats returns statistics specifically about the World Model state.
+// This is used by the backend status endpoint (A-CORE-008).
+func (p *Proxy) GetWorldModelStats() map[string]interface{} {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.worldModel.GetStats()
+}
+
+// GetResourceMetrics returns a map of metric-name → float64 for a resource.
+// It extracts numeric values from the resource's Data JSON (status fields).
+// If the backend is unavailable or the resource has no metrics, it returns an empty map.
+func (p *Proxy) GetResourceMetrics(ctx context.Context, kind, namespace, name string) (map[string]float64, error) {
+	res, err := p.GetResource(ctx, kind, namespace, name)
+	if err != nil || res == nil {
+		return map[string]float64{}, nil
+	}
+
+	metrics := map[string]float64{}
+	if len(res.Data) == 0 {
+		return metrics, nil
+	}
+
+	var parsed map[string]interface{}
+	if err2 := json.Unmarshal(res.Data, &parsed); err2 != nil {
+		return metrics, nil
+	}
+
+	// Extract numeric values from top-level "metrics" key if present.
+	if m, ok := parsed["metrics"].(map[string]interface{}); ok {
+		for k, v := range m {
+			if f, ok2 := proxyToFloat64(v); ok2 {
+				metrics[k] = f
+			}
+		}
+	}
+
+	// Extract restart counts and availability from status.
+	if status, ok := parsed["status"].(map[string]interface{}); ok {
+		if cs, ok2 := status["containerStatuses"].([]interface{}); ok2 {
+			restarts := 0.0
+			for _, c := range cs {
+				if cm, ok3 := c.(map[string]interface{}); ok3 {
+					if rc, ok4 := proxyToFloat64(cm["restartCount"]); ok4 {
+						restarts += rc
+					}
+				}
+			}
+			metrics["restart_count"] = restarts
+		}
+		if phase, ok2 := status["phase"].(string); ok2 {
+			if phase == "Running" {
+				metrics["availability"] = 1.0
+			} else {
+				metrics["availability"] = 0.0
+			}
+		}
+	}
+
+	return metrics, nil
+}
+
+// proxyToFloat64 safely converts an interface{} value to float64.
+func proxyToFloat64(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	}
+	return 0, false
 }

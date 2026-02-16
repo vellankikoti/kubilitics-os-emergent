@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -31,25 +32,32 @@ var shellStreamUpgrader = websocket.Upgrader{
 func (h *Handler) GetShellStream(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clusterID := vars["clusterId"]
+	log.Printf("Terminal: Incoming request for cluster %s", clusterID)
 	if !validate.ClusterID(clusterID) {
+		log.Printf("Terminal: Invalid clusterId %s", clusterID)
 		respondError(w, http.StatusBadRequest, "Invalid clusterId")
 		return
 	}
 
 	cluster, err := h.clusterService.GetCluster(r.Context(), clusterID)
 	if err != nil {
+		log.Printf("Terminal: Cluster %s not found: %v", clusterID, err)
 		respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	log.Printf("Terminal: Found cluster %s (name: %s, kubeconfig: %s)", clusterID, cluster.Name, cluster.KubeconfigPath)
 	if cluster.KubeconfigPath == "" {
+		log.Printf("Terminal: Cluster %s has no kubeconfig path", clusterID)
 		respondError(w, http.StatusBadRequest, "Cluster has no kubeconfig path")
 		return
 	}
 
 	conn, err := shellStreamUpgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("Terminal: WebSocket upgrade failed for %s: %v", clusterID, err)
 		return
 	}
+	log.Printf("Terminal: WebSocket upgraded for %s", clusterID)
 	defer conn.Close()
 
 	ctx, cancel := context.WithCancel(r.Context())
@@ -102,15 +110,22 @@ func (h *Handler) GetShellStream(w http.ResponseWriter, r *http.Request) {
 	execDone := make(chan struct{})
 	var once sync.Once
 	closeExecDone := func() { once.Do(func() { close(execDone) }) }
+	writerDone := make(chan struct{})
 	defer func() {
 		closeExecDone()
-		<-execDone
-		time.Sleep(30 * time.Millisecond)
+		// Wait for PTY reader to finish, but do not block forever (avoids hang on client disconnect).
+		select {
+		case <-execDone:
+		case <-time.After(3 * time.Second):
+		}
+		time.Sleep(50 * time.Millisecond)
 		close(outChan)
+		<-writerDone
 	}()
 
-	// Single writer goroutine: send all messages to WebSocket
+	// Single writer goroutine: send all messages to WebSocket; exit on write error to avoid EPIPE.
 	go func() {
+		defer close(writerDone)
 		for m := range outChan {
 			b, _ := json.Marshal(m)
 			conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
@@ -163,7 +178,10 @@ func (h *Handler) GetShellStream(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			cancel()
 			_ = ptmx.Close()
-			<-execDone
+			select {
+			case <-execDone:
+			case <-time.After(2 * time.Second):
+			}
 			return
 		}
 

@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { 
   Search, Filter, RefreshCw, MoreHorizontal, CheckCircle2, XCircle, Clock, Loader2, WifiOff,
-  ChevronDown, ChevronRight, CheckSquare, Trash2, Scale, Layers, Plus, FileText, List,
+  ChevronDown, ChevronRight, CheckSquare, Trash2, Scale, Layers, Plus, FileText, List, GitBranch, EyeOff,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,9 +16,10 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useK8sResourceList, useDeleteK8sResource, usePatchK8sResource, useCreateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { DeleteConfirmDialog, ScaleDialog, UsageBar, parseCpu, parseMemory, calculatePodResourceMax } from '@/components/resources';
-import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, TableColumnHeaderWithFilterAndSort } from '@/components/list';
+import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, ListPageHeader, TableColumnHeaderWithFilterAndSort, TableFilterCell, AgeCell, TableEmptyState, TableSkeletonRows, NamespaceBadge, ResourceListTableToolbar } from '@/components/list';
 import type { StatusPillVariant } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 import { useWorkloadMetricsMap } from '@/hooks/useWorkloadMetricsMap';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
 import { toast } from 'sonner';
@@ -52,7 +53,9 @@ interface ReplicaSet {
   current: number;
   ready: number;
   owner: string;
+  ownerKind: string;
   age: string;
+  creationTimestamp?: string;
   cpu: string;
   memory: string;
 }
@@ -68,6 +71,18 @@ const REPLICASETS_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'cpu', defaultWidth: 110, minWidth: 80 },
   { id: 'memory', defaultWidth: 120, minWidth: 85 },
   { id: 'age', defaultWidth: 90, minWidth: 60 },
+];
+
+const REPLICASETS_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'status', label: 'Status' },
+  { id: 'desired', label: 'Desired' },
+  { id: 'current', label: 'Current' },
+  { id: 'ready', label: 'Ready' },
+  { id: 'owner', label: 'Owner' },
+  { id: 'cpu', label: 'CPU' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'age', label: 'Age' },
 ];
 
 const statusConfig = {
@@ -90,10 +105,12 @@ function transformResource(resource: ReplicaSetResource): ReplicaSet {
   if (ready === 0 && desired > 0) status = 'Degraded';
   else if (ready < desired) status = 'Progressing';
   const ownerRefs = (resource.metadata as any).ownerReferences;
-  return { name: resource.metadata.name, namespace: resource.metadata.namespace || 'default', status, desired, current, ready, owner: ownerRefs?.[0]?.name || '-', age: calculateAge(resource.metadata.creationTimestamp), cpu: '-', memory: '-' };
+  const deploymentOwner = ownerRefs?.find((r: any) => r.kind === 'Deployment');
+  const ownerRef = deploymentOwner ?? ownerRefs?.[0];
+  return { name: resource.metadata.name, namespace: resource.metadata.namespace || 'default', status, desired, current, ready, owner: ownerRef?.name || '-', ownerKind: ownerRef?.kind || '', age: calculateAge(resource.metadata.creationTimestamp), creationTimestamp: resource.metadata?.creationTimestamp, cpu: '-', memory: '-' };
 }
 
-type ListView = 'flat' | 'byNamespace';
+type ListView = 'flat' | 'byNamespace' | 'byOwner';
 
 export default function ReplicaSets() {
   const navigate = useNavigate();
@@ -104,12 +121,14 @@ export default function ReplicaSets() {
   const [listView, setListView] = useState<ListView>('flat');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [showTableFilters, setShowTableFilters] = useState(false);
   const [showCreateWizard, setShowCreateWizard] = useState(false);
+  const [activeOnly, setActiveOnly] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = useK8sResourceList<ReplicaSetResource>('replicasets', undefined, { limit: 5000 });
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useK8sResourceList<ReplicaSetResource>('replicasets', undefined, { limit: 5000 });
   const deleteResource = useDeleteK8sResource('replicasets');
   const patchReplicaSet = usePatchK8sResource('replicasets');
   const createResource = useCreateK8sResource('replicasets');
@@ -128,25 +147,32 @@ export default function ReplicaSets() {
     return items.filter((item) => {
       const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase()) || item.namespace.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesNamespace = selectedNamespace === 'all' || item.namespace === selectedNamespace;
-      return matchesSearch && matchesNamespace;
+      const matchesActive = !activeOnly || item.desired > 0;
+      return matchesSearch && matchesNamespace && matchesActive;
     });
-  }, [items, searchQuery, selectedNamespace]);
+  }, [items, searchQuery, selectedNamespace, activeOnly]);
 
   const replicaSetsTableConfig: ColumnConfig<ReplicaSet>[] = useMemo(() => [
-    { columnId: 'name', getValue: (i) => i.name, sortable: true, filterable: false },
+    { columnId: 'name', getValue: (i) => i.name, sortable: true, filterable: true },
     { columnId: 'namespace', getValue: (i) => i.namespace, sortable: true, filterable: true },
     { columnId: 'status', getValue: (i) => i.status, sortable: true, filterable: true },
     { columnId: 'scale', getValue: (i) => (i.desired > 0 ? 'Active' : 'Scaled to zero'), sortable: true, filterable: true },
     { columnId: 'desired', getValue: (i) => i.desired, sortable: true, filterable: false },
     { columnId: 'current', getValue: (i) => i.current, sortable: true, filterable: false },
     { columnId: 'ready', getValue: (i) => i.ready, sortable: true, filterable: false },
-    { columnId: 'owner', getValue: (i) => i.owner, sortable: true, filterable: false },
+    { columnId: 'owner', getValue: (i) => i.owner, sortable: true, filterable: true },
     { columnId: 'cpu', getValue: (i) => i.cpu, sortable: true, filterable: false },
     { columnId: 'memory', getValue: (i) => i.memory, sortable: true, filterable: false },
     { columnId: 'age', getValue: (i) => i.age, sortable: true, filterable: false },
   ], []);
 
-  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: replicaSetsTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, valueCountsByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: replicaSetsTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+
+  const columnVisibility = useColumnVisibility({
+    tableId: 'replicasets',
+    columns: REPLICASETS_COLUMNS_FOR_VISIBILITY,
+    alwaysVisible: ['name'],
+  });
 
   const totalFiltered = filteredItems.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
@@ -178,15 +204,17 @@ export default function ReplicaSets() {
   }, [data?.items]);
 
   const groupedOnPage = useMemo(() => {
-    if (listView !== 'byNamespace' || itemsOnPage.length === 0) return [];
+    if ((listView !== 'byNamespace' && listView !== 'byOwner') || itemsOnPage.length === 0) return [];
     const map = new Map<string, ReplicaSet[]>();
     for (const item of itemsOnPage) {
-      const list = map.get(item.namespace) ?? [];
+      const groupKey = listView === 'byOwner' ? (item.owner !== '-' ? item.owner : '(no owner)') : item.namespace;
+      const list = map.get(groupKey) ?? [];
       list.push(item);
-      map.set(item.namespace, list);
+      map.set(groupKey, list);
     }
+    const prefix = listView === 'byOwner' ? 'owner' : 'ns';
     return Array.from(map.entries())
-      .map(([label, list]) => ({ groupKey: `ns:${label}`, label, list }))
+      .map(([label, list]) => ({ groupKey: `${prefix}:${label}`, label, list }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [listView, itemsOnPage]);
 
@@ -283,27 +311,36 @@ spec:
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-primary/10"><ReplicaSetIcon className="h-6 w-6 text-primary" /></div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">ReplicaSets</h1>
-            <p className="text-sm text-muted-foreground">{totalFiltered} replicasets across {namespaces.length - 1} namespaces{!isConnected && <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]"><WifiOff className="h-3 w-3" /> Connect cluster</span>}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <ResourceExportDropdown
-            items={filteredItems}
-            selectedKeys={selectedItems}
-            getKey={(i) => `${i.namespace}/${i.name}`}
-            config={replicaSetExportConfig}
-            selectionLabel={selectedItems.size > 0 ? 'Selected replicasets' : 'All visible replicasets'}
-            onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
-          />
-          <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>{isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}</Button>
-          <Button className="gap-2" onClick={() => setShowCreateWizard(true)}><Plus className="h-4 w-4" />Create ReplicaSet</Button>
-        </div>
-      </div>
+      <ListPageHeader
+        icon={<ReplicaSetIcon className="h-6 w-6 text-primary" />}
+        title="ReplicaSets"
+        resourceCount={totalFiltered}
+        subtitle={namespaces.length > 1 ? `across ${namespaces.length - 1} namespaces` : undefined}
+        demoMode={!isConnected}
+        isLoading={isLoading}
+        onRefresh={() => refetch()}
+        createLabel="Create ReplicaSet"
+        onCreate={() => setShowCreateWizard(true)}
+        actions={
+          <>
+            <ResourceExportDropdown
+              items={filteredItems}
+              selectedKeys={selectedItems}
+              getKey={(i) => `${i.namespace}/${i.name}`}
+              config={replicaSetExportConfig}
+              selectionLabel={selectedItems.size > 0 ? 'Selected replicasets' : 'All visible replicasets'}
+              onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+            />
+            <Button variant={activeOnly ? 'default' : 'outline'} size="sm" className="gap-2 h-9" onClick={() => setActiveOnly((v) => !v)} title="Show only active ReplicaSets">
+              {activeOnly ? <EyeOff className="h-4 w-4" /> : <GitBranch className="h-4 w-4" />}
+              Active Only
+            </Button>
+            {selectedItems.size > 0 && (
+              <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}><Trash2 className="h-4 w-4" />Delete</Button>
+            )}
+          </>
+        }
+      />
 
       {selectedItems.size > 0 && (
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between p-3 bg-primary/5 border border-primary/20 rounded-lg">
@@ -319,6 +356,8 @@ spec:
         <ListPageStatCard label="Mismatched" value={stats.mismatched} icon={XCircle} iconColor="text-[hsl(0,72%,51%)]" valueClassName="text-[hsl(0,72%,51%)]" selected={columnFilters.status?.size === 2 && columnFilters.status?.has('Progressing') && columnFilters.status?.has('Degraded')} onClick={() => setColumnFilter('status', new Set(['Progressing', 'Degraded']))} className={cn(columnFilters.status?.size === 2 && columnFilters.status?.has('Progressing') && columnFilters.status?.has('Degraded') && 'ring-2 ring-[hsl(0,72%,51%)]')} />
       </div>
 
+      <ResourceListTableToolbar
+        globalFilterBar={
       <ResourceCommandBar
         scope={
           <div className="w-full min-w-0">
@@ -359,29 +398,73 @@ spec:
             options={[
               { id: 'flat', label: 'Flat', icon: List },
               { id: 'byNamespace', label: 'By Namespace', icon: Layers },
+              { id: 'byOwner', label: 'By Owner Deployment', icon: GitBranch },
             ]}
             label=""
             ariaLabel="List structure"
           />
         }
-        footer={<span className="text-xs text-muted-foreground">{listView === 'flat' ? 'flat list' : 'grouped by namespace'}</span>}
-        className="mb-2"
+        footer={<span className="text-xs text-muted-foreground">{listView === 'flat' ? 'flat list' : listView === 'byOwner' ? 'grouped by owner deployment' : 'grouped by namespace'}</span>}
+        className="mb-0"
       />
-
-      <div className="border border-border rounded-xl overflow-x-auto bg-card">
+        }
+        hasActiveFilters={hasActiveFilters}
+        onClearAllFilters={clearAllFilters}
+        showTableFilters={showTableFilters}
+        onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+        columns={REPLICASETS_COLUMNS_FOR_VISIBILITY}
+        visibleColumns={columnVisibility.visibleColumns}
+        onColumnToggle={columnVisibility.setColumnVisible}
+        footer={
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">
+                    {pageSize} per page
+                    <ChevronDown className="h-4 w-4 opacity-50" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>
+                      {size} per page
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination
+              hasPrev={pagination.hasPrev}
+              hasNext={pagination.hasNext}
+              onPrev={pagination.onPrev}
+              onNext={pagination.onNext}
+              rangeLabel={undefined}
+              currentPage={pagination.currentPage}
+              totalPages={pagination.totalPages}
+              onPageChange={pagination.onPageChange}
+              dataUpdatedAt={dataUpdatedAt}
+              isFetching={isFetching}
+            />
+          </div>
+        </div>
+        }
+      >
         <ResizableTableProvider tableId="replicasets" columnConfig={REPLICASETS_TABLE_COLUMNS}>
         <Table className="table-fixed" style={{ minWidth: 1600 }}>
           <TableHeader>
-            <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+            <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
               <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
               <ResizableTableHead columnId="name">
                 <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
               </ResizableTableHead>
               <ResizableTableHead columnId="namespace">
-                <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} />
+                <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
               </ResizableTableHead>
               <ResizableTableHead columnId="status">
-                <TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} />
+                <TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
               </ResizableTableHead>
               <ResizableTableHead columnId="desired">
                 <TableColumnHeaderWithFilterAndSort columnId="desired" label="Desired" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
@@ -406,11 +489,63 @@ spec:
               </ResizableTableHead>
               <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
             </TableRow>
+            {showTableFilters && (
+              <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                <TableCell className="w-10 p-1.5" />
+                <ResizableTableCell columnId="name" className="p-1.5">
+                  <TableFilterCell columnId="name" label="Name" distinctValues={distinctValuesByColumn.name ?? []} selectedFilterValues={columnFilters.name ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.name} />
+                </ResizableTableCell>
+                <ResizableTableCell columnId="namespace" className="p-1.5">
+                  <TableFilterCell
+                    columnId="namespace"
+                    label="Namespace"
+                    distinctValues={distinctValuesByColumn.namespace ?? []}
+                    selectedFilterValues={columnFilters.namespace ?? new Set()}
+                    onFilterChange={setColumnFilter}
+                    valueCounts={valueCountsByColumn.namespace}
+                  />
+                </ResizableTableCell>
+                <ResizableTableCell columnId="status" className="p-1.5">
+                  <TableFilterCell
+                    columnId="status"
+                    label="Status"
+                    distinctValues={distinctValuesByColumn.status ?? []}
+                    selectedFilterValues={columnFilters.status ?? new Set()}
+                    onFilterChange={setColumnFilter}
+                    valueCounts={valueCountsByColumn.status}
+                  />
+                </ResizableTableCell>
+                <ResizableTableCell columnId="desired" className="p-1.5" />
+                <ResizableTableCell columnId="current" className="p-1.5" />
+                <ResizableTableCell columnId="ready" className="p-1.5" />
+                <ResizableTableCell columnId="owner" className="p-1.5">
+                  <TableFilterCell columnId="owner" label="Owner" distinctValues={distinctValuesByColumn.owner ?? []} selectedFilterValues={columnFilters.owner ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.owner} />
+                </ResizableTableCell>
+                <ResizableTableCell columnId="cpu" className="p-1.5" />
+                <ResizableTableCell columnId="memory" className="p-1.5" />
+                <ResizableTableCell columnId="age" className="p-1.5" />
+                <TableCell className="w-12 p-1.5" />
+              </TableRow>
+            )}
           </TableHeader>
           <TableBody>
-            {isLoading && isConnected ? <TableRow><TableCell colSpan={12} className="h-32 text-center"><div className="flex flex-col items-center gap-2"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><p className="text-sm text-muted-foreground">Loading...</p></div></TableCell></TableRow>
-            : itemsOnPage.length === 0 ? <TableRow><TableCell colSpan={12} className="h-32 text-center text-muted-foreground"><div className="flex flex-col items-center gap-2"><Layers className="h-8 w-8 opacity-50" /><p>No replicasets found</p>{(searchQuery || hasActiveFilters) && <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>}</div></TableCell></TableRow>
-            : listView === 'flat' ? itemsOnPage.map((item, idx) => {
+            {isLoading && isConnected ? (
+              <TableSkeletonRows columnCount={12} />
+            ) : itemsOnPage.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={12} className="h-40 text-center">
+                  <TableEmptyState
+                    icon={<Layers className="h-8 w-8" />}
+                    title="No ReplicaSets found"
+                    subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'ReplicaSets are often created by Deployments; create one manually if needed.'}
+                    hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                    onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                    createLabel="Create ReplicaSet"
+                    onCreate={() => setShowCreateWizard(true)}
+                  />
+                </TableCell>
+              </TableRow>
+            ) : (listView === 'flat') ? itemsOnPage.map((item, idx) => {
               const StatusIcon = statusConfig[item.status]?.icon || Clock;
               const key = `${item.namespace}/${item.name}`;
               const isSelected = selectedItems.has(key);
@@ -424,12 +559,20 @@ spec:
                 <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
                   <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
                   <ResizableTableCell columnId="name"><Link to={`/replicasets/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><ReplicaSetIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
-                  <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
+                  <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={item.namespace} className="font-normal truncate block w-fit max-w-full" /></ResizableTableCell>
                   <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={replicaSetStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>
                   <ResizableTableCell columnId="desired" className="font-mono text-sm">{item.desired}</ResizableTableCell>
                   <ResizableTableCell columnId="current" className="font-mono text-sm">{item.current}</ResizableTableCell>
                   <ResizableTableCell columnId="ready" className="font-mono text-sm">{item.ready}</ResizableTableCell>
-                  <ResizableTableCell columnId="owner"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.owner}</Badge></ResizableTableCell>
+                  <ResizableTableCell columnId="owner">
+                    {item.ownerKind === 'Deployment' && item.owner !== '-' ? (
+                      <Link to={`/deployments/${item.namespace}/${item.owner}`} className="text-primary hover:underline text-xs font-mono truncate block max-w-full">{item.owner}</Link>
+                    ) : item.owner !== '-' ? (
+                      <Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.owner}</Badge>
+                    ) : (
+                      <span className="text-muted-foreground text-xs">—</span>
+                    )}
+                  </ResizableTableCell>
                   <ResizableTableCell columnId="cpu">
                     <div className="min-w-0 overflow-hidden">
                       <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} />
@@ -440,7 +583,7 @@ spec:
                       <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} />
                     </div>
                   </ResizableTableCell>
-                  <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
+                  <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>
                   <TableCell>
                     <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-48">
@@ -468,12 +611,20 @@ spec:
                   <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
                     <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
                     <ResizableTableCell columnId="name"><Link to={`/replicasets/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><ReplicaSetIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
-                    <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
+                    <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={item.namespace} className="font-normal truncate block w-fit max-w-full" /></ResizableTableCell>
                     <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={replicaSetStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>
                     <ResizableTableCell columnId="desired" className="font-mono text-sm">{item.desired}</ResizableTableCell>
                     <ResizableTableCell columnId="current" className="font-mono text-sm">{item.current}</ResizableTableCell>
                     <ResizableTableCell columnId="ready" className="font-mono text-sm">{item.ready}</ResizableTableCell>
-                    <ResizableTableCell columnId="owner"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.owner}</Badge></ResizableTableCell>
+                    <ResizableTableCell columnId="owner">
+                    {item.ownerKind === 'Deployment' && item.owner !== '-' ? (
+                      <Link to={`/deployments/${item.namespace}/${item.owner}`} className="text-primary hover:underline text-xs font-mono truncate block max-w-full">{item.owner}</Link>
+                    ) : item.owner !== '-' ? (
+                      <Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.owner}</Badge>
+                    ) : (
+                      <span className="text-muted-foreground text-xs">—</span>
+                    )}
+                  </ResizableTableCell>
                     <ResizableTableCell columnId="cpu">
                       <div className="min-w-0 overflow-hidden">
                         <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} max={replicasetResourceMaxMap[key]?.cpuMax} />
@@ -484,7 +635,7 @@ spec:
                         <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={replicasetResourceMaxMap[key]?.memoryMax} />
                       </div>
                     </ResizableTableCell>
-                    <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
+                    <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>
                     <TableCell>
                       <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-48">
@@ -502,7 +653,7 @@ spec:
                   <TableCell colSpan={12} className="py-2 font-medium">
                     <div className="flex items-center gap-2 font-medium">
                       {isCollapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />}
-                      Namespace: {group.label}
+                      {listView === 'byOwner' ? 'Owner: ' : 'Namespace: '}{group.label}
                       <span className="text-muted-foreground font-normal">({group.list.length})</span>
                     </div>
                   </TableCell>
@@ -513,44 +664,7 @@ spec:
           </TableBody>
         </Table>
         </ResizableTableProvider>
-      </div>
-
-      <div className="pt-4 pb-2 border-t border-border mt-2">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-2">
-                  {pageSize} per page
-                  <ChevronDown className="h-4 w-4 opacity-50" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <DropdownMenuItem
-                    key={size}
-                    onClick={() => handlePageSizeChange(size)}
-                    className={cn(pageSize === size && 'bg-accent')}
-                  >
-                    {size} per page
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          <ListPagination
-            hasPrev={pagination.hasPrev}
-            hasNext={pagination.hasNext}
-            onPrev={pagination.onPrev}
-            onNext={pagination.onNext}
-            rangeLabel={undefined}
-            currentPage={pagination.currentPage}
-            totalPages={pagination.totalPages}
-            onPageChange={pagination.onPageChange}
-          />
-        </div>
-      </div>
+      </ResourceListTableToolbar>
 
       <DeleteConfirmDialog open={deleteDialog.open} onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null })} resourceType="ReplicaSet" resourceName={deleteDialog.bulk ? `${selectedItems.size} replicasets` : (deleteDialog.item?.name || '')} namespace={deleteDialog.bulk ? undefined : deleteDialog.item?.namespace} onConfirm={handleDelete} />
       {scaleDialog.item && (

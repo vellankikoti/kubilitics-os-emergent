@@ -98,9 +98,4 @@ type ResourceScorer interface {
 }
 
 // NewResourceScorer creates a new resource scorer with dependencies.
-func NewResourceScorer() ResourceScorer {
-	// Initialize time-series query engine
-	// Load scoring weights from config
-	// Initialize cache for score calculations
-	return nil
-}
+// The concrete implementation is in scorer_impl.go.

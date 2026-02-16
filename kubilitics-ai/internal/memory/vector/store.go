@@ -107,11 +107,5 @@ type VectorStore interface {
 }
 
 // NewVectorStore creates a new vector store with optional backend.
-// If configured backend is unavailable, gracefully degrades.
-func NewVectorStore() VectorStore {
-	// Check configuration for ChromaDB or Qdrant
-	// Try to connect to configured backend
-	// If unavailable, create no-op implementation (graceful degradation)
-	// Set up embedding model (local or API)
-	return nil
-}
+// If configured backend is unavailable, gracefully degrades to keyword search.
+// The concrete implementation is in store_impl.go.

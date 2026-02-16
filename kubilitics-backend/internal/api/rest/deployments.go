@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,14 +24,16 @@ const (
 
 // RolloutHistoryEntry represents one revision in deployment rollout history.
 type RolloutHistoryEntry struct {
-	Revision          int    `json:"revision"`
-	CreationTimestamp string `json:"creationTimestamp"`
-	ChangeCause       string `json:"changeCause"`
-	PodTemplateHash   string `json:"podTemplateHash"`
-	Ready             int64  `json:"ready"`
-	Desired           int64  `json:"desired"`
-	Available         int64  `json:"available"`
-	Name              string `json:"name"`
+	Revision          int      `json:"revision"`
+	CreationTimestamp string   `json:"creationTimestamp"`
+	ChangeCause       string   `json:"changeCause"`
+	PodTemplateHash   string   `json:"podTemplateHash"`
+	Ready             int64    `json:"ready"`
+	Desired           int64    `json:"desired"`
+	Available         int64    `json:"available"`
+	Name              string   `json:"name"`
+	Images            []string `json:"images,omitempty"`
+	DurationSeconds   int64    `json:"durationSeconds,omitempty"`
 }
 
 // GetDeploymentRolloutHistory handles GET /clusters/{clusterId}/resources/deployments/{namespace}/{name}/rollout-history
@@ -140,6 +143,8 @@ func (h *Handler) GetDeploymentRolloutHistory(w http.ResponseWriter, r *http.Req
 			}
 		}
 
+		images := extractContainerImagesFromReplicaSet(rs.Object)
+
 		entries = append(entries, RolloutHistoryEntry{
 			Revision:          revision,
 			CreationTimestamp: created,
@@ -149,10 +154,25 @@ func (h *Handler) GetDeploymentRolloutHistory(w http.ResponseWriter, r *http.Req
 			Desired:           desired,
 			Available:         available,
 			Name:              rsName,
+			Images:            images,
 		})
 	}
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Revision < entries[j].Revision })
+
+	// Compute rollout duration: time from this revision's creation until next revision (when this rollout was superseded).
+	for i := 0; i < len(entries)-1; i++ {
+		tCur, errCur := time.Parse(time.RFC3339, entries[i].CreationTimestamp)
+		tNext, errNext := time.Parse(time.RFC3339, entries[i+1].CreationTimestamp)
+		if errCur == nil && errNext == nil && tNext.After(tCur) {
+			entries[i].DurationSeconds = int64(tNext.Sub(tCur).Seconds())
+		}
+	}
+
+	logger.StdLogger().Info("rollout-history: returned revisions from cluster",
+		"cluster_id", resolvedID, "namespace", namespace, "deployment", name, "revision_count", len(entries))
+	w.Header().Set("X-Rollout-Source", "cluster")
+	w.Header().Set("X-Revision-Count", strconv.Itoa(len(entries)))
 	respondJSON(w, http.StatusOK, map[string]interface{}{"revisions": entries})
 }
 
@@ -296,6 +316,7 @@ func (h *Handler) PostDeploymentRollback(w http.ResponseWriter, r *http.Request)
 	requestID := logger.FromContext(r.Context())
 	if err != nil {
 		audit.LogMutation(requestID, clusterID, "rollback", "deployments", namespace, name, "failure", err.Error())
+		logger.StdLogger().Warn("rollback: patch failed", "cluster_id", resolvedID, "namespace", namespace, "deployment", name, "revision", *req.Revision, "error", err.Error())
 		if apierrors.IsNotFound(err) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return
@@ -304,7 +325,30 @@ func (h *Handler) PostDeploymentRollback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	audit.LogMutation(requestID, clusterID, "rollback", "deployments", namespace, name, "success", "")
+	logger.StdLogger().Info("rollback: deployment patched to revision (live cluster)",
+		"cluster_id", resolvedID, "namespace", namespace, "deployment", name, "revision", *req.Revision)
+	w.Header().Set("X-Rollout-Source", "cluster")
 	respondJSON(w, http.StatusOK, updated.Object)
+}
+
+// extractContainerImagesFromReplicaSet returns container image strings from a ReplicaSet's pod template, in order.
+func extractContainerImagesFromReplicaSet(rsObject map[string]interface{}) []string {
+	containers, ok := getNestedSlice(rsObject, "spec", "template", "spec", "containers")
+	if !ok || len(containers) == 0 {
+		return nil
+	}
+	images := make([]string, 0, len(containers))
+	for _, c := range containers {
+		cm, _ := c.(map[string]interface{})
+		if cm == nil {
+			continue
+		}
+		img, _ := cm["image"].(string)
+		if img != "" {
+			images = append(images, img)
+		}
+	}
+	return images
 }
 
 func getNestedString(obj map[string]interface{}, keys ...string) (string, bool) {

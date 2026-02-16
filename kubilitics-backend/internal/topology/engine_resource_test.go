@@ -91,3 +91,54 @@ func TestBuildResourceSubgraph_NetworkingKinds_NotImplemented(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildResourceSubgraph_Node_NotImplemented ensures Node resource topology is implemented
+// and never returns "resource topology not implemented for kind Node". Regression test for cluster-scoped topology.
+func TestBuildResourceSubgraph_Node_NotImplemented(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "test-node"
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+	cs := fake.NewSimpleClientset(node)
+	client := k8s.NewClientForTest(cs)
+	engine := NewEngine(client)
+
+	// Cluster-scoped: namespace is empty
+	g, err := engine.BuildResourceSubgraph(ctx, "Node", "", nodeName)
+	require.NoError(t, err)
+	require.NotNil(t, g)
+	require.NotEmpty(t, g.Nodes, "Node subgraph should contain at least the node")
+}
+
+// TestBuildResourceSubgraph_Node_NormalizedKind ensures "nodes" and "node" normalize to Node and are accepted.
+func TestBuildResourceSubgraph_Node_NormalizedKind(t *testing.T) {
+	ctx := context.Background()
+	nodeName := "my-node"
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+	cs := fake.NewSimpleClientset(node)
+	client := k8s.NewClientForTest(cs)
+	engine := NewEngine(client)
+
+	for _, kind := range []string{"Node", "nodes", "node"} {
+		t.Run(kind, func(t *testing.T) {
+			_, err := engine.BuildResourceSubgraph(ctx, kind, "", nodeName)
+			if err != nil {
+				require.NotContains(t, err.Error(), "not implemented",
+					"Node topology must be implemented for kind %q; got: %v", kind, err)
+			}
+		})
+	}
+}

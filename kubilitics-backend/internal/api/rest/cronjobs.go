@@ -2,8 +2,11 @@ package rest
 
 import (
 	"net/http"
+	"sort"
+	"strconv"
 
 	"github.com/gorilla/mux"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -106,4 +109,83 @@ func (h *Handler) PostCronJobTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	audit.LogMutation(requestID, clusterID, "trigger", "cronjobs", namespace, name, "success", "")
 	respondJSON(w, http.StatusCreated, created.Object)
+}
+
+// GetCronJobJobs handles GET /clusters/{clusterId}/resources/cronjobs/{namespace}/{name}/jobs
+// Returns the last N child jobs owned by this CronJob (Job Name | Status | Start Time | Duration).
+func (h *Handler) GetCronJobJobs(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	clusterID := vars["clusterId"]
+	namespace := vars["namespace"]
+	name := vars["name"]
+
+	if !validate.ClusterID(clusterID) || !validate.Namespace(namespace) || !validate.Name(name) {
+		respondError(w, http.StatusBadRequest, "Invalid clusterId, namespace, or name")
+		return
+	}
+
+	resolvedID, err := h.resolveClusterID(r.Context(), clusterID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	client, err := h.clusterService.GetClient(resolvedID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	limit := 5
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 50 {
+			limit = n
+		}
+	}
+
+	jobList, err := client.ListResources(r.Context(), "jobs", namespace, metav1.ListOptions{Limit: 500})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			respondError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Filter jobs owned by this CronJob
+	var owned []unstructured.Unstructured
+	for _, item := range jobList.Items {
+		refs := item.GetOwnerReferences()
+		for _, ref := range refs {
+			if ref.Kind == "CronJob" && ref.Name == name {
+				owned = append(owned, item)
+				break
+			}
+		}
+	}
+
+	// Sort by startTime descending (newest first)
+	sort.Slice(owned, func(i, j int) bool {
+		si, _ := owned[i].Object["status"].(map[string]interface{})
+		sj, _ := owned[j].Object["status"].(map[string]interface{})
+		ti, _ := si["startTime"].(string)
+		tj, _ := sj["startTime"].(string)
+		return ti > tj
+	})
+
+	// Take up to limit
+	if len(owned) > limit {
+		owned = owned[:limit]
+	}
+
+	items := make([]map[string]interface{}, len(owned))
+	for i := range owned {
+		items[i] = owned[i].Object
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"kind":       "List",
+		"apiVersion": "v1",
+		"metadata":  map[string]interface{}{},
+		"items":     items,
+	})
 }

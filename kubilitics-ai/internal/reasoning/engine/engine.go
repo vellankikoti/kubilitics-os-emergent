@@ -100,9 +100,5 @@ type ReasoningEngine interface {
 	ListInvestigations(ctx context.Context, filter interface{}) ([]interface{}, error)
 }
 
-// NewReasoningEngine creates a new reasoning engine with dependencies.
-func NewReasoningEngine() ReasoningEngine {
-	// Inject MCP Server, World Model, Context Builder, Backend Proxy, Analytics Engine,
-	// Safety Engine, Audit Logger, Prompt Manager
-	return nil
-}
+// NewReasoningEngine creates a new reasoning engine.
+// Use NewReasoningEngineWithDeps (engine_impl.go) for a fully wired implementation.

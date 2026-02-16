@@ -145,10 +145,7 @@ func NewLLMAdapter(cfg *Config) (LLMAdapter, error) {
 func (a *llmAdapterImpl) Complete(ctx context.Context, messages []types.Message, tools []types.Tool) (string, []interface{}, error) {
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		// TODO: Update Anthropic client to use types.Message and types.Tool
-		_ = messages
-		_ = tools
-		return "", nil, fmt.Errorf("Anthropic provider not yet updated to new types")
+		return client.Complete(ctx, messages, tools)
 	case *openai.OpenAIClientImpl:
 		return client.Complete(ctx, messages, tools)
 	case *ollama.OllamaClientImpl:
@@ -164,10 +161,7 @@ func (a *llmAdapterImpl) Complete(ctx context.Context, messages []types.Message,
 func (a *llmAdapterImpl) CompleteStream(ctx context.Context, messages []types.Message, tools []types.Tool) (chan string, chan interface{}, error) {
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		// TODO: Update Anthropic client
-		_ = messages
-		_ = tools
-		return nil, nil, fmt.Errorf("Anthropic provider not yet updated to new types")
+		return client.CompleteStream(ctx, messages, tools)
 	case *openai.OpenAIClientImpl:
 		return client.CompleteStream(ctx, messages, tools)
 	case *ollama.OllamaClientImpl:
@@ -183,9 +177,7 @@ func (a *llmAdapterImpl) CompleteStream(ctx context.Context, messages []types.Me
 func (a *llmAdapterImpl) CountTokens(ctx context.Context, messages []types.Message, tools []types.Tool) (int, error) {
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		_ = messages
-		_ = tools
-		return 0, fmt.Errorf("Anthropic provider not yet updated to new types")
+		return client.CountTokens(ctx, messages, tools)
 	case *openai.OpenAIClientImpl:
 		return client.CountTokens(ctx, messages, tools)
 	case *ollama.OllamaClientImpl:
@@ -208,7 +200,7 @@ func (a *llmAdapterImpl) GetCapabilities(ctx context.Context) (interface{}, erro
 
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		return nil, fmt.Errorf("Anthropic provider not yet updated")
+		caps, err = client.GetCapabilities(ctx)
 	case *openai.OpenAIClientImpl:
 		caps, err = client.GetCapabilities(ctx)
 	case *ollama.OllamaClientImpl:
@@ -231,13 +223,36 @@ func (a *llmAdapterImpl) GetCapabilities(ctx context.Context) (interface{}, erro
 func (a *llmAdapterImpl) NormalizeToolCall(ctx context.Context, toolCall interface{}) (map[string]interface{}, error) {
 	switch client := a.client.(type) {
 	case *anthropic.AnthropicClientImpl:
-		return nil, fmt.Errorf("Anthropic provider not yet updated")
+		return client.NormalizeToolCall(ctx, toolCall)
 	case *openai.OpenAIClientImpl:
 		return client.NormalizeToolCall(ctx, toolCall)
 	case *ollama.OllamaClientImpl:
 		return client.NormalizeToolCall(ctx, toolCall)
 	case *custom.CustomClientImpl:
 		return client.NormalizeToolCall(ctx, toolCall)
+	default:
+		return nil, fmt.Errorf("unknown client type")
+	}
+}
+
+// CompleteWithTools runs the full multi-turn agentic loop by delegating to the
+// provider-specific implementation.
+func (a *llmAdapterImpl) CompleteWithTools(
+	ctx context.Context,
+	messages []types.Message,
+	tools []types.Tool,
+	executor types.ToolExecutor,
+	cfg types.AgentConfig,
+) (<-chan types.AgentStreamEvent, error) {
+	switch client := a.client.(type) {
+	case *anthropic.AnthropicClientImpl:
+		return client.CompleteWithTools(ctx, messages, tools, executor, cfg)
+	case *openai.OpenAIClientImpl:
+		return client.CompleteWithTools(ctx, messages, tools, executor, cfg)
+	case *ollama.OllamaClientImpl:
+		return client.CompleteWithTools(ctx, messages, tools, executor, cfg)
+	case *custom.CustomClientImpl:
+		return client.CompleteWithTools(ctx, messages, tools, executor, cfg)
 	default:
 		return nil, fmt.Errorf("unknown client type")
 	}

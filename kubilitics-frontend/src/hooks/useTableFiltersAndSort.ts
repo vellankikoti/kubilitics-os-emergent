@@ -28,11 +28,18 @@ function defaultCompare<T>(getValue: (item: T) => string | number): (a: T, b: T)
   };
 }
 
+export interface ValueWithCount {
+  value: string;
+  count: number;
+}
+
 export interface UseTableFiltersAndSortResult<T> {
   /** Items after applying column filters and sort. */
   filteredAndSortedItems: T[];
   /** Distinct values per filterable column (from current items). */
   distinctValuesByColumn: Record<string, string[]>;
+  /** Distinct values with counts per filterable column (for filter dropdown display). */
+  valueCountsByColumn: Record<string, ValueWithCount[]>;
   /** Current column filters: columnId -> set of allowed values; empty/missing = no filter. */
   columnFilters: Record<string, Set<string>>;
   /** Set filter for a column. Pass null to clear. */
@@ -101,6 +108,21 @@ export function useTableFiltersAndSort<T>(
     return out;
   }, [items, filterableColumns]);
 
+  const valueCountsByColumn = useMemo(() => {
+    const out: Record<string, Array<{ value: string; count: number }>> = {};
+    for (const col of filterableColumns) {
+      const countMap = new Map<string, number>();
+      for (const item of items) {
+        const v = String(col.getValue(item)).trim();
+        if (v) countMap.set(v, (countMap.get(v) ?? 0) + 1);
+      }
+      out[col.columnId] = [...countMap.entries()]
+        .map(([value, count]) => ({ value, count }))
+        .sort((a, b) => a.value.localeCompare(b.value, undefined, { numeric: true }));
+    }
+    return out;
+  }, [items, filterableColumns]);
+
   const filteredAndSortedItems = useMemo(() => {
     let result = items;
 
@@ -133,6 +155,7 @@ export function useTableFiltersAndSort<T>(
   return {
     filteredAndSortedItems,
     distinctValuesByColumn,
+    valueCountsByColumn,
     columnFilters: columnFiltersState,
     setColumnFilter,
     sortKey,

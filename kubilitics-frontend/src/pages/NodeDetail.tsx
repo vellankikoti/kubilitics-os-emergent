@@ -1,9 +1,10 @@
 import { useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueries } from '@tanstack/react-query';
-import { Server, Clock, Download, Trash2, Cpu, HardDrive, Box, Shield, RefreshCw, Pause, Play, AlertTriangle, Loader2, Info, BarChart2, Activity, MapPin, Tag, FileJson, FileSpreadsheet, Image, Network } from 'lucide-react';
+import { Server, Clock, Download, Trash2, Cpu, HardDrive, Box, Shield, Pause, Play, AlertTriangle, Loader2, Info, BarChart2, Activity, MapPin, Tag, FileJson, FileSpreadsheet, Image, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { NamespaceBadge } from '@/components/list';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -22,13 +23,22 @@ import {
   type YamlVersion,
 } from '@/components/resources';
 import { useResourceDetail, useK8sEvents } from '@/hooks/useK8sResourceDetail';
-import { useDeleteK8sResource, useK8sResourceList, type KubernetesResource } from '@/hooks/useKubernetes';
+import { useDeleteK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { useClusterStore } from '@/stores/clusterStore';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { getNodeMetrics, getPodMetrics, getResource } from '@/services/backendApiClient';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { AgeCell, StatusPill, type StatusPillVariant } from '@/components/list';
 
 interface NodeResource extends KubernetesResource {
   spec?: {
@@ -77,7 +87,9 @@ export default function NodeDetail() {
     const podName = r.metadata?.name ?? r.name ?? '';
     const namespace = r.metadata?.namespace ?? r.namespace ?? '';
     const status = (r.status && typeof r.status === 'object' && (r.status as { phase?: string }).phase) ? (r.status as { phase: string }).phase : (typeof r.status === 'string' ? r.status : 'Unknown');
-    return { name: podName, namespace, status, cpu: '-', memory: '-' };
+    const creationTimestamp = r.metadata?.creationTimestamp;
+    const age = creationTimestamp ? calculateAge(creationTimestamp) : '–';
+    return { name: podName, namespace, status, cpu: '-', memory: '-', creationTimestamp, age };
   }), [runningPodsRaw]);
 
   const storedUrl = useBackendConfigStore((s) => s.backendBaseUrl);
@@ -465,30 +477,113 @@ export default function NodeDetail() {
     },
     {
       id: 'pods',
-      label: 'Running Pods',
+      label: 'Pods',
       content: (
-        <SectionCard icon={Box} title={`Running Pods (${runningPods.length})`} tooltip={<p className="text-xs text-muted-foreground">Pods currently scheduled on this node</p>}>
-            <div className="space-y-2">
-              {runningPods.map((pod) => (
-                <div 
-                  key={pod.name} 
-                  className="flex items-center justify-between p-3 rounded-lg bg-muted/50 hover:bg-muted cursor-pointer transition-colors"
-                  onClick={() => navigate(`/pods/${pod.namespace}/${pod.name}`)}
-                >
-                  <div className="flex items-center gap-3">
-                    <Badge variant={pod.status === 'Running' ? 'default' : 'secondary'}>{pod.status}</Badge>
-                    <div>
-                      <p className="font-medium">{pod.name}</p>
-                      <p className="text-xs text-muted-foreground">{pod.namespace}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-4 text-sm">
-                    <span className="font-mono text-muted-foreground">CPU: {pod.cpu}</span>
-                    <span className="font-mono text-muted-foreground">Mem: {pod.memory}</span>
-                  </div>
-                </div>
-              ))}
+        <SectionCard icon={Box} title={`Pods on this node (${runningPods.length})`} tooltip={<p className="text-xs text-muted-foreground">Pods scheduled on this node (fieldSelector=spec.nodeName). Click a row to open pod detail.</p>}>
+          {podsOnNodeQuery.isLoading ? (
+            <div className="flex items-center justify-center py-12 gap-2 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              <span>Loading pods…</span>
             </div>
+          ) : runningPods.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center px-4">
+              <Box className="h-10 w-10 text-muted-foreground mb-3" />
+              <p className="font-medium text-foreground">No pods on this node</p>
+              <p className="text-sm text-muted-foreground mt-1">Pods scheduled here will appear in this table.</p>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border">
+                    <TableHead className="font-semibold">Name</TableHead>
+                    <TableHead className="font-semibold">Namespace</TableHead>
+                    <TableHead className="font-semibold">Status</TableHead>
+                    <TableHead className="font-semibold">CPU</TableHead>
+                    <TableHead className="font-semibold">Memory</TableHead>
+                    <TableHead className="font-semibold">Age</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {runningPods.map((pod) => (
+                    <TableRow
+                      key={`${pod.namespace}/${pod.name}`}
+                      className="cursor-pointer hover:bg-muted/60 transition-colors"
+                      onClick={() => navigate(`/pods/${pod.namespace}/${pod.name}`)}
+                    >
+                      <TableCell className="font-medium text-primary">{pod.name}</TableCell>
+                      <TableCell><NamespaceBadge namespace={pod.namespace} className="font-normal" /></TableCell>
+                      <TableCell>
+                        <StatusPill
+                          label={pod.status}
+                          variant={(pod.status === 'Running' ? 'success' : pod.status === 'Pending' ? 'warning' : 'error') as StatusPillVariant}
+                        />
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">{pod.cpu}</TableCell>
+                      <TableCell className="font-mono text-sm">{pod.memory}</TableCell>
+                      <TableCell className="text-muted-foreground whitespace-nowrap">
+                        <AgeCell age={pod.age} timestamp={pod.creationTimestamp} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </SectionCard>
+      ),
+    },
+    {
+      id: 'conditions',
+      label: 'Conditions',
+      content: (
+        <SectionCard icon={Activity} title="Node conditions" tooltip={<p className="text-xs text-muted-foreground">Kubernetes node conditions: Ready (green when True), pressure conditions (red when True)</p>}>
+          {conditions.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-4">No conditions reported.</p>
+          ) : (
+            <div className="rounded-lg border border-border overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border">
+                    <TableHead className="font-semibold">Type</TableHead>
+                    <TableHead className="font-semibold">Status</TableHead>
+                    <TableHead className="font-semibold">Reason</TableHead>
+                    <TableHead className="font-semibold">Message</TableHead>
+                    <TableHead className="font-semibold">Last transition</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {conditions.map((c) => {
+                    const isReady = c.type === 'Ready';
+                    const isTrue = c.status === 'True';
+                    const isGood = isReady && isTrue;
+                    const isBad = !isReady && isTrue;
+                    const variant: StatusPillVariant = isGood ? 'success' : isBad ? 'error' : 'neutral';
+                    return (
+                      <TableRow key={c.type} className="border-b border-border/60 last:border-0">
+                        <TableCell>
+                          <Badge
+                            variant={isGood ? 'default' : isBad ? 'destructive' : 'secondary'}
+                            className={isGood ? 'bg-[hsl(142,76%,36%)] hover:bg-[hsl(142,76%,36%)]' : isBad ? 'bg-[hsl(0,72%,51%)] hover:bg-[hsl(0,72%,51%)]' : ''}
+                          >
+                            {c.type}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <StatusPill label={c.status} variant={variant} />
+                        </TableCell>
+                        <TableCell className="font-mono text-sm">{c.reason ?? '–'}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-[280px] truncate" title={c.message ?? ''}>{c.message ?? '–'}</TableCell>
+                        <TableCell className="text-muted-foreground whitespace-nowrap text-sm">
+                          {c.lastTransitionTime ? calculateAge(c.lastTransitionTime) : '–'}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </SectionCard>
       ),
     },
@@ -552,7 +647,6 @@ export default function NodeDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => refetch() },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: isCordoned ? 'Uncordon' : 'Cordon', icon: isCordoned ? Play : Pause, variant: 'outline', onClick: handleCordon },
           { label: 'Drain', icon: Shield, variant: 'outline', onClick: handleDrain },

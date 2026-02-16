@@ -9,8 +9,9 @@ import {
   Network, ZoomIn, ZoomOut, Maximize, RotateCcw, Download,
   FileCode, FileImage, FileText, FileJson, Table, Search,
   Layers, ChevronDown, Activity, Thermometer, RefreshCcw,
-  Map as MapIcon,
+  Map as MapIcon, Copy, Bomb, Route, Trash2, Edit, X, ScrollText, ExternalLink, ChevronUp, Grid3X3,
 } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -27,6 +28,12 @@ import { useClusterStore } from '@/stores/clusterStore';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { useClusterTopology } from '@/hooks/useClusterTopology';
+import { useActiveClusterId } from '@/hooks/useActiveClusterId';
+import { useTopologyLiveUpdates } from '@/hooks/useTopologyLiveUpdates';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { getTopologyExportDrawio } from '@/services/backendApiClient';
+import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 
 // ─── Import from portable topology-engine ─────────────────────
 import {
@@ -37,12 +44,19 @@ import {
   getKindColor,
   RELATIONSHIP_CONFIG,
   downloadJSON,
-  downloadCSV,
+  downloadCSVSummary,
   downloadPDF,
   getRecommendedAbstraction,
   D3TopologyCanvas,
-  D3HierarchicalTopologyCanvas,
   convertToD3Topology,
+  computeBlastRadius,
+  useHealthOverlay,
+  useCostOverlay,
+  usePerformanceOverlay,
+  useSecurityOverlay,
+  useDependencyOverlay,
+  useTrafficOverlay,
+  OVERLAY_LABELS,
   type TopologyCanvasRef,
   type TopologyGraph,
   type TopologyNode,
@@ -51,6 +65,10 @@ import {
   type RelationshipType,
   type AbstractionLevel,
   type HeatMapMode,
+  type BlastRadiusResult,
+  type OverlayType,
+  generateTestGraph,
+  TopologyViewer,
 } from '@/topology-engine';
 
 // ─── Resource type filter config ──────────────────────────────
@@ -140,10 +158,41 @@ const mockGraph: TopologyGraph = {
 
 export default function Topology() {
   const { activeCluster } = useClusterStore();
+  const clusterId = useActiveClusterId();
   const navigate = useNavigate();
   const canvasRef = useRef<TopologyCanvasRef>(null);
 
   const [selectedNamespace, setSelectedNamespace] = useState('all');
+  const [selectedNodeFilter, setSelectedNodeFilter] = useState<string>('all');
+
+  const handleNamespaceChange = useCallback((ns: string) => {
+    setSelectedNamespace(ns);
+    setSelectedNodeFilter('all');
+  }, []);
+
+  const handleNodeChange = useCallback((nodeId: string) => {
+    setSelectedNodeFilter(nodeId);
+    setSelectedNamespace('all');
+  }, []);
+
+  const { graph: clusterGraph, isLoading: topologyLoading, error: topologyError, refetch: refetchTopology } = useClusterTopology({
+    clusterId,
+    namespace: selectedNamespace,
+    enabled: !!clusterId,
+  });
+
+  // Task 8.4: invalidate topology on WebSocket resource_update / topology_update
+  useTopologyLiveUpdates({ clusterId, enabled: !!clusterId });
+
+  // Task 9.1–9.3: Optional performance test graph (100 / 1K / 5K / 10K nodes)
+  const [perfTestNodes, setPerfTestNodes] = useState<number | null>(null);
+  const perfTestGraph = useMemo(
+    () => (perfTestNodes != null ? generateTestGraph(perfTestNodes) : null),
+    [perfTestNodes]
+  );
+
+  const displayGraph = perfTestGraph ?? clusterGraph ?? mockGraph;
+  const isLiveData = !!clusterGraph;
   const [searchQuery, setSearchQuery] = useState('');
   const [abstractionLevel, setAbstractionLevel] = useState<AbstractionLevel>('L2');
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -161,37 +210,222 @@ export default function Topology() {
     new Set(['healthy', 'warning', 'critical', 'unknown'])
   );
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null);
-  const [activeTab, setActiveTab] = useState<'cytoscape' | 'd3-force' | 'd3-hierarchical'>('cytoscape');
+  const [activeTab, setActiveTab] = useState<'cytoscape' | 'd3-force' | 'enterprise' | 'agt'>('agt');
+  const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
+  const [blastRadius, setBlastRadius] = useState<BlastRadiusResult | null>(null);
+  const [activeOverlay, setActiveOverlay] = useState<OverlayType | null>(null);
+  const [hoveredNode, setHoveredNode] = useState<{ node: TopologyNode; position: { x: number; y: number } } | null>(null);
+  const [searchMatchIndex, setSearchMatchIndex] = useState(0);
+  const [snapToGrid, setSnapToGrid] = useState(false);
 
   const availableNamespaces = useMemo(() => {
     const ns = new Set<string>();
-    mockGraph.nodes.forEach(n => { if (n.namespace) ns.add(n.namespace); });
+    displayGraph.nodes.forEach(n => { if (n.namespace) ns.add(n.namespace); });
     return Array.from(ns);
-  }, []);
+  }, [displayGraph.nodes]);
+
+  const availableNodes = useMemo(() => {
+    return displayGraph.nodes.filter(n => n.kind === 'Node').map(n => ({ id: n.id, name: n.name }));
+  }, [displayGraph.nodes]);
+
+  // When a node is selected, show only that node + pods on it + resources connected to those pods
+  const nodeFilteredGraph = useMemo(() => {
+    if (!selectedNodeFilter || selectedNodeFilter === 'all') return displayGraph;
+
+    // Strict Filtering: Only show the targeted node and its immediate workloads/pods
+    const inScope = new Set<string>([selectedNodeFilter]);
+    const edges = displayGraph.edges;
+    const allNodes = displayGraph.nodes;
+
+    // 1. Find workloads/pods scheduled on this node
+    const scheduledOnThisNode = new Set<string>();
+    for (const e of edges) {
+      if (e.target === selectedNodeFilter && (e.relationshipType === 'scheduled_on' || e.relationshipType === 'runs' || e.relationshipType === 'schedules')) {
+        scheduledOnThisNode.add(e.source);
+        inScope.add(e.source);
+      }
+    }
+
+    // 2. Find direct parents/owners of those scheduled items (Deployments, ReplicaSets, Services)
+    // but NEVER add another Node.
+    for (const e of edges) {
+      if (scheduledOnThisNode.has(e.source) || scheduledOnThisNode.has(e.target)) {
+        const otherId = scheduledOnThisNode.has(e.source) ? e.target : e.source;
+        const otherNode = allNodes.find(n => n.id === otherId);
+
+        // Only add if it's NOT a node and NOT the Cluster root
+        if (otherNode && otherNode.kind !== 'Node' && otherNode.id !== 'cluster-root') {
+          inScope.add(otherId);
+        }
+      }
+    }
+
+    const filteredNodes = allNodes.filter(n => inScope.has(n.id));
+    const nodeIds = new Set(filteredNodes.map(n => n.id));
+    const filteredEdges = edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
+    return { ...displayGraph, nodes: filteredNodes, edges: filteredEdges };
+  }, [displayGraph, selectedNodeFilter]);
+
+  // Task 8.3: filteredGraph — apply node filter first, then hide by resource type
+  const filteredGraph = useMemo(() => {
+    const filteredNodes = nodeFilteredGraph.nodes.filter((n) => selectedResources.has(n.kind));
+    const nodeIds = new Set(filteredNodes.map((n) => n.id));
+    const filteredEdges = nodeFilteredGraph.edges.filter(
+      (e) => nodeIds.has(e.source) && nodeIds.has(e.target)
+    );
+    return {
+      ...nodeFilteredGraph,
+      nodes: filteredNodes,
+      edges: filteredEdges,
+    };
+  }, [nodeFilteredGraph, selectedResources]);
+
+  const d3Topology = useMemo(
+    () => convertToD3Topology(filteredGraph),
+    [filteredGraph]
+  );
+
+  const healthOverlayData = useHealthOverlay(filteredGraph);
+  const costOverlayData = useCostOverlay(filteredGraph);
+  const performanceOverlayData = usePerformanceOverlay(filteredGraph);
+  const securityOverlayData = useSecurityOverlay(filteredGraph);
+  const dependencyOverlayData = useDependencyOverlay(filteredGraph);
+  const trafficOverlayData = useTrafficOverlay(filteredGraph);
+  const searchMatchIds = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase().trim();
+    return filteredGraph.nodes
+      .filter(n =>
+        n.name.toLowerCase().includes(q) ||
+        n.kind.toLowerCase().includes(q) ||
+        (n.namespace || '').toLowerCase().includes(q)
+      )
+      .map(n => n.id);
+  }, [filteredGraph.nodes, searchQuery]);
+  const centeredNodeIdForCanvas = searchMatchIds.length > 0
+    ? searchMatchIds[Math.min(searchMatchIndex, searchMatchIds.length - 1)]
+    : selectedNode?.id;
+
+  const overlayDataForCanvas = activeOverlay === 'health' ? healthOverlayData
+    : activeOverlay === 'cost' ? costOverlayData
+      : activeOverlay === 'performance' ? performanceOverlayData
+        : activeOverlay === 'security' ? securityOverlayData
+          : activeOverlay === 'dependency' ? dependencyOverlayData
+            : activeOverlay === 'traffic' ? trafficOverlayData
+              : null;
 
   const handleResourceToggle = useCallback((kind: KubernetesKind) => {
     setSelectedResources(prev => {
       const next = new Set(prev);
-      next.has(kind) ? next.delete(kind) : next.add(kind);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
       return next;
     });
   }, []);
 
-  const handleNodeDoubleClick = useCallback((node: TopologyNode) => {
+  /** Builds detail path for topology node (matches App.tsx routes: /pods/ns/name or /nodes/name). */
+  const getDetailPathForNode = useCallback((node: { id: string; kind?: string; namespace?: string; name?: string }) => {
     const routeMap: Record<string, string> = {
       Pod: 'pods', Deployment: 'deployments', ReplicaSet: 'replicasets',
       StatefulSet: 'statefulsets', DaemonSet: 'daemonsets', Service: 'services',
       ConfigMap: 'configmaps', Secret: 'secrets', Ingress: 'ingresses',
       Node: 'nodes', Namespace: 'namespaces', PersistentVolume: 'persistentvolumes',
       PersistentVolumeClaim: 'persistentvolumeclaims', StorageClass: 'storageclasses',
-      Job: 'jobs', CronJob: 'cronjobs',
+      Job: 'jobs', CronJob: 'cronjobs', Endpoints: 'endpoints', EndpointSlice: 'endpointslices',
+      NetworkPolicy: 'networkpolicies', IngressClass: 'ingressclasses', VolumeAttachment: 'volumeattachments',
     };
-    const route = routeMap[node.kind];
-    if (route) navigate(node.namespace ? `/${route}/${node.namespace}/${node.name}` : `/${route}/${node.name}`);
-  }, [navigate]);
+    const parts = node.id.split('/');
+    const kind = node.kind ?? parts[0];
+    const route = routeMap[kind] ?? kind.toLowerCase() + 's';
+    if (parts.length === 2) {
+      return `/${route}/${parts[1]}`;
+    }
+    if (parts.length >= 3) {
+      return `/${route}/${parts[1]}/${parts[2]}`;
+    }
+    if (node.namespace && node.name) return `/${route}/${node.namespace}/${node.name}`;
+    if (node.name) return `/${route}/${node.name}`;
+    return null;
+  }, []);
+
+  const handleNodeDoubleClick = useCallback((node: TopologyNode) => {
+    const path = getDetailPathForNode(node);
+    if (path) navigate(path);
+  }, [navigate, getDetailPathForNode]);
+
+  const handleContextMenu = useCallback((event: { nodeId: string; position: { x: number; y: number } }) => {
+    setContextMenu({ nodeId: event.nodeId, x: event.position.x, y: event.position.y });
+  }, []);
+
+  useEffect(() => { setSearchMatchIndex(0); }, [searchQuery]);
+
+  const handleNodeHover = useCallback((nodeId: string | null, clientPosition: { x: number; y: number } | null) => {
+    if (!nodeId || !clientPosition) {
+      setHoveredNode(null);
+      return;
+    }
+    const node = filteredGraph.nodes.find(n => n.id === nodeId);
+    if (node) setHoveredNode({ node, position: clientPosition });
+    else setHoveredNode(null);
+  }, [filteredGraph.nodes]);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const handleContextMenuAction = useCallback((actionId: string, nodeId: string) => {
+    const node = filteredGraph.nodes.find(n => n.id === nodeId);
+    if (actionId === 'copy-name' && node) {
+      navigator.clipboard.writeText(node.name);
+      toast.success('Copied to clipboard');
+    } else if (actionId === 'blast-radius') {
+      const result = computeBlastRadius(filteredGraph, nodeId);
+      setBlastRadius(result);
+      toast.success(`Blast radius: ${result.affectedNodes.size} resources affected`);
+    } else if (actionId === 'view-logs' && node) {
+      const routeMap: Record<string, string> = {
+        Pod: 'pods', Deployment: 'deployments', ReplicaSet: 'replicasets',
+        StatefulSet: 'statefulsets', DaemonSet: 'daemonsets', Job: 'jobs', CronJob: 'cronjobs',
+      };
+      const route = routeMap[node.kind];
+      if (route) {
+        const path = node.namespace ? `/${route}/${node.namespace}/${node.name}` : `/${route}/${node.name}`;
+        navigate(`${path}?tab=logs`);
+      } else {
+        toast.info('Logs are available for Pod, Deployment, StatefulSet, DaemonSet, Job, CronJob, ReplicaSet.');
+      }
+    } else if (actionId === 'view-yaml' || actionId === 'view-metrics' || actionId === 'dependencies') {
+      if (node) setSelectedNode(node);
+    } else if (actionId === 'user-journey') {
+      toast.info('User journey tracing coming soon');
+    } else if (actionId === 'edit' && node) {
+      handleNodeDoubleClick(node);
+    } else if (actionId === 'delete') {
+      toast.error('Delete is not implemented in topology view. Use the resource detail page.');
+    }
+    setContextMenu(null);
+  }, [filteredGraph, handleNodeDoubleClick, navigate]);
+
+  const backendBaseUrl = useBackendConfigStore((s) => s.backendBaseUrl);
+  const effectiveBaseUrl = getEffectiveBackendBaseUrl(backendBaseUrl);
+  const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
 
   const handleExport = useCallback((format: string) => {
-    if (!canvasRef.current) return;
+    if (format !== 'json' && format !== 'csv' && format !== 'pdf' && format !== 'drawio' && !canvasRef.current) return;
+    if (format === 'drawio') {
+      (async () => {
+        if (!clusterId || !isBackendConfigured()) {
+          toast.error('Connect backend and select a cluster to open topology in draw.io.');
+          return;
+        }
+        try {
+          const { url } = await getTopologyExportDrawio(effectiveBaseUrl, clusterId, { format: 'mermaid' });
+          window.open(url, '_blank', 'noopener,noreferrer');
+          toast.success('Opened in draw.io');
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : 'Failed to export to draw.io');
+        }
+      })();
+      return;
+    }
     switch (format) {
       case 'svg': {
         const data = canvasRef.current.exportAsSVG();
@@ -213,22 +447,38 @@ export default function Topology() {
         }
         break;
       }
-      case 'json': downloadJSON(mockGraph, `topology-${new Date().toISOString().slice(0, 10)}.json`); break;
-      case 'csv': downloadCSV(mockGraph, `topology-${new Date().toISOString().slice(0, 10)}.csv`); break;
+      case 'pdf': {
+        if (activeTab !== 'cytoscape') {
+          toast.info('PDF export is available for Cytoscape layout. Switch to that tab first.');
+          return;
+        }
+        canvasRef.current?.exportAsPDF?.();
+        break;
+      }
+      case 'json': downloadJSON(filteredGraph, `topology-${new Date().toISOString().slice(0, 10)}.json`); break;
+      case 'csv': downloadCSVSummary(filteredGraph); break;
     }
-    toast.success(`Exported as ${format.toUpperCase()}`);
-  }, []);
+    if (format !== 'drawio') toast.success(`Exported as ${format.toUpperCase()}`);
+  }, [activeTab, filteredGraph, clusterId, effectiveBaseUrl, isBackendConfigured]);
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    await new Promise(r => setTimeout(r, 1000));
+    if (isLiveData) {
+      await refetchTopology();
+    } else {
+      await new Promise(r => setTimeout(r, 1000));
+    }
     setIsRefreshing(false);
-    toast.success('Topology refreshed');
-  }, []);
+    toast.success(isLiveData ? 'Topology refreshed' : 'Topology refreshed');
+  }, [isLiveData, refetchTopology]);
 
-  // Keyboard: space to toggle pause
+  // Keyboard: space to toggle pause; Escape close menu/blast
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+        setBlastRadius(null);
+      }
       if (e.key === ' ' && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         setIsPaused(p => !p);
@@ -237,6 +487,18 @@ export default function Topology() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, []);
+
+  const contextMenuActions = [
+    { id: 'copy-name', label: 'Copy Resource Name', icon: Copy },
+    { id: 'view-logs', label: 'View Logs', icon: ScrollText },
+    { id: 'view-yaml', label: 'View Full YAML', icon: FileText },
+    { id: 'view-metrics', label: 'Show Metrics', icon: Activity },
+    { id: 'dependencies', label: 'Inspect Dependencies', icon: Network },
+    { id: 'blast-radius', label: 'Compute Blast Radius', icon: Bomb },
+    { id: 'user-journey', label: 'Trace User Journey', icon: Route },
+    { id: 'edit', label: 'Edit Resource', icon: Edit },
+    { id: 'delete', label: 'Delete', icon: Trash2, danger: true },
+  ];
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col h-[calc(100vh-4rem)] gap-3">
@@ -249,7 +511,8 @@ export default function Topology() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Cluster Topology</h1>
             <p className="text-sm text-muted-foreground">
-              {activeCluster?.name || 'docker-desktop'} • {mockGraph.nodes.length} resources • ELK Layered
+              {activeCluster?.name || 'docker-desktop'} • {filteredGraph.nodes.length} resources • ELK Layered
+              {topologyLoading && ' • Loading…'}
             </p>
           </div>
         </div>
@@ -316,7 +579,7 @@ export default function Topology() {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3 flex-shrink-0">
         {/* Namespace selector */}
-        <Select value={selectedNamespace} onValueChange={setSelectedNamespace}>
+        <Select value={selectedNamespace} onValueChange={handleNamespaceChange}>
           <SelectTrigger className="w-[180px] h-9">
             <SelectValue placeholder="All Namespaces" />
           </SelectTrigger>
@@ -328,16 +591,62 @@ export default function Topology() {
           </SelectContent>
         </Select>
 
-        {/* Search */}
-        <div className="relative flex-1 max-w-xs">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        {/* Node selector — show resources on selected node only */}
+        <Select value={selectedNodeFilter} onValueChange={handleNodeChange}>
+          <SelectTrigger className="w-[180px] h-9">
+            <SelectValue placeholder="All Nodes" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Nodes</SelectItem>
+            {availableNodes.map(n => (
+              <SelectItem key={n.id} value={n.id}>{n.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* Search + jump between matches */}
+        <div className="relative flex-1 max-w-sm flex items-center gap-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           <Input
             type="search"
             placeholder="Search resources..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 h-9"
+            className="pl-9 pr-8 h-9"
           />
+          {searchMatchIds.length > 0 && (
+            <div className="absolute right-1 flex items-center gap-0.5 bg-muted/80 rounded px-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                onClick={() => {
+                  const next = searchMatchIndex <= 0 ? searchMatchIds.length - 1 : searchMatchIndex - 1;
+                  setSearchMatchIndex(next);
+                  const node = filteredGraph.nodes.find(n => n.id === searchMatchIds[next]);
+                  if (node) setSelectedNode(node);
+                }}
+              >
+                <ChevronUp className="h-3.5 w-3.5" />
+              </Button>
+              <span className="text-[10px] font-medium text-muted-foreground min-w-[2.5rem] text-center">
+                {searchMatchIndex + 1}/{searchMatchIds.length}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                onClick={() => {
+                  const next = searchMatchIndex >= searchMatchIds.length - 1 ? 0 : searchMatchIndex + 1;
+                  setSearchMatchIndex(next);
+                  const node = filteredGraph.nodes.find(n => n.id === searchMatchIds[next]);
+                  if (node) setSelectedNode(node);
+                }}
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Heatmap */}
@@ -362,6 +671,44 @@ export default function Topology() {
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {/* Insight overlays */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant={activeOverlay ? 'default' : 'outline'} size="sm" className="gap-1.5 h-9">
+              <Layers className="h-4 w-4" />
+              {activeOverlay ? OVERLAY_LABELS[activeOverlay] : 'Overlays'}
+              <ChevronDown className="h-3 w-3" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setActiveOverlay(null)}>
+              Off
+            </DropdownMenuItem>
+            {(['health', 'cost', 'security', 'performance', 'dependency', 'traffic'] as OverlayType[]).map((type) => (
+              <DropdownMenuItem key={type} onClick={() => setActiveOverlay(type)}>
+                {OVERLAY_LABELS[type]}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* Snap to grid (Cytoscape only) */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={snapToGrid ? 'default' : 'outline'}
+              size="icon"
+              className="h-9 w-9"
+              onClick={() => setSnapToGrid((v) => !v)}
+            >
+              <Grid3X3 className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>Snap nodes to grid when dragging (Cytoscape)</p>
+          </TooltipContent>
+        </Tooltip>
+
         {/* Export */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -375,6 +722,12 @@ export default function Topology() {
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => handleExport('png')}>
               <FileImage className="h-4 w-4 mr-2" /> PNG (High DPI)
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleExport('pdf')}>
+              <FileText className="h-4 w-4 mr-2" /> PDF (Print)
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleExport('drawio')}>
+              <ExternalLink className="h-4 w-4 mr-2" /> Open in draw.io
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => handleExport('json')}>
@@ -400,11 +753,10 @@ export default function Topology() {
             <button
               key={rt.kind}
               onClick={() => handleResourceToggle(rt.kind)}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all border ${
-                active
-                  ? 'border-transparent text-white shadow-sm'
-                  : 'border-border text-muted-foreground bg-background hover:bg-muted'
-              }`}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all border ${active
+                ? 'border-transparent text-white shadow-sm'
+                : 'border-border text-muted-foreground bg-background hover:bg-muted'
+                }`}
               style={active ? { backgroundColor: rt.color } : undefined}
             >
               <span className="w-2 h-2 rounded-full" style={{ backgroundColor: rt.color }} />
@@ -413,6 +765,41 @@ export default function Topology() {
           );
         })}
       </div>
+
+      {/* Data source banner + Perf test (Task 9.1–9.3) */}
+      {(!isLiveData || perfTestNodes != null) && !topologyLoading && (
+        <Alert className="flex-shrink-0 border-amber-500/30 bg-amber-500/5">
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            <span>
+              {perfTestNodes != null
+                ? `Performance test graph: ${perfTestNodes.toLocaleString()} nodes (check console for load/overlay/export timing)`
+                : 'Using demo data. Connect backend for live cluster topology.'}
+            </span>
+            <Select
+              value={perfTestNodes != null ? String(perfTestNodes) : 'live'}
+              onValueChange={(v) => setPerfTestNodes(v === 'live' ? null : parseInt(v, 10))}
+            >
+              <SelectTrigger className="w-[140px] h-8">
+                <SelectValue placeholder="Graph" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="live">Live / Demo</SelectItem>
+                <SelectItem value="100">Perf: 100 nodes</SelectItem>
+                <SelectItem value="1000">Perf: 1,000 nodes</SelectItem>
+                <SelectItem value="5000">Perf: 5,000 nodes</SelectItem>
+                <SelectItem value="10000">Perf: 10,000 nodes</SelectItem>
+              </SelectContent>
+            </Select>
+          </AlertDescription>
+        </Alert>
+      )}
+      {topologyError && (
+        <Alert variant="destructive" className="flex-shrink-0">
+          <AlertDescription>
+            Could not load topology: {topologyError.message}. Showing demo data.
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Traffic mode info banner */}
       {topologyMode === 'traffic' && (
@@ -426,30 +813,59 @@ export default function Topology() {
 
       {/* Canvas with Tabs */}
       <div className="flex-1 relative min-h-0">
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'cytoscape' | 'd3-force' | 'd3-hierarchical')} className="h-full flex flex-col">
-          <TabsList className="mb-2 flex-shrink-0">
-            <TabsTrigger value="cytoscape">Cytoscape Layout</TabsTrigger>
-            <TabsTrigger value="d3-force">D3.js Force-Directed</TabsTrigger>
-            <TabsTrigger value="d3-hierarchical">D3.js Standard</TabsTrigger>
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'cytoscape' | 'd3-force' | 'enterprise')} className="h-full flex flex-col">
+          <TabsList className="mb-2 flex-shrink-0" data-testid="topology-tabs">
+            <TabsTrigger value="agt" data-testid="topology-tab-agt">AGT Topology</TabsTrigger>
+            <TabsTrigger value="cytoscape" data-testid="topology-tab-cytoscape">Cytoscape Layout</TabsTrigger>
+            <TabsTrigger value="enterprise" data-testid="topology-tab-enterprise">Enterprise View</TabsTrigger>
+            <TabsTrigger value="d3-force" data-testid="topology-tab-d3">D3.js Force-Directed</TabsTrigger>
           </TabsList>
-          
+
+          <TabsContent value="agt" className="flex-1 relative min-h-0 mt-0 overflow-auto" data-testid="topology-content-agt">
+            {activeTab === 'agt' && (
+              <TopologyViewer
+                graph={nodeFilteredGraph}
+                showControls={true}
+                heatMapMode={heatMapMode}
+                trafficFlowEnabled={topologyMode === 'traffic'}
+                onNodeSelect={(nodeId) => {
+                  if (!nodeId) {
+                    setSelectedNode(null);
+                    return;
+                  }
+                  const node = nodeFilteredGraph.nodes.find((n) => n.id === nodeId);
+                  setSelectedNode(node ?? null);
+                }}
+                className="h-full w-full"
+              />
+            )}
+          </TabsContent>
+
           <TabsContent value="cytoscape" className="flex-1 relative min-h-0 mt-0">
-            <TopologyCanvas
-              ref={canvasRef}
-              graph={mockGraph}
-              selectedResources={selectedResources}
-              selectedRelationships={selectedRelationships}
-              selectedHealth={selectedHealth}
-              searchQuery={searchQuery}
-              abstractionLevel={abstractionLevel}
-              namespace={selectedNamespace}
-              isPaused={isPaused}
-              heatMapMode={heatMapMode}
-              trafficFlowEnabled={topologyMode === 'traffic'}
-              onNodeSelect={setSelectedNode}
-              onNodeDoubleClick={handleNodeDoubleClick}
-              className="h-full"
-            />
+            {activeTab === 'cytoscape' && (
+              <TopologyCanvas
+                ref={canvasRef}
+                graph={filteredGraph}
+                selectedResources={selectedResources}
+                selectedRelationships={selectedRelationships}
+                selectedHealth={selectedHealth}
+                searchQuery={searchQuery}
+                abstractionLevel={abstractionLevel}
+                namespace={selectedNamespace}
+                centeredNodeId={centeredNodeIdForCanvas}
+                snapToGrid={snapToGrid}
+                isPaused={isPaused}
+                heatMapMode={heatMapMode}
+                trafficFlowEnabled={topologyMode === 'traffic'}
+                onNodeSelect={setSelectedNode}
+                onNodeDoubleClick={handleNodeDoubleClick}
+                onContextMenu={handleContextMenu}
+                onNodeHover={handleNodeHover}
+                blastRadius={blastRadius}
+                overlayData={overlayDataForCanvas}
+                className="h-full"
+              />
+            )}
 
             {/* Legend Bar - Matching Reference Image Style */}
             <div className="absolute bottom-4 left-4 z-50 bg-white border border-gray-200 rounded-lg px-6 py-3 shadow-lg">
@@ -465,7 +881,7 @@ export default function Topology() {
                   { kind: 'Endpoints', label: 'Endpoints', color: NODE_COLORS.Endpoints.bg },
                 ].map(rt => (
                   <div key={rt.kind} className="flex items-center gap-2">
-                    <div 
+                    <div
                       className="w-3 h-3 rounded-full shrink-0"
                       style={{ backgroundColor: rt.color }}
                     />
@@ -480,7 +896,7 @@ export default function Topology() {
             {/* Node count indicator */}
             <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm border border-gray-200/80 rounded-lg px-3 py-1.5 shadow-md">
               <span className="text-xs font-semibold text-gray-700">
-                {mockGraph.nodes.length} nodes
+                {filteredGraph.nodes.length} nodes
               </span>
             </div>
 
@@ -521,56 +937,153 @@ export default function Topology() {
               </Tooltip>
             </div>
           </TabsContent>
-          
-          <TabsContent value="d3-force" className="flex-1 relative min-h-0 mt-0">
-            <D3TopologyCanvas
-              nodes={convertToD3Topology(mockGraph).nodes}
-              edges={convertToD3Topology(mockGraph).edges}
-              onNodeClick={(node) => {
-                // Navigate to resource detail page
-                const parts = node.id.split('/');
-                if (parts.length >= 3) {
-                  const [kind, namespace, name] = parts;
-                  const routeMap: Record<string, string> = {
-                    Pod: 'pods', Deployment: 'deployments', ReplicaSet: 'replicasets',
-                    StatefulSet: 'statefulsets', DaemonSet: 'daemonsets', Service: 'services',
-                    ConfigMap: 'configmaps', Secret: 'secrets', Ingress: 'ingresses',
-                    Node: 'nodes', Namespace: 'namespaces',
-                  };
-                  const route = routeMap[kind] || kind.toLowerCase() + 's';
-                  navigate(`/clusters/${activeCluster?.id || 'default'}/${route}/${namespace}/${name}`);
-                }
-              }}
-              className="h-full"
-            />
+
+          <TabsContent value="enterprise" className="flex-1 relative min-h-0 mt-0" data-testid="topology-content-enterprise">
+            {activeTab === 'enterprise' && (
+              <TopologyViewer
+                graph={filteredGraph}
+                showControls={true}
+                heatMapMode={heatMapMode}
+                trafficFlowEnabled={topologyMode === 'traffic'}
+                onNodeSelect={(nodeId) => {
+                  if (!nodeId) {
+                    setSelectedNode(null);
+                    return;
+                  }
+                  const node = filteredGraph.nodes.find((n) => n.id === nodeId);
+                  setSelectedNode(node ?? null);
+                }}
+                className="h-full w-full"
+              />
+            )}
           </TabsContent>
-          
-          <TabsContent value="d3-hierarchical" className="flex-1 relative min-h-0 mt-0">
-            <D3HierarchicalTopologyCanvas
-              nodes={convertToD3Topology(mockGraph).nodes}
-              edges={convertToD3Topology(mockGraph).edges}
-              onNodeClick={(node) => {
-                // Navigate to resource detail page
-                const parts = node.id.split('/');
-                if (parts.length >= 3) {
-                  const [kind, namespace, name] = parts;
-                  const routeMap: Record<string, string> = {
-                    Pod: 'pods', Deployment: 'deployments', ReplicaSet: 'replicasets',
-                    StatefulSet: 'statefulsets', DaemonSet: 'daemonsets', Service: 'services',
-                    ConfigMap: 'configmaps', Secret: 'secrets', Ingress: 'ingresses',
-                    Node: 'nodes', Namespace: 'namespaces',
-                  };
-                  const route = routeMap[kind] || kind.toLowerCase() + 's';
-                  navigate(`/clusters/${activeCluster?.id || 'default'}/${route}/${namespace}/${name}`);
-                }
-              }}
-              className="h-full"
-            />
+
+          <TabsContent value="d3-force" className="flex-1 relative min-h-0 mt-0">
+            {activeTab === 'd3-force' && (
+              <D3TopologyCanvas
+                nodes={d3Topology.nodes}
+                edges={d3Topology.edges}
+                onNodeClick={(node) => {
+                  const path = getDetailPathForNode({ id: node.id, name: node.name, namespace: node.namespace });
+                  if (path) navigate(path);
+                }}
+                className="h-full"
+              />
+            )}
           </TabsContent>
         </Tabs>
 
-        {/* Selected Node Panel - Only show for Cytoscape tab */}
-        {activeTab === 'cytoscape' && selectedNode && (
+        {/* Node hover tooltip */}
+        {activeTab === 'cytoscape' && hoveredNode && createPortal(
+          <div
+            className="fixed z-[9998] max-w-[280px] rounded-lg border border-border bg-background/95 backdrop-blur-sm shadow-xl p-3 text-sm pointer-events-none"
+            style={{
+              left: Math.min(hoveredNode.position.x + 12, window.innerWidth - 300),
+              top: hoveredNode.position.y + 12,
+            }}
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <div
+                className="w-8 h-8 rounded-md flex items-center justify-center text-white text-xs font-bold shrink-0"
+                style={{ backgroundColor: getKindColor(hoveredNode.node.kind) }}
+              >
+                {hoveredNode.node.kind}
+              </div>
+              <div className="min-w-0">
+                <p className="font-semibold truncate">{hoveredNode.node.name}</p>
+                <p className="text-xs text-muted-foreground">{hoveredNode.node.kind}{hoveredNode.node.namespace ? ` • ${hoveredNode.node.namespace}` : ''}</p>
+              </div>
+            </div>
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between gap-2">
+                <span className="text-muted-foreground">Status</span>
+                <Badge variant={hoveredNode.node.computed.health === 'healthy' ? 'default' : hoveredNode.node.computed.health === 'warning' ? 'secondary' : 'destructive'} className="text-[10px] h-5">
+                  {hoveredNode.node.computed.health}
+                </Badge>
+              </div>
+              {hoveredNode.node.computed.restartCount != null && (
+                <div className="flex justify-between"><span className="text-muted-foreground">Restarts</span><span>{hoveredNode.node.computed.restartCount}</span></div>
+              )}
+              {hoveredNode.node.computed.cpuUsage != null && (
+                <div className="flex justify-between"><span className="text-muted-foreground">CPU</span><span>{hoveredNode.node.computed.cpuUsage}%</span></div>
+              )}
+              {hoveredNode.node.computed.replicas && (
+                <div className="flex justify-between"><span className="text-muted-foreground">Replicas</span><span>{hoveredNode.node.computed.replicas.ready}/{hoveredNode.node.computed.replicas.desired}</span></div>
+              )}
+            </div>
+            <div className="mt-2 pt-2 border-t border-border flex gap-1 flex-wrap pointer-events-auto">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7"
+                onClick={() => {
+                  const routeMap: Record<string, string> = { Pod: 'pods', Deployment: 'deployments', StatefulSet: 'statefulsets', DaemonSet: 'daemonsets', Job: 'jobs', CronJob: 'cronjobs', ReplicaSet: 'replicasets' };
+                  const route = routeMap[hoveredNode.node.kind];
+                  if (route) navigate(`${hoveredNode.node.namespace ? `/${route}/${hoveredNode.node.namespace}/${hoveredNode.node.name}` : `/${route}/${hoveredNode.node.name}`}?tab=logs`);
+                  setHoveredNode(null);
+                }}
+              >
+                View Logs
+              </Button>
+              <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => { setSelectedNode(hoveredNode.node); setHoveredNode(null); }}>Inspect</Button>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Floating context menu */}
+        {contextMenu && createPortal(
+          <div
+            className="fixed z-[9999] min-w-[200px] py-1 rounded-lg border border-border bg-background shadow-xl"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            {contextMenuActions.map(({ id, label, icon: Icon, danger }) => (
+              <button
+                key={id}
+                type="button"
+                className={`w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted ${danger ? 'text-destructive' : ''}`}
+                onClick={() => handleContextMenuAction(id, contextMenu.nodeId)}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {label}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
+
+        {/* Blast radius panel */}
+        {activeTab === 'cytoscape' && blastRadius && (
+          <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="absolute top-4 left-4 w-72 z-10">
+            <Card className="p-4 bg-background/95 backdrop-blur-sm shadow-lg border-orange-500/30">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-semibold text-sm flex items-center gap-2">
+                  <Bomb className="h-4 w-4 text-orange-500" />
+                  Blast Radius
+                </h3>
+                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setBlastRadius(null)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {blastRadius.affectedNodes.size} resources affected
+                {filteredGraph.nodes.length > 0 && (
+                  <> ({Math.round((blastRadius.affectedNodes.size / filteredGraph.nodes.length) * 100)}% of visible graph)</>
+                )}
+              </p>
+              {blastRadius.suggestions && blastRadius.suggestions.length > 0 && (
+                <ul className="mt-2 text-xs text-muted-foreground list-disc list-inside">
+                  {blastRadius.suggestions.slice(0, 3).map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </motion.div>
+        )}
+
+        {/* Selected Node Panel - show for Cytoscape and Enterprise tabs */}
+        {(activeTab === 'cytoscape' || activeTab === 'enterprise') && selectedNode && (
           <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="absolute top-4 left-4 w-72">
             <Card className="p-4 bg-background/95 backdrop-blur-sm shadow-lg border-primary/30">
               <div className="flex items-center gap-3">
@@ -591,25 +1104,25 @@ export default function Topology() {
                 <div className="flex items-center gap-1.5">
                   <span className="text-muted-foreground">Status:</span>
                   <Badge variant={
-                    selectedNode.computed.health === 'healthy' ? 'default' :
-                    selectedNode.computed.health === 'warning' ? 'secondary' : 'destructive'
+                    selectedNode.computed?.health === 'healthy' ? 'default' :
+                      selectedNode.computed?.health === 'warning' ? 'secondary' : 'destructive'
                   } className="text-[10px] h-5">
-                    {selectedNode.computed.health}
+                    {selectedNode.computed?.health ?? '—'}
                   </Badge>
                 </div>
-                {selectedNode.computed.restartCount !== undefined && (
+                {selectedNode.computed?.restartCount !== undefined && (
                   <div className="flex items-center gap-1.5">
                     <span className="text-muted-foreground">Restarts:</span>
                     <span className="font-medium">{selectedNode.computed.restartCount}</span>
                   </div>
                 )}
-                {selectedNode.computed.cpuUsage !== undefined && (
+                {selectedNode.computed?.cpuUsage !== undefined && (
                   <div className="flex items-center gap-1.5">
                     <span className="text-muted-foreground">CPU:</span>
                     <span className="font-medium">{selectedNode.computed.cpuUsage}%</span>
                   </div>
                 )}
-                {selectedNode.computed.replicas && (
+                {selectedNode.computed?.replicas && (
                   <div className="flex items-center gap-1.5">
                     <span className="text-muted-foreground">Replicas:</span>
                     <span className="font-medium">{selectedNode.computed.replicas.ready}/{selectedNode.computed.replicas.desired}</span>

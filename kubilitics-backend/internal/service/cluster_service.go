@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/time/rate"
 	"github.com/kubilitics/kubilitics-backend/internal/config"
 	"github.com/kubilitics/kubilitics-backend/internal/k8s"
 	"github.com/kubilitics/kubilitics-backend/internal/models"
 	"github.com/kubilitics/kubilitics-backend/internal/repository"
+	"golang.org/x/time/rate"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -31,6 +32,10 @@ type ClusterService interface {
 	LoadClustersFromRepo(ctx context.Context) error
 	// GetClient returns the K8s client for a cluster (for internal use by topology, resources, etc.).
 	GetClient(id string) (*k8s.Client, error)
+	// HasMetalLB returns true if MetalLB CRDs (ipaddresspools, bgppeers) are installed in the cluster.
+	HasMetalLB(ctx context.Context, id string) (bool, error)
+	// DiscoverClusters scans the configured kubeconfig for contexts not yet in the repository.
+	DiscoverClusters(ctx context.Context) ([]*models.Cluster, error)
 }
 
 type clusterService struct {
@@ -74,8 +79,17 @@ func (s *clusterService) ListClusters(ctx context.Context) ([]*models.Cluster, e
 	if err != nil {
 		return nil, err
 	}
+
+	// Identify active context from local kubeconfig to highlight in UI
+	home, _ := os.UserHomeDir()
+	currentContext := ""
+	if home != "" {
+		_, currentContext, _ = k8s.GetKubeconfigContexts(filepath.Join(home, ".kube", "config"))
+	}
+
 	// Enrich with live client status where available; try reconnect when client missing
 	for _, c := range clusters {
+		c.IsCurrent = (c.Context == currentContext)
 		if client, ok := s.clients[c.ID]; ok {
 			info, err := client.GetClusterInfo(ctx)
 			if err != nil {
@@ -85,8 +99,13 @@ func (s *clusterService) ListClusters(ctx context.Context) ([]*models.Cluster, e
 			}
 			c.ServerURL = info["server_url"].(string)
 			c.Version = info["version"].(string)
+			c.NodeCount = info["node_count"].(int)
+			c.NamespaceCount = info["namespace_count"].(int)
 			c.Status = "connected"
 			c.LastConnected = time.Now()
+			if p, err := client.DetectProvider(ctx); err == nil && p != "" {
+				c.Provider = p
+			}
 			_ = s.repo.Update(ctx, c)
 		} else {
 			// No in-memory client (e.g. after restart or temp kubeconfig gone); try reconnect with stored or default kubeconfig
@@ -96,9 +115,14 @@ func (s *clusterService) ListClusters(ctx context.Context) ([]*models.Cluster, e
 					if info != nil {
 						c.ServerURL = info["server_url"].(string)
 						c.Version = info["version"].(string)
+						c.NodeCount = info["node_count"].(int)
+						c.NamespaceCount = info["namespace_count"].(int)
 					}
 					c.Status = "connected"
 					c.LastConnected = time.Now()
+					if p, err := client.DetectProvider(ctx); err == nil && p != "" {
+						c.Provider = p
+					}
 					_ = s.repo.Update(ctx, c)
 				}
 			} else {
@@ -119,8 +143,13 @@ func (s *clusterService) GetCluster(ctx context.Context, id string) (*models.Clu
 		if err == nil {
 			c.ServerURL = info["server_url"].(string)
 			c.Version = info["version"].(string)
+			c.NodeCount = info["node_count"].(int)
+			c.NamespaceCount = info["namespace_count"].(int)
 			c.Status = "connected"
 			c.LastConnected = time.Now()
+			if p, err := client.DetectProvider(ctx); err == nil && p != "" {
+				c.Provider = p
+			}
 			_ = s.repo.Update(ctx, c)
 		} else {
 			c.Status = clusterStatusFromError(err)
@@ -133,9 +162,14 @@ func (s *clusterService) GetCluster(ctx context.Context, id string) (*models.Clu
 				if info != nil {
 					c.ServerURL = info["server_url"].(string)
 					c.Version = info["version"].(string)
+					c.NodeCount = info["node_count"].(int)
+					c.NamespaceCount = info["namespace_count"].(int)
 				}
 				c.Status = "connected"
 				c.LastConnected = time.Now()
+				if p, err := client.DetectProvider(ctx); err == nil && p != "" {
+					c.Provider = p
+				}
 				_ = s.repo.Update(ctx, c)
 			}
 		} else {
@@ -174,6 +208,10 @@ func (s *clusterService) AddCluster(ctx context.Context, kubeconfigPath, context
 		return nil, err
 	}
 
+	provider := k8s.ProviderOnPrem
+	if p, err := client.DetectProvider(ctx); err == nil && p != "" {
+		provider = p
+	}
 	cluster := &models.Cluster{
 		ID:             uuid.New().String(),
 		Name:           contextName,
@@ -182,6 +220,7 @@ func (s *clusterService) AddCluster(ctx context.Context, kubeconfigPath, context
 		ServerURL:      info["server_url"].(string),
 		Version:        info["version"].(string),
 		Status:         "connected",
+		Provider:       provider,
 		LastConnected:  time.Now(),
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -248,6 +287,24 @@ func (s *clusterService) GetClient(id string) (*k8s.Client, error) {
 	return client, nil
 }
 
+// HasMetalLB returns true if MetalLB CRDs (ipaddresspools.metallb.io, bgppeers.metallb.io) are installed.
+// Tries to list ipaddresspools with limit=1; 404 means MetalLB is not installed.
+func (s *clusterService) HasMetalLB(ctx context.Context, id string) (bool, error) {
+	client, err := s.GetClient(id)
+	if err != nil {
+		return false, err
+	}
+	opts := metav1.ListOptions{Limit: 1}
+	_, err = client.ListResources(ctx, "ipaddresspools", "", opts)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // LoadClustersFromRepo restores K8s clients from persisted clusters (call on startup).
 // Per-cluster failures do not abort the process; each cluster gets status disconnected/error.
 func (s *clusterService) LoadClustersFromRepo(ctx context.Context) error {
@@ -281,6 +338,9 @@ func (s *clusterService) LoadClustersFromRepo(ctx context.Context) error {
 		s.clients[c.ID] = client
 		c.Status = "connected"
 		c.LastConnected = time.Now()
+		if p, err := client.DetectProvider(ctx); err == nil && p != "" {
+			c.Provider = p
+		}
 		_ = s.repo.Update(ctx, c)
 	}
 	return nil
@@ -321,6 +381,58 @@ func (s *clusterService) tryReconnectCluster(ctx context.Context, c *models.Clus
 	}
 	s.clients[c.ID] = client
 	return true
+}
+
+// DiscoverClusters scans the configured kubeconfig (or default ~/.kube/config) for contexts not yet in the repository.
+func (s *clusterService) DiscoverClusters(ctx context.Context) ([]*models.Cluster, error) {
+	kubeconfigPath := ""
+	// Try to get path from environment or default
+	kubeconfigPath = os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			kubeconfigPath = filepath.Join(home, ".kube", "config")
+		}
+	}
+
+	if kubeconfigPath == "" {
+		return nil, fmt.Errorf("could not determine kubeconfig path")
+	}
+
+	if _, err := os.Stat(kubeconfigPath); err != nil {
+		return nil, fmt.Errorf("kubeconfig not found at %s", kubeconfigPath)
+	}
+
+	contexts, currentContext, err := k8s.GetKubeconfigContexts(kubeconfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list kubeconfig contexts: %w", err)
+	}
+
+	existingClusters, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list existing clusters: %w", err)
+	}
+
+	existingContexts := make(map[string]bool)
+	for _, c := range existingClusters {
+		existingContexts[c.Context] = true
+	}
+
+	var discovered []*models.Cluster
+	for _, contextName := range contexts {
+		if !existingContexts[contextName] {
+			// Return a "potential" cluster model (no ID yet, as it's not persisted)
+			discovered = append(discovered, &models.Cluster{
+				Name:           contextName,
+				Context:        contextName,
+				KubeconfigPath: kubeconfigPath,
+				Status:         "detected",
+				IsCurrent:      contextName == currentContext,
+			})
+		}
+	}
+
+	return discovered, nil
 }
 
 // clusterStatusFromError maps K8s/context errors to status: "disconnected" for connection/context errors, "error" for 403/5xx etc.

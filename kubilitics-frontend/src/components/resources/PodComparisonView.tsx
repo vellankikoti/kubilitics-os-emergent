@@ -18,6 +18,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { NamespaceBadge } from '@/components/list';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -29,6 +30,7 @@ import { toast } from 'sonner';
 import { getResource, getPodMetrics, getPodLogsUrl } from '@/services/backendApiClient';
 import { resourceToYaml } from '@/hooks/useK8sResourceDetail';
 import { parseRawLogs, levelColors, type LogEntry } from '@/lib/logParser';
+import { useBackendConfigStore } from '@/stores/backendConfigStore';
 
 interface PodForComparison {
   name: string;
@@ -43,6 +45,8 @@ interface PodForComparison {
   metricsLoading?: boolean;
   logEntries: LogEntry[];
   logsLoading?: boolean;
+  /** True when cluster is not connected so YAML/metrics/logs are empty */
+  dataUnavailable?: boolean;
 }
 
 interface PodComparisonViewProps {
@@ -54,49 +58,16 @@ interface PodComparisonViewProps {
   isConnected?: boolean;
 }
 
-// Mock YAML generator
-function generateMockYaml(name: string, namespace: string): string {
-  return `apiVersion: v1
-kind: Pod
-metadata:
-  name: ${name}
-  namespace: ${namespace}
-  labels:
-    app: ${name.split('-')[0]}
-spec:
-  containers:
-  - name: main
-    image: nginx:latest
-    ports:
-    - containerPort: 80
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-      limits:
-        cpu: 500m
-        memory: 512Mi
-`;
-}
+const UNAVAILABLE_METRICS = {
+  cpu: { data: [] as number[], value: '—' },
+  memory: { data: [] as number[], value: '—' },
+};
 
-function generateMockLogEntries(name: string): LogEntry[] {
-  const now = new Date().toISOString();
-  return [
-    { timestamp: now, level: 'info', message: `Starting ${name}...` },
-    { timestamp: now, level: 'info', message: 'Container initialized' },
-    { timestamp: now, level: 'info', message: 'Health check passed' },
-    { timestamp: now, level: 'debug', message: 'Processing request batch' },
-    { timestamp: now, level: 'info', message: 'Connection established' },
-    { timestamp: now, level: 'warn', message: 'High memory usage detected' },
-    { timestamp: now, level: 'info', message: 'Cache refreshed' },
-    { timestamp: now, level: 'debug', message: 'Metrics collected' },
-  ];
-}
-
+/** Build sparkline data from current metric value (backend returns point-in-time; no history). Flat line = current value. */
 function valueToSparklineData(value: string): number[] {
   const num = parseFloat(value.replace(/[^0-9.]/g, ''));
   if (Number.isNaN(num)) return Array.from({ length: 20 }, () => 0);
-  return Array.from({ length: 20 }, () => num * (0.9 + Math.random() * 0.2));
+  return Array.from({ length: 20 }, () => num);
 }
 
 interface YamlDiffViewProps {
@@ -170,6 +141,15 @@ function YamlDiffView({
       <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
         <Loader2 className="h-8 w-8 animate-spin mb-4" />
         <p>Loading YAML for diff...</p>
+      </div>
+    );
+  }
+
+  if (!leftYaml && !rightYaml) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground text-sm text-center px-4">
+        <FileText className="h-8 w-8 mb-4 opacity-50" />
+        <p>Connect cluster to view YAML and compare.</p>
       </div>
     );
   }
@@ -259,7 +239,9 @@ export function PodComparisonView({
   /** When exactly 2 pods: 'side-by-side' | 'diff' */
   const [yamlViewMode, setYamlViewMode] = useState<'side-by-side' | 'diff'>('side-by-side');
 
-  const canFetch = Boolean(isConnected && clusterId && backendBaseUrl);
+  const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
+  // backendBaseUrl can be '' in dev proxy mode; use isBackendConfigured for fetch eligibility
+  const canFetch = Boolean(isConnected && clusterId && isBackendConfigured());
 
   const resourceQueries = useQueries({
     queries: selectedPods.map(podKey => {
@@ -316,38 +298,27 @@ export function PodComparisonView({
       const logText = logsQueries[i]?.data as string | undefined;
       const logLoading = logsQueries[i]?.isLoading;
 
-      const cpuVal = m?.CPU ?? '-';
-      const memVal = m?.Memory ?? '-';
-      const mockMetrics = {
-        cpu: {
-          data: Array.from({ length: 20 }, () => Math.random() * 80 + 10),
-          value: `${Math.round(Math.random() * 80 + 10)}m`,
-        },
-        memory: {
-          data: Array.from({ length: 20 }, () => Math.random() * 300 + 50),
-          value: `${Math.round(Math.random() * 300 + 50)}Mi`,
-        },
-      };
+      const cpuVal = m?.CPU ?? '—';
+      const memVal = m?.Memory ?? '—';
+      const metrics =
+        canFetch && m
+          ? {
+              cpu: { data: valueToSparklineData(cpuVal), value: cpuVal },
+              memory: { data: valueToSparklineData(memVal), value: memVal },
+            }
+          : UNAVAILABLE_METRICS;
 
       return {
         name: name || '',
         namespace: namespace || '',
         status: pod?.status || 'Unknown',
-        yaml: canFetch && res ? res : generateMockYaml(name || '', namespace || ''),
+        yaml: canFetch && res ? res : '',
         yamlLoading: canFetch && resLoading,
-        metrics:
-          canFetch && m
-            ? {
-                cpu: { data: valueToSparklineData(cpuVal), value: cpuVal },
-                memory: { data: valueToSparklineData(memVal), value: memVal },
-              }
-            : mockMetrics,
+        metrics,
         metricsLoading: canFetch && mLoading,
-        logEntries:
-          canFetch && logText != null
-            ? parseRawLogs(logText)
-            : generateMockLogEntries(name || ''),
+        logEntries: canFetch && logText != null ? parseRawLogs(logText) : [],
         logsLoading: canFetch && logLoading,
+        dataUnavailable: !canFetch,
       };
     });
   }, [
@@ -576,7 +547,7 @@ export function PodComparisonView({
                             <CardHeader className="py-3">
                               <div className="flex items-center justify-between">
                                 <CardTitle className="text-sm font-medium truncate">{pod.name}</CardTitle>
-                                <Badge variant="outline" className="text-xs">{pod.namespace}</Badge>
+                                <NamespaceBadge namespace={pod.namespace} className="text-xs" />
                               </div>
                             </CardHeader>
                             <CardContent className="p-0">
@@ -584,6 +555,11 @@ export function PodComparisonView({
                                 {pod.yamlLoading ? (
                                   <div className="flex items-center justify-center h-full text-muted-foreground">
                                     <Loader2 className="h-6 w-6 animate-spin" />
+                                  </div>
+                                ) : pod.dataUnavailable || !pod.yaml ? (
+                                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm px-4 text-center">
+                                    <FileText className="h-8 w-8 mb-2 opacity-50" />
+                                    Connect cluster to view YAML
                                   </div>
                                 ) : (
                                   <YamlViewer
@@ -635,7 +611,11 @@ export function PodComparisonView({
                                     <Badge variant="secondary">{pod.metrics.cpu.value}</Badge>
                                   )}
                                 </div>
-                                {!pod.metricsLoading && (
+                                {pod.dataUnavailable && !pod.metricsLoading ? (
+                                  <div className="flex items-center justify-center h-10 text-muted-foreground text-xs">
+                                    Connect cluster to view metrics
+                                  </div>
+                                ) : !pod.metricsLoading && pod.metrics.cpu.data.length > 0 ? (
                                   <Sparkline 
                                     data={pod.metrics.cpu.data} 
                                     width={200} 
@@ -643,7 +623,7 @@ export function PodComparisonView({
                                     color="hsl(var(--primary))"
                                     showLive
                                   />
-                                )}
+                                ) : null}
                               </div>
                             ))}
                           </div>
@@ -672,7 +652,11 @@ export function PodComparisonView({
                                     <Badge variant="secondary">{pod.metrics.memory.value}</Badge>
                                   )}
                                 </div>
-                                {!pod.metricsLoading && (
+                                {pod.dataUnavailable && !pod.metricsLoading ? (
+                                  <div className="flex items-center justify-center h-10 text-muted-foreground text-xs">
+                                    Connect cluster to view metrics
+                                  </div>
+                                ) : !pod.metricsLoading && pod.metrics.memory.data.length > 0 ? (
                                   <Sparkline 
                                     data={pod.metrics.memory.data} 
                                     width={200} 
@@ -680,7 +664,7 @@ export function PodComparisonView({
                                     color="hsl(142, 76%, 36%)"
                                     showLive
                                   />
-                                )}
+                                ) : null}
                               </div>
                             ))}
                           </div>
@@ -712,7 +696,7 @@ export function PodComparisonView({
                           <CardHeader className="py-3">
                             <div className="flex items-center justify-between">
                               <CardTitle className="text-sm font-medium truncate">{pod.name}</CardTitle>
-                              <Badge variant="outline" className="text-xs">{pod.namespace}</Badge>
+                              <NamespaceBadge namespace={pod.namespace} className="text-xs" />
                             </div>
                           </CardHeader>
                           <CardContent className="p-0">
@@ -721,6 +705,11 @@ export function PodComparisonView({
                                 {pod.logsLoading ? (
                                   <div className="flex items-center justify-center py-8 text-muted-foreground">
                                     <Loader2 className="h-5 w-5 animate-spin" />
+                                  </div>
+                                ) : pod.dataUnavailable || pod.logEntries.length === 0 ? (
+                                  <div className="flex flex-col items-center justify-center py-8 text-muted-foreground text-sm px-4 text-center">
+                                    <ScrollText className="h-8 w-8 mb-2 opacity-50" />
+                                    {pod.dataUnavailable ? 'Connect cluster to view logs' : 'No log entries'}
                                   </div>
                                 ) : (
                                   pod.logEntries.map((entry, i) => (

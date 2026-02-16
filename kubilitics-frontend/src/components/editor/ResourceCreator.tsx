@@ -670,6 +670,23 @@ metadata:
 provisioner: kubernetes.io/no-provisioner
 volumeBindingMode: WaitForFirstConsumer`,
 
+  VolumeSnapshot: `apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: ''
+  namespace: default
+spec:
+  source:
+    persistentVolumeClaimName: ''
+  volumeSnapshotClassName: ''`,
+
+  VolumeSnapshotClass: `apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: ''
+driver: ''
+deletionPolicy: Delete`,
+
   ResourceQuota: `apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -884,4 +901,16 @@ webhooks:
     admissionReviewVersions: ["v1"]
     sideEffects: None
     failurePolicy: Fail`,
+
+  APIService: `apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: ''
+spec:
+  service:
+    namespace: ''
+    name: ''
+  group: ''
+  version: ''
+  insecureSkipTLSVerify: false`,
 };

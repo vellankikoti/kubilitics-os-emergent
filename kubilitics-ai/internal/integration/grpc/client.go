@@ -2,12 +2,16 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
@@ -26,29 +30,47 @@ const (
 	StateReconnecting ConnectionState = "RECONNECTING"
 )
 
+// reconnectPolicy defines reconnect backoff parameters.
+type reconnectPolicy struct {
+	initialDelay time.Duration
+	maxDelay     time.Duration
+	multiplier   float64
+	maxAttempts  int // 0 = unlimited
+}
+
+var defaultReconnectPolicy = reconnectPolicy{
+	initialDelay: 1 * time.Second,
+	maxDelay:     60 * time.Second,
+	multiplier:   2.0,
+	maxAttempts:  0,
+}
+
 // Client is the gRPC client for kubilitics-backend
 type Client struct {
-	config     *config.Config
-	conn       *grpc.ClientConn
-	client     pb.ClusterDataServiceClient
-	auditLog   audit.Logger
-	
+	config   *config.Config
+	conn     *grpc.ClientConn
+	client   pb.ClusterDataServiceClient
+	auditLog audit.Logger
+
 	// Connection state
-	mu              sync.RWMutex
-	state           ConnectionState
-	lastUpdate      time.Time
-	connectedAt     time.Time
-	reconnectCount  int
-	totalUpdates    int64
-	
+	mu             sync.RWMutex
+	state          ConnectionState
+	lastUpdate     time.Time
+	connectedAt    time.Time
+	reconnectCount int
+	totalUpdates   int64
+
+	// Reconnect policy
+	reconnect reconnectPolicy
+
 	// Channels
-	updatesChan     chan interface{}
-	stateChan       chan ConnectionState
-	stopChan        chan struct{}
-	
+	updatesChan chan interface{}
+	stateChan   chan ConnectionState
+	stopChan    chan struct{}
+
 	// Backpressure
-	backlogLimit    int
-	droppedUpdates  int64
+	backlogLimit        int
+	droppedUpdates      int64
 	backpressureHandler func(queueSize int, droppedCount int)
 }
 
@@ -62,12 +84,13 @@ func NewClient(cfg *config.Config, auditLog audit.Logger) (*Client, error) {
 	}
 	
 	return &Client{
-		config:       cfg,
-		auditLog:     auditLog,
-		state:        StateDisconnected,
-		updatesChan:  make(chan interface{}, 1000), // Buffer 1000 updates
-		stateChan:    make(chan ConnectionState, 10),
-		stopChan:     make(chan struct{}),
+		config:      cfg,
+		auditLog:    auditLog,
+		state:       StateDisconnected,
+		reconnect:   defaultReconnectPolicy,
+		updatesChan: make(chan interface{}, 1000),
+		stateChan:   make(chan ConnectionState, 10),
+		stopChan:    make(chan struct{}),
 		backlogLimit: 1000,
 	}, nil
 }
@@ -91,9 +114,16 @@ func (c *Client) Connect(ctx context.Context) error {
 		WithDescription(fmt.Sprintf("Connecting to backend at %s", c.config.Backend.Address)).
 		WithResult(audit.ResultPending))
 	
+	// Set up transport credentials (TLS or insecure)
+	transportCreds, err := c.buildTransportCredentials()
+	if err != nil {
+		c.setState(StateDisconnected)
+		return fmt.Errorf("failed to build transport credentials: %w", err)
+	}
+
 	// Set up connection options
 	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO: Add TLS support
+		grpc.WithTransportCredentials(transportCreds),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                60 * time.Second,
 			Timeout:             20 * time.Second,
@@ -396,11 +426,11 @@ func (c *Client) setState(state ConnectionState) {
 	}
 }
 
-// monitorConnection monitors the connection health
+// monitorConnection monitors the connection health and triggers reconnect on failure.
 func (c *Client) monitorConnection(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -411,14 +441,137 @@ func (c *Client) monitorConnection(ctx context.Context) {
 			c.mu.RLock()
 			conn := c.conn
 			c.mu.RUnlock()
-			
-			if conn != nil {
-				state := conn.GetState()
-				if state == connectivity.TransientFailure || state == connectivity.Shutdown {
-					c.auditLog.Log(ctx, audit.NewEvent(audit.EventInvestigationFailed).
-						WithDescription(fmt.Sprintf("Connection unhealthy: %v", state)))
-				}
+
+			if conn == nil {
+				continue
+			}
+
+			state := conn.GetState()
+			if state == connectivity.TransientFailure || state == connectivity.Shutdown {
+				c.auditLog.Log(ctx, audit.NewEvent(audit.EventInvestigationFailed).
+					WithDescription(fmt.Sprintf("Connection unhealthy: %v, triggering reconnect", state)))
+				go c.reconnectWithBackoff(ctx)
 			}
 		}
 	}
+}
+
+// reconnectWithBackoff attempts to reconnect using exponential backoff.
+func (c *Client) reconnectWithBackoff(ctx context.Context) {
+	c.mu.Lock()
+	if c.state == StateReconnecting || c.state == StateConnecting {
+		c.mu.Unlock()
+		return
+	}
+	c.setState(StateReconnecting)
+	c.mu.Unlock()
+
+	delay := c.reconnect.initialDelay
+	attempt := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.stopChan:
+			return
+		default:
+		}
+
+		if c.reconnect.maxAttempts > 0 && attempt >= c.reconnect.maxAttempts {
+			c.auditLog.Log(ctx, audit.NewEvent(audit.EventInvestigationFailed).
+				WithDescription(fmt.Sprintf("Reconnect: max attempts (%d) reached, giving up", c.reconnect.maxAttempts)))
+			c.setState(StateDisconnected)
+			return
+		}
+
+		attempt++
+		c.mu.Lock()
+		c.reconnectCount++
+		c.mu.Unlock()
+
+		c.auditLog.Log(ctx, audit.NewEvent(audit.EventServerStarted).
+			WithDescription(fmt.Sprintf("Reconnect attempt %d (delay: %v)", attempt, delay)))
+
+		// Close old connection
+		c.mu.Lock()
+		if c.conn != nil {
+			_ = c.conn.Close()
+			c.conn = nil
+			c.client = nil
+		}
+		c.mu.Unlock()
+
+		// Wait before retrying
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-c.stopChan:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+
+		// Try to reconnect
+		if err := c.Connect(ctx); err != nil {
+			c.auditLog.Log(ctx, audit.NewEvent(audit.EventInvestigationFailed).
+				WithDescription(fmt.Sprintf("Reconnect attempt %d failed: %v", attempt, err)))
+
+			// Increase delay with cap
+			delay = time.Duration(float64(delay) * c.reconnect.multiplier)
+			if delay > c.reconnect.maxDelay {
+				delay = c.reconnect.maxDelay
+			}
+			continue
+		}
+
+		c.auditLog.Log(ctx, audit.NewEvent(audit.EventServerStarted).
+			WithDescription(fmt.Sprintf("Reconnected successfully after %d attempt(s)", attempt)).
+			WithResult(audit.ResultSuccess))
+		return
+	}
+}
+
+// buildTransportCredentials returns TLS or insecure credentials based on config.
+func (c *Client) buildTransportCredentials() (credentials.TransportCredentials, error) {
+	if !c.config.Backend.TLSEnabled {
+		return insecure.NewCredentials(), nil
+	}
+
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	// Load client certificate if provided
+	if c.config.Backend.TLSCertPath != "" && c.config.Backend.TLSKeyPath != "" {
+		cert, err := tls.LoadX509KeyPair(c.config.Backend.TLSCertPath, c.config.Backend.TLSKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+
+	// Load custom CA certificate if provided
+	if c.config.Backend.TLSCAPath != "" {
+		caPEM, err := os.ReadFile(c.config.Backend.TLSCAPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+		}
+		certPool := x509.NewCertPool()
+		if !certPool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("failed to parse CA certificate")
+		}
+		tlsCfg.RootCAs = certPool
+	}
+
+	return credentials.NewTLS(tlsCfg), nil
+}
+
+// SetReconnectPolicy overrides the default reconnect policy.
+func (c *Client) SetReconnectPolicy(policy reconnectPolicy) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reconnect = policy
 }

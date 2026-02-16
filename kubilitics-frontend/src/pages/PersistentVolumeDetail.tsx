@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { HardDrive, Clock, Download, Trash2, Database, Server, RefreshCw, Info, Network, Loader2, Edit, FileCode, GitCompare } from 'lucide-react';
+import { HardDrive, Clock, Download, Trash2, Database, Server, Info, Network, Loader2, Edit, FileCode, GitCompare } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -69,11 +69,6 @@ export default function PersistentVolumeDetail() {
   useEffect(() => {
     if (!name?.trim()) navigate('/persistentvolumes', { replace: true });
   }, [name, navigate]);
-
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
 
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
@@ -231,7 +226,6 @@ export default function PersistentVolumeDetail() {
         backLabel="Persistent Volumes"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}{isConnected && <Badge variant="outline" className="ml-2 text-xs">Live</Badge>}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Edit', icon: Edit, variant: 'outline', onClick: () => { setActiveTab('yaml'); setSearchParams((p) => { const n = new URLSearchParams(p); n.set('tab', 'yaml'); return n; }, { replace: true }); } },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

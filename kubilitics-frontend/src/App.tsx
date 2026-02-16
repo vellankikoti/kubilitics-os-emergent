@@ -7,11 +7,14 @@ import { useClusterStore } from "@/stores/clusterStore";
 import { AIAssistant } from "@/components/AIAssistant";
 
 // Pages - Entry & Setup
+import ModeSelection from "./pages/ModeSelection";
 import ClusterConnect from "./pages/ClusterConnect";
 import ConnectedRedirect from "./pages/ConnectedRedirect";
 import KubeConfigSetup from "./pages/KubeConfigSetup";
 import ClusterSelection from "./pages/ClusterSelection";
 import DashboardPage from "./pages/DashboardPage";
+import HomePage from "./pages/HomePage";
+import ProjectDetailPage from "./pages/ProjectDetailPage";
 
 // Workloads
 import Pods from "./pages/Pods";
@@ -31,6 +34,19 @@ import CronJobs from "./pages/CronJobs";
 import CronJobDetail from "./pages/CronJobDetail";
 import ReplicationControllers from "./pages/ReplicationControllers";
 import ReplicationControllerDetail from "./pages/ReplicationControllerDetail";
+import PodTemplates from "./pages/PodTemplates";
+import PodTemplateDetail from "./pages/PodTemplateDetail";
+import ControllerRevisions from "./pages/ControllerRevisions";
+import ControllerRevisionDetail from "./pages/ControllerRevisionDetail";
+import ResourceSlices from "./pages/ResourceSlices";
+import ResourceSliceDetail from "./pages/ResourceSliceDetail";
+import DeviceClasses from "./pages/DeviceClasses";
+import DeviceClassDetail from "./pages/DeviceClassDetail";
+import IPAddressPools from "./pages/IPAddressPools";
+import IPAddressPoolDetail from "./pages/IPAddressPoolDetail";
+import BGPPeers from "./pages/BGPPeers";
+import BGPPeerDetail from "./pages/BGPPeerDetail";
+import WorkloadsOverview from "./pages/WorkloadsOverview";
 
 // Networking
 import Services from "./pages/Services";
@@ -59,6 +75,12 @@ import StorageClasses from "./pages/StorageClasses";
 import StorageClassDetail from "./pages/StorageClassDetail";
 import VolumeAttachments from "./pages/VolumeAttachments";
 import VolumeAttachmentDetail from "./pages/VolumeAttachmentDetail";
+import VolumeSnapshots from "./pages/VolumeSnapshots";
+import VolumeSnapshotDetail from "./pages/VolumeSnapshotDetail";
+import VolumeSnapshotClasses from "./pages/VolumeSnapshotClasses";
+import VolumeSnapshotClassDetail from "./pages/VolumeSnapshotClassDetail";
+import VolumeSnapshotContents from "./pages/VolumeSnapshotContents";
+import VolumeSnapshotContentDetail from "./pages/VolumeSnapshotContentDetail";
 
 // Cluster
 import Nodes from "./pages/Nodes";
@@ -113,6 +135,7 @@ import MutatingWebhookDetail from "./pages/MutatingWebhookDetail";
 import ValidatingWebhooks from "./pages/ValidatingWebhooks";
 import ValidatingWebhookDetail from "./pages/ValidatingWebhookDetail";
 import Settings from "./pages/Settings";
+import Topology from "./pages/Topology";
 
 // Layout
 import { AppLayout } from "./components/layout/AppLayout";
@@ -132,6 +155,20 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// Initial navigation logic: Mode Selection -> Connection -> Dashboard
+function ModeSelectionEntryPoint() {
+  const { appMode, activeCluster } = useClusterStore();
+
+  // If already connected, go to home (the primary hub)
+  if (activeCluster) return <Navigate to="/home" replace />;
+
+  // If mode selected but not connected, go to connect page
+  if (appMode) return <Navigate to="/connect" replace />;
+
+  // Default: Choose mode
+  return <ModeSelection />;
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -140,8 +177,11 @@ const App = () => (
       <BrowserRouter>
         <AIAssistant />
         <Routes>
-          {/* Entry Point - Cluster Connection (replaces SaaS auth flows) */}
-          <Route path="/" element={<ClusterConnect />} />
+          {/* Entry Point - Mode Selection or Cluster Connection */}
+          <Route path="/" element={<ModeSelectionEntryPoint />} />
+          <Route path="/mode-selection" element={<ModeSelection />} />
+          <Route path="/connect" element={<ClusterConnect />} />
+
           {/* Apply cluster from Connect and redirect to dashboard (avoids ProtectedRoute timing) */}
           <Route path="/connected" element={<ConnectedRedirect />} />
 
@@ -157,6 +197,8 @@ const App = () => (
               </ProtectedRoute>
             }
           >
+            <Route path="/home" element={<HomePage />} />
+            <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/settings" element={<Settings />} />
 
@@ -166,7 +208,11 @@ const App = () => (
             <Route path="/ml-analytics" element={<MLAnalyticsDashboard />} />
             <Route path="/cost" element={<CostDashboard />} />
 
+            {/* Cluster Topology */}
+            <Route path="/topology" element={<Topology />} />
+
             {/* Workloads */}
+            <Route path="/workloads" element={<WorkloadsOverview />} />
             <Route path="/pods" element={<Pods />} />
             <Route path="/pods/:namespace/:name" element={<PodDetail />} />
             <Route path="/deployments" element={<Deployments />} />
@@ -183,6 +229,21 @@ const App = () => (
             <Route path="/cronjobs/:namespace/:name" element={<CronJobDetail />} />
             <Route path="/replicationcontrollers" element={<ReplicationControllers />} />
             <Route path="/replicationcontrollers/:namespace/:name" element={<ReplicationControllerDetail />} />
+            <Route path="/replication-controllers/:namespace/:name" element={<ReplicationControllerDetail />} />
+            <Route path="/podtemplates" element={<PodTemplates />} />
+            <Route path="/podtemplates/:namespace/:name" element={<PodTemplateDetail />} />
+            <Route path="/controllerrevisions" element={<ControllerRevisions />} />
+            <Route path="/controllerrevisions/:namespace/:name" element={<ControllerRevisionDetail />} />
+            <Route path="/resourceslices" element={<ResourceSlices />} />
+            <Route path="/resourceslices/:name" element={<ResourceSliceDetail />} />
+            <Route path="/deviceclasses" element={<DeviceClasses />} />
+            <Route path="/deviceclasses/:name" element={<DeviceClassDetail />} />
+            <Route path="/device-classes" element={<DeviceClasses />} />
+            <Route path="/device-classes/:name" element={<DeviceClassDetail />} />
+            <Route path="/ipaddresspools" element={<IPAddressPools />} />
+            <Route path="/ipaddresspools/:namespace/:name" element={<IPAddressPoolDetail />} />
+            <Route path="/bgppeers" element={<BGPPeers />} />
+            <Route path="/bgppeers/:namespace/:name" element={<BGPPeerDetail />} />
 
             {/* Networking */}
             <Route path="/services" element={<Services />} />
@@ -211,6 +272,18 @@ const App = () => (
             <Route path="/storageclasses/:name" element={<StorageClassDetail />} />
             <Route path="/volumeattachments" element={<VolumeAttachments />} />
             <Route path="/volumeattachments/:name" element={<VolumeAttachmentDetail />} />
+            <Route path="/volumesnapshots" element={<VolumeSnapshots />} />
+            <Route path="/volumesnapshots/:namespace/:name" element={<VolumeSnapshotDetail />} />
+            <Route path="/volume-snapshots" element={<VolumeSnapshots />} />
+            <Route path="/volume-snapshots/:namespace/:name" element={<VolumeSnapshotDetail />} />
+            <Route path="/volumesnapshotclasses" element={<VolumeSnapshotClasses />} />
+            <Route path="/volumesnapshotclasses/:name" element={<VolumeSnapshotClassDetail />} />
+            <Route path="/volume-snapshot-classes" element={<VolumeSnapshotClasses />} />
+            <Route path="/volume-snapshot-classes/:name" element={<VolumeSnapshotClassDetail />} />
+            <Route path="/volumesnapshotcontents" element={<VolumeSnapshotContents />} />
+            <Route path="/volumesnapshotcontents/:name" element={<VolumeSnapshotContentDetail />} />
+            <Route path="/volume-snapshot-contents" element={<VolumeSnapshotContents />} />
+            <Route path="/volume-snapshot-contents/:name" element={<VolumeSnapshotContentDetail />} />
 
             {/* Cluster */}
             <Route path="/nodes" element={<Nodes />} />
@@ -221,12 +294,14 @@ const App = () => (
             <Route path="/events/:namespace/:name" element={<EventDetail />} />
             <Route path="/componentstatuses" element={<ComponentStatuses />} />
             <Route path="/componentstatuses/:name" element={<ComponentStatusDetail />} />
+            <Route path="/component-statuses/:name" element={<ComponentStatusDetail />} />
             <Route path="/apiservices" element={<APIServices />} />
             <Route path="/apiservices/:name" element={<APIServiceDetail />} />
             <Route path="/leases" element={<Leases />} />
             <Route path="/leases/:namespace/:name" element={<LeaseDetail />} />
             <Route path="/runtimeclasses" element={<RuntimeClasses />} />
             <Route path="/runtimeclasses/:name" element={<RuntimeClassDetail />} />
+            <Route path="/runtime-classes/:name" element={<RuntimeClassDetail />} />
 
             {/* RBAC */}
             <Route path="/serviceaccounts" element={<ServiceAccounts />} />
@@ -241,6 +316,7 @@ const App = () => (
             <Route path="/clusterrolebindings/:name" element={<ClusterRoleBindingDetail />} />
             <Route path="/podsecuritypolicies" element={<PodSecurityPolicies />} />
             <Route path="/podsecuritypolicies/:name" element={<PodSecurityPolicyDetail />} />
+            <Route path="/pod-security-policies/:name" element={<PodSecurityPolicyDetail />} />
 
             {/* Autoscaling & Resource Management */}
             <Route path="/horizontalpodautoscalers" element={<HorizontalPodAutoscalers />} />
@@ -259,6 +335,7 @@ const App = () => (
             {/* Custom Resources & Admission Control */}
             <Route path="/customresourcedefinitions" element={<CustomResourceDefinitions />} />
             <Route path="/customresourcedefinitions/:name" element={<CustomResourceDefinitionDetail />} />
+            <Route path="/custom-resource-definitions/:name" element={<CustomResourceDefinitionDetail />} />
             <Route path="/customresources" element={<CustomResources />} />
             <Route path="/mutatingwebhooks" element={<MutatingWebhooks />} />
             <Route path="/mutatingwebhooks/:name" element={<MutatingWebhookDetail />} />

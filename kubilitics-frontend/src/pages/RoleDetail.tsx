@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Shield, Clock, Download, Trash2, Edit, Users, RefreshCw, Network } from 'lucide-react';
+import { Shield, Clock, Download, Trash2, Edit, Users, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -95,11 +95,6 @@ export default function RoleDetail() {
   }, [rules]);
 
   const permissionMatrix = useMemo(() => buildPermissionMatrix(rules), [rules]);
-
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
 
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
@@ -312,7 +307,6 @@ export default function RoleDetail() {
         backLabel="Roles"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Edit', icon: Edit, variant: 'outline', onClick: () => toast.info('Edit not implemented') },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

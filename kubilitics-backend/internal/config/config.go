@@ -43,7 +43,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("topology_timeout_sec", 30)
 	viper.SetDefault("shutdown_timeout_sec", 15)
 	viper.SetDefault("max_clusters", 100)
-	viper.SetDefault("k8s_timeout_sec", 15)
+	viper.SetDefault("k8s_timeout_sec", 30)
 	viper.SetDefault("topology_cache_ttl_sec", 30)
 	viper.SetDefault("topology_max_nodes", 5000) // recommended cap for large clusters (C1.4)
 	viper.SetDefault("k8s_rate_limit_per_sec", 0)   // 0 = disabled

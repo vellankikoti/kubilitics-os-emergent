@@ -74,7 +74,7 @@ export function convertToD3Topology(graph: TopologyGraph, currentNodeId?: string
     type: mapKindToResourceType(node.kind),
     name: node.name,
     namespace: node.namespace || undefined,
-    status: mapHealthToStatus(node.computed.health),
+    status: mapHealthToStatus(node.computed?.health),
     isCurrent: currentNodeId ? node.id === currentNodeId : false,
     traffic: node.traffic,
   }));

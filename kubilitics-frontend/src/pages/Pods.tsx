@@ -59,7 +59,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueries } from '@tanstack/react-query';
 import { useK8sResourceList, useDeleteK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
@@ -69,8 +69,11 @@ import { useBackendConfigStore } from '@/stores/backendConfigStore';
 import { getPodMetrics } from '@/services/backendApiClient';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DeleteConfirmDialog, PortForwardDialog, UsageBar, PodComparisonView, calculatePodResourceMax } from '@/components/resources';
-import { NamespaceFilter, ResourceCommandBar, StatusPill, resourceTableRowClassName, ROW_MOTION, ListPagination, ListViewSegmentedControl, ListPageStatCard, TableColumnHeaderWithFilterAndSort, type StatusPillVariant } from '@/components/list';
+import { NamespaceFilter, ResourceCommandBar, StatusPill, resourceTableRowClassName, ROW_MOTION, ListPagination, ListViewSegmentedControl, ListPageStatCard, ListPageHeader, TableColumnHeaderWithFilterAndSort, TableFilterCell, AgeCell, TableEmptyState, TableSkeletonRows, CopyNameDropdownItem, NamespaceBadge, ResourceListTableToolbar, type StatusPillVariant } from '@/components/list';
+import { PodIcon } from '@/components/icons/KubernetesIcons';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
+import { useTableKeyboardNav } from '@/hooks/useTableKeyboardNav';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
@@ -109,6 +112,7 @@ interface Pod {
   ready: string;
   restarts: number;
   age: string;
+  creationTimestamp?: string;
   node: string;
   /** Internal pod IP (podIP / podIPs). */
   internalIP: string;
@@ -122,6 +126,18 @@ interface Pod {
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
+
+const PODS_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'status', label: 'Status' },
+  { id: 'ready', label: 'Ready' },
+  { id: 'restarts', label: 'Restarts' },
+  { id: 'ip', label: 'IP' },
+  { id: 'cpu', label: 'CPU' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'age', label: 'Age' },
+  { id: 'node', label: 'Node' },
+];
 
 const PODS_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'name', defaultWidth: 260, minWidth: 120 },
@@ -189,6 +205,7 @@ function transformPodResource(resource: PodResource): Pod {
     ready: `${readyCount}/${totalCount}`,
     restarts,
     age: calculateAge(resource.metadata.creationTimestamp),
+    creationTimestamp: resource.metadata?.creationTimestamp,
     node: resource.spec?.nodeName || '-',
     internalIP,
     externalIP,
@@ -235,8 +252,14 @@ type ListView = 'flat' | 'byNamespace' | 'byNode';
 
 export default function Pods() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const namespaceFromUrl = searchParams.get('namespace');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNamespaces, setSelectedNamespaces] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (namespaceFromUrl) setSelectedNamespaces(new Set([namespaceFromUrl]));
+  }, [namespaceFromUrl]);
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; pod: Pod | null; bulk?: boolean }>({ open: false, pod: null });
   const [portForwardDialog, setPortForwardDialog] = useState<{ open: boolean; pod: Pod | null }>({ open: false, pod: null });
   const [showCreateWizard, setShowCreateWizard] = useState(false);
@@ -246,6 +269,7 @@ export default function Pods() {
   const [pageIndex, setPageIndex] = useState(0);
   const [listView, setListView] = useState<ListView>('flat');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [showTableFilters, setShowTableFilters] = useState(false);
 
   const { isConnected } = useConnectionStatus();
   const activeCluster = useClusterStore((s) => s.activeCluster);
@@ -257,7 +281,7 @@ export default function Pods() {
   const clusterId = currentClusterId ?? activeCluster?.id;
 
   // Single full-list fetch (limit 5000 when backend); pagination is frontend-only
-  const { data, isLoading, refetch } = useK8sResourceList<PodResource>('pods', undefined, {
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useK8sResourceList<PodResource>('pods', undefined, {
     enabled: isConnected,
     refetchInterval: 30000,
     limit: 5000,
@@ -323,11 +347,11 @@ export default function Pods() {
     defaultSortKey: 'name',
     defaultSortOrder: 'asc',
     columns: [
-      { columnId: 'name', getValue: (p) => p.name, sortable: true, filterable: false },
+      { columnId: 'name', getValue: (p) => p.name, sortable: true, filterable: true },
       { columnId: 'namespace', getValue: (p) => p.namespace, sortable: true, filterable: true },
       { columnId: 'status', getValue: (p) => p.status, sortable: true, filterable: true },
       { columnId: 'restarts', getValue: (p) => p.restarts, sortable: true, filterable: false },
-      { columnId: 'ip', getValue: (p) => p.internalIP || '-', sortable: true, filterable: false },
+      { columnId: 'ip', getValue: (p) => p.internalIP || '-', sortable: true, filterable: true },
       {
         columnId: 'cpu',
         getValue: (p) => getCpuForSort(p),
@@ -350,6 +374,7 @@ export default function Pods() {
   const {
     filteredAndSortedItems: filteredPods,
     distinctValuesByColumn,
+    valueCountsByColumn,
     columnFilters,
     setColumnFilter,
     sortKey,
@@ -358,6 +383,12 @@ export default function Pods() {
     clearAllFilters,
     hasActiveFilters,
   } = useTableFiltersAndSort(filteredUnsorted, podsTableConfig);
+
+  const columnVisibility = useColumnVisibility({
+    tableId: 'pods',
+    columns: PODS_COLUMNS_FOR_VISIBILITY,
+    alwaysVisible: ['name'],
+  });
 
   // Client-side pagination: one page of filtered list
   const totalFiltered = filteredPods.length;
@@ -685,6 +716,24 @@ ${pod.containers.map(c => `  - name: ${c.name}
   const isAllSelected = itemsOnPage.length > 0 && itemsOnPage.every((p) => selectedPods.has(`${p.namespace}/${p.name}`));
   const isSomeSelected = itemsOnPage.some((p) => selectedPods.has(`${p.namespace}/${p.name}`)) && !isAllSelected;
 
+  const keyboardNav = useTableKeyboardNav({
+    rowCount: itemsOnPage.length,
+    onOpenRow: (index) => {
+      const pod = itemsOnPage[index];
+      if (pod) navigate(`/pods/${pod.namespace}/${pod.name}`);
+    },
+    getRowKeyAt: (index) => {
+      const pod = itemsOnPage[index];
+      return pod ? `${pod.namespace}/${pod.name}` : '';
+    },
+    selectedKeys: selectedPods,
+    onToggleSelect: (key) => {
+      const pod = itemsOnPage.find((p) => `${p.namespace}/${p.name}` === key);
+      if (pod) togglePodSelection(pod);
+    },
+    enabled: listView === 'flat' && itemsOnPage.length > 0,
+  });
+
   const handlePageSizeChange = (size: number) => {
     setPageSize(size);
     setPageIndex(0);
@@ -696,115 +745,80 @@ ${pod.containers.map(c => `  - name: ${c.name}
       animate={{ opacity: 1 }}
       className="space-y-6"
     >
-      {/* Page Header: title + selection hint, toolbar (Export dropdown, Compare, Delete, Refresh, Create) */}
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="p-2.5 rounded-xl bg-primary/10">
-            <Box className="h-6 w-6 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Pods</h1>
-            <p className="text-sm text-muted-foreground">
-              {filteredPods.length} pods across {namespaceList.length} namespaces
-              {!isConnected && (
-                <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]">
-                  <WifiOff className="h-3 w-3" /> Demo mode
-                </span>
-              )}
-            </p>
-          </div>
-          {selectedPods.size > 0 && (
-            <div className="flex items-center gap-2 ml-2 pl-2 border-l border-border">
-              <span className="text-sm text-muted-foreground">{selectedPods.size} selected</span>
-              <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelectedPods(new Set())}>
-                Clear
-              </Button>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
-                <Download className="h-4 w-4" />
-                {selectedPods.size > 0 ? `Export (${selectedPods.size})` : 'Export'}
-                <ChevronDown className="h-3.5 w-3.5 opacity-60" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-72">
-              <DropdownMenuLabel className="text-muted-foreground font-normal text-xs">
-                {selectedPods.size > 0 ? 'Selected pods' : 'All visible pods'}
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleExportAll} className="gap-2 cursor-pointer">
-                <Download className="h-4 w-4 shrink-0" />
-                Export as JSON — for reports or automation
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleExportAsYaml} className="gap-2 cursor-pointer">
-                <FileText className="h-4 w-4 shrink-0" />
-                Export as YAML — for reports or automation
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleBulkExportCsv} className="gap-2 cursor-pointer">
-                <FileSpreadsheet className="h-4 w-4 shrink-0" />
-                Export as CSV — for spreadsheets
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleBulkExportYaml} className="gap-2 cursor-pointer">
-                <FileText className="h-4 w-4 shrink-0" />
-                Download as YAML — Kubernetes manifests
-              </DropdownMenuItem>
-              {selectedPods.size > 0 && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleBulkRestart} className="gap-2 cursor-pointer">
-                    <RotateCcw className="h-4 w-4" />
-                    Restart selected
-                  </DropdownMenuItem>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-2"
-            onClick={() => setShowComparison(true)}
-          >
-            <GitCompare className="h-4 w-4" />
-            Compare
-          </Button>
-          {selectedPods.size > 0 && (
-            <Button
-              variant="destructive"
-              size="sm"
-              className="gap-2"
-              onClick={() => setDeleteDialog({ open: true, pod: null, bulk: true })}
-            >
-              <Trash2 className="h-4 w-4" />
-              Delete
+      <ListPageHeader
+        icon={<PodIcon className="h-6 w-6 text-primary" />}
+        title="Pods"
+        resourceCount={filteredPods.length}
+        subtitle={namespaceList.length > 0 ? `across ${namespaceList.length} namespaces` : undefined}
+        demoMode={!isConnected}
+        isLoading={isLoading}
+        onRefresh={() => refetch()}
+        createLabel="Create Pod"
+        onCreate={() => setShowCreateWizard(true)}
+        actions={
+          <>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-2">
+                  <Download className="h-4 w-4" />
+                  {selectedPods.size > 0 ? `Export (${selectedPods.size})` : 'Export'}
+                  <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-72">
+                <DropdownMenuLabel className="text-muted-foreground font-normal text-xs">
+                  {selectedPods.size > 0 ? 'Selected pods' : 'All visible pods'}
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleExportAll} className="gap-2 cursor-pointer">
+                  <Download className="h-4 w-4 shrink-0" />
+                  Export as JSON — for reports or automation
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleExportAsYaml} className="gap-2 cursor-pointer">
+                  <FileText className="h-4 w-4 shrink-0" />
+                  Export as YAML — for reports or automation
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleBulkExportCsv} className="gap-2 cursor-pointer">
+                  <FileSpreadsheet className="h-4 w-4 shrink-0" />
+                  Export as CSV — for spreadsheets
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleBulkExportYaml} className="gap-2 cursor-pointer">
+                  <FileText className="h-4 w-4 shrink-0" />
+                  Download as YAML — Kubernetes manifests
+                </DropdownMenuItem>
+                {selectedPods.size > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={handleBulkRestart} className="gap-2 cursor-pointer">
+                      <RotateCcw className="h-4 w-4" />
+                      Restart selected
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button variant="outline" size="sm" className="gap-2" onClick={() => setShowComparison(true)}>
+              <GitCompare className="h-4 w-4" />
+              Compare
             </Button>
-          )}
-          <Button
-            variant="outline"
-            size="icon"
-            className="h-9 w-9"
-            onClick={() => refetch()}
-            disabled={isLoading}
-          >
-            {isLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
+            {selectedPods.size > 0 && (
+              <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, pod: null, bulk: true })}>
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
             )}
-          </Button>
-          <Button className="gap-2" onClick={() => setShowCreateWizard(true)}>
-            <Plus className="h-4 w-4" />
-            Create Pod
-          </Button>
-        </div>
-      </div>
+          </>
+        }
+        leftExtra={selectedPods.size > 0 ? (
+          <div className="flex items-center gap-2 ml-2 pl-2 border-l border-border">
+            <span className="text-sm text-muted-foreground">{selectedPods.size} selected</span>
+            <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelectedPods(new Set())}>Clear</Button>
+          </div>
+        ) : undefined}
+      />
 
       {/* Stats Cards — quick filters for Status column */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <ListPageStatCard
           label="Total Pods"
           value={stats.total}
@@ -846,56 +860,103 @@ ${pod.containers.map(c => `  - name: ${c.name}
         />
       </div>
 
-      <ResourceCommandBar
-        scope={
-          <NamespaceFilter
-            namespaces={namespaceList}
-            selected={selectedNamespaces}
-            onSelectionChange={setSelectedNamespaces}
-            triggerVariant="bar"
+      <ResourceListTableToolbar
+        globalFilterBar={
+          <ResourceCommandBar
+            scope={
+              <NamespaceFilter
+                namespaces={namespaceList}
+                selected={selectedNamespaces}
+                onSelectionChange={setSelectedNamespaces}
+                triggerVariant="bar"
+              />
+            }
+            search={
+              <div className="relative w-full min-w-0">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                <Input
+                  placeholder="Search pods..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full h-10 pl-9 pr-3 rounded-lg border border-border bg-background text-sm font-medium shadow-sm placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary/50 transition-all"
+                  aria-label="Search pods by name or namespace"
+                />
+              </div>
+            }
+            structure={
+              <ListViewSegmentedControl
+                value={listView}
+                onChange={(v) => setListView(v as ListView)}
+                options={[
+                  { id: 'flat', label: 'Flat', icon: List },
+                  { id: 'byNamespace', label: 'By Namespace', icon: Layers },
+                  { id: 'byNode', label: 'By Node', icon: Boxes },
+                ]}
+                ariaLabel="List structure"
+              />
+            }
+            footer={
+              <p className="text-xs text-muted-foreground tabular-nums">
+                {filteredPods.length} pods
+                {' · '}
+                {selectedNamespaces.size === 0 ? 'all namespaces' : `${selectedNamespaces.size} namespace${selectedNamespaces.size === 1 ? '' : 's'}`}
+                {' · '}
+                {listView === 'flat' ? 'flat list' : listView === 'byNamespace' ? 'grouped by namespace' : 'grouped by node'}
+              </p>
+            }
           />
         }
-        search={
-          <div className="relative w-full min-w-0">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-            <Input
-              placeholder="Search pods..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full h-10 pl-9 pr-3 rounded-lg border border-border bg-background text-sm font-medium shadow-sm placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary/50 transition-all"
-              aria-label="Search pods by name or namespace"
+        showTableFilters={showTableFilters}
+        onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+        hasActiveFilters={hasActiveFilters}
+        onClearAllFilters={clearAllFilters}
+        columns={PODS_COLUMNS_FOR_VISIBILITY}
+        visibleColumns={columnVisibility.visibleColumns}
+        onColumnToggle={columnVisibility.setColumnVisible}
+        tableContainerProps={keyboardNav.tableContainerProps}
+        footer={
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">
+                    {pageSize} per page
+                    <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <DropdownMenuItem
+                      key={size}
+                      onClick={() => handlePageSizeChange(size)}
+                      className={cn(pageSize === size && 'bg-accent')}
+                    >
+                      {size} per page
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination
+              hasPrev={pagination.hasPrev}
+              hasNext={pagination.hasNext}
+              onPrev={pagination.onPrev}
+              onNext={pagination.onNext}
+              rangeLabel={undefined}
+              currentPage={pagination.currentPage}
+              totalPages={pagination.totalPages}
+              onPageChange={pagination.onPageChange}
+              dataUpdatedAt={dataUpdatedAt}
+              isFetching={isFetching}
             />
           </div>
         }
-        structure={
-          <ListViewSegmentedControl
-            value={listView}
-            onChange={(v) => setListView(v as ListView)}
-            options={[
-              { id: 'flat', label: 'Flat', icon: List },
-              { id: 'byNamespace', label: 'By Namespace', icon: Layers },
-              { id: 'byNode', label: 'By Node', icon: Boxes },
-            ]}
-            ariaLabel="List structure"
-          />
-        }
-        footer={
-          <p className="text-xs text-muted-foreground tabular-nums">
-            {filteredPods.length} pods
-            {' · '}
-            {selectedNamespaces.size === 0 ? 'all namespaces' : `${selectedNamespaces.size} namespace${selectedNamespaces.size === 1 ? '' : 's'}`}
-            {' · '}
-            {listView === 'flat' ? 'flat list' : listView === 'byNamespace' ? 'grouped by namespace' : 'grouped by node'}
-          </p>
-        }
-      />
-
-      {/* Table */}
-      <div className="border border-border rounded-xl overflow-hidden bg-card">
+      >
         <ResizableTableProvider tableId="pods" columnConfig={PODS_TABLE_COLUMNS}>
           <Table className="table-fixed">
             <TableHeader>
-              <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+              <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
                 <TableHead className="w-10">
                   <Checkbox
                     checked={isAllSelected}
@@ -904,6 +965,7 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')}
                   />
                 </TableHead>
+                {columnVisibility.isColumnVisible('name') && (
                 <ResizableTableHead columnId="name" className="font-semibold">
                   <TableColumnHeaderWithFilterAndSort
                     columnId="name"
@@ -917,6 +979,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     onFilterChange={() => {}}
                   />
                 </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('namespace') && (
                 <ResizableTableHead columnId="namespace" className="font-semibold">
                   <TableColumnHeaderWithFilterAndSort
                     columnId="namespace"
@@ -930,6 +994,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     onFilterChange={setColumnFilter}
                   />
                 </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('status') && (
                 <ResizableTableHead columnId="status" className="font-semibold">
                   <TableColumnHeaderWithFilterAndSort
                     columnId="status"
@@ -943,9 +1009,13 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     onFilterChange={setColumnFilter}
                   />
                 </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('ready') && (
                 <ResizableTableHead columnId="ready" className="font-semibold">
                   <span className="truncate block">Ready</span>
                 </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('restarts') && (
                 <ResizableTableHead columnId="restarts" className="font-semibold">
                   <TableColumnHeaderWithFilterAndSort
                     columnId="restarts"
@@ -959,6 +1029,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     onFilterChange={() => {}}
                   />
                 </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('ip') && (
                 <ResizableTableHead columnId="ip" className="font-semibold">
                   <TableColumnHeaderWithFilterAndSort
                     columnId="ip"
@@ -972,6 +1044,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     onFilterChange={() => {}}
                   />
                 </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('cpu') && (
                 <ResizableTableHead columnId="cpu" className="font-semibold">
                   <TableColumnHeaderWithFilterAndSort
                     columnId="cpu"
@@ -985,6 +1059,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     onFilterChange={() => {}}
                   />
                 </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('memory') && (
                 <ResizableTableHead columnId="memory" className="font-semibold">
                   <TableColumnHeaderWithFilterAndSort
                     columnId="memory"
@@ -998,6 +1074,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     onFilterChange={() => {}}
                   />
                 </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('age') && (
                 <ResizableTableHead columnId="age" className="font-semibold">
                   <TableColumnHeaderWithFilterAndSort
                     columnId="age"
@@ -1011,6 +1089,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     onFilterChange={() => {}}
                   />
                 </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('node') && (
                 <ResizableTableHead columnId="node" className="font-semibold">
                   <TableColumnHeaderWithFilterAndSort
                     columnId="node"
@@ -1024,31 +1104,107 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     onFilterChange={setColumnFilter}
                   />
                 </ResizableTableHead>
+                )}
                 <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
               </TableRow>
+              {/* Filter row - appears under headers when Show filters is on */}
+              {showTableFilters && (
+                <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                  <TableCell className="w-10 p-1.5" />
+                  {columnVisibility.isColumnVisible('name') && (
+                    <ResizableTableCell columnId="name" className="p-1.5">
+                      <TableFilterCell
+                        columnId="name"
+                        label="Name"
+                        distinctValues={distinctValuesByColumn.name ?? []}
+                        selectedFilterValues={columnFilters.name ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.name}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  {columnVisibility.isColumnVisible('namespace') && (
+                    <ResizableTableCell columnId="namespace" className="p-1.5">
+                      <TableFilterCell
+                        columnId="namespace"
+                        label="Namespace"
+                        distinctValues={distinctValuesByColumn.namespace ?? []}
+                        selectedFilterValues={columnFilters.namespace ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.namespace}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  {columnVisibility.isColumnVisible('status') && (
+                    <ResizableTableCell columnId="status" className="p-1.5">
+                      <TableFilterCell
+                        columnId="status"
+                        label="Status"
+                        distinctValues={distinctValuesByColumn.status ?? []}
+                        selectedFilterValues={columnFilters.status ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.status}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  {columnVisibility.isColumnVisible('ready') && (
+                    <ResizableTableCell columnId="ready" className="p-1.5" />
+                  )}
+                  {columnVisibility.isColumnVisible('restarts') && (
+                    <ResizableTableCell columnId="restarts" className="p-1.5" />
+                  )}
+                  {columnVisibility.isColumnVisible('ip') && (
+                    <ResizableTableCell columnId="ip" className="p-1.5">
+                      <TableFilterCell
+                        columnId="ip"
+                        label="IP"
+                        distinctValues={distinctValuesByColumn.ip ?? []}
+                        selectedFilterValues={columnFilters.ip ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.ip}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  {columnVisibility.isColumnVisible('cpu') && (
+                    <ResizableTableCell columnId="cpu" className="p-1.5" />
+                  )}
+                  {columnVisibility.isColumnVisible('memory') && (
+                    <ResizableTableCell columnId="memory" className="p-1.5" />
+                  )}
+                  {columnVisibility.isColumnVisible('age') && (
+                    <ResizableTableCell columnId="age" className="p-1.5" />
+                  )}
+                  {columnVisibility.isColumnVisible('node') && (
+                    <ResizableTableCell columnId="node" className="p-1.5">
+                      <TableFilterCell
+                        columnId="node"
+                        label="Node"
+                        distinctValues={distinctValuesByColumn.node ?? []}
+                        selectedFilterValues={columnFilters.node ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.node}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  <TableCell className="w-12 p-1.5" />
+                </TableRow>
+              )}
             </TableHeader>
           <TableBody>
             {isLoading && isConnected ? (
-              <TableRow>
-                <TableCell colSpan={12} className="h-32 text-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                    <p className="text-sm text-muted-foreground">Loading pods...</p>
-                  </div>
-                </TableCell>
-              </TableRow>
+              <TableSkeletonRows columnCount={12} />
             ) : totalFiltered === 0 ? (
               <TableRow>
-                <TableCell colSpan={12} className="h-32 text-center text-muted-foreground">
-                  <div className="flex flex-col items-center gap-2">
-                    <Box className="h-8 w-8 opacity-50" />
-                    <p>No pods found</p>
-                    {(searchQuery || hasActiveFilters) && (
-                      <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>
-                        Clear filters
-                      </Button>
-                    )}
-                  </div>
+                <TableCell colSpan={12} className="h-40 text-center">
+                  <TableEmptyState
+                    icon={<Box className="h-8 w-8" />}
+                    title="No Pods found"
+                    subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Pods are usually created by Deployments, StatefulSets, or Jobs; create one manually if needed.'}
+                    hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                    onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                    createLabel="Create Pod"
+                    onCreate={() => setShowCreateWizard(true)}
+                  />
                 </TableCell>
               </TableRow>
             ) : listView === 'flat' ? (
@@ -1067,10 +1223,12 @@ ${pod.containers.map(c => `  - name: ${c.name}
                     initial={ROW_MOTION.initial}
                     animate={ROW_MOTION.animate}
                     transition={ROW_MOTION.transition(index)}
+                    {...keyboardNav.getRowProps(index)}
                     className={cn(
                       resourceTableRowClassName,
                       index % 2 === 1 && 'bg-muted/5',
-                      isSelected && 'bg-primary/5'
+                      isSelected && 'bg-primary/5',
+                      keyboardNav.getRowProps(index).className
                     )}
                   >
                     <TableCell className="w-10">
@@ -1080,6 +1238,7 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         aria-label={`Select ${pod.name}`}
                       />
                     </TableCell>
+                    {columnVisibility.isColumnVisible('name') && (
                     <ResizableTableCell columnId="name">
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -1097,20 +1256,28 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         </TooltipContent>
                       </Tooltip>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('namespace') && (
                     <ResizableTableCell columnId="namespace">
                       <Badge variant="outline" className="font-normal truncate max-w-full inline-block">
                         {pod.namespace}
                       </Badge>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('status') && (
                     <ResizableTableCell columnId="status">
                       <StatusPill label={pod.status} variant={statusToPillVariant[pod.status]} icon={StatusIcon} />
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('ready') && (
                     <ResizableTableCell columnId="ready" className="font-mono text-sm">
                       <div className="flex items-center gap-2 min-w-0">
                         <Progress value={parseReadyFraction(pod.ready)} className="h-1.5 w-12 flex-shrink-0" />
                         <span className="tabular-nums">{pod.ready}</span>
                       </div>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('restarts') && (
                     <ResizableTableCell columnId="restarts">
                       <span className={cn(
                         'font-medium',
@@ -1120,6 +1287,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         {pod.restarts}
                       </span>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('ip') && (
                     <ResizableTableCell columnId="ip" className="font-mono text-sm">
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -1139,6 +1308,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         </TooltipContent>
                       </Tooltip>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('cpu') && (
                     <ResizableTableCell columnId="cpu">
                       <div className="min-w-0 overflow-hidden">
                         <UsageBar
@@ -1151,6 +1322,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         />
                       </div>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('memory') && (
                     <ResizableTableCell columnId="memory">
                       <div className="min-w-0 overflow-hidden">
                         <UsageBar
@@ -1163,7 +1336,11 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         />
                       </div>
                     </ResizableTableCell>
-                    <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{pod.age}</ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('age') && (
+                    <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={pod.age} timestamp={pod.creationTimestamp} /></ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('node') && (
                     <ResizableTableCell columnId="node" className="text-muted-foreground">
                       {pod.node !== '-' ? (
                         <Tooltip>
@@ -1178,6 +1355,7 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         <span className="truncate block">{pod.node}</span>
                       )}
                     </ResizableTableCell>
+                    )}
                     <TableCell className="w-12">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -1191,6 +1369,10 @@ ${pod.containers.map(c => `  - name: ${c.name}
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-48">
+                          <CopyNameDropdownItem name={pod.name} namespace={pod.namespace} />
+                          <DropdownMenuItem onClick={() => navigate(`/pods/${pod.namespace}/${pod.name}`)} className="gap-2">
+                            View Details
+                          </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleViewLogs(pod)} className="gap-2">
                             <FileText className="h-4 w-4" />
                             View Logs
@@ -1210,11 +1392,11 @@ ${pod.containers.map(c => `  - name: ${c.name}
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem 
-                            className="gap-2 text-[hsl(0,72%,51%)]"
+                            className="gap-2 text-destructive"
                             onClick={() => setDeleteDialog({ open: true, pod })}
                           >
                             <Trash2 className="h-4 w-4" />
-                            Delete Pod
+                            Delete
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -1272,6 +1454,7 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         aria-label={`Select ${pod.name}`}
                       />
                     </TableCell>
+                    {columnVisibility.isColumnVisible('name') && (
                     <ResizableTableCell columnId="name">
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -1286,20 +1469,28 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         <TooltipContent side="top" className="max-w-md">{pod.name}</TooltipContent>
                       </Tooltip>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('namespace') && (
                     <ResizableTableCell columnId="namespace">
                       <Badge variant="outline" className="font-normal truncate block w-fit max-w-full">
                         {pod.namespace}
                       </Badge>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('status') && (
                     <ResizableTableCell columnId="status">
                       <StatusPill label={pod.status} variant={statusToPillVariant[pod.status]} icon={StatusIcon} />
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('ready') && (
                     <ResizableTableCell columnId="ready" className="font-mono text-sm">
                       <div className="flex items-center gap-2 min-w-0">
                         <Progress value={parseReadyFraction(pod.ready)} className="h-1.5 w-12 flex-shrink-0" />
                         <span className="tabular-nums">{pod.ready}</span>
                       </div>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('restarts') && (
                     <ResizableTableCell columnId="restarts">
                       <span className={cn(
                         'font-medium',
@@ -1309,6 +1500,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         {pod.restarts}
                       </span>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('ip') && (
                     <ResizableTableCell columnId="ip" className="font-mono text-sm">
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -1328,6 +1521,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         </TooltipContent>
                       </Tooltip>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('cpu') && (
                     <ResizableTableCell columnId="cpu">
                       <div className="min-w-0 overflow-hidden">
                         <UsageBar
@@ -1340,6 +1535,8 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         />
                       </div>
                     </ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('memory') && (
                     <ResizableTableCell columnId="memory">
                       <div className="min-w-0 overflow-hidden">
                         <UsageBar
@@ -1352,7 +1549,11 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         />
                       </div>
                     </ResizableTableCell>
-                    <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{pod.age}</ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('age') && (
+                    <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={pod.age} timestamp={pod.creationTimestamp} /></ResizableTableCell>
+                    )}
+                    {columnVisibility.isColumnVisible('node') && (
                     <ResizableTableCell columnId="node" className="text-muted-foreground">
                       {pod.node !== '-' ? (
                         <Tooltip>
@@ -1367,6 +1568,7 @@ ${pod.containers.map(c => `  - name: ${c.name}
                         <span className="truncate block">{pod.node}</span>
                       )}
                     </ResizableTableCell>
+                    )}
                     <TableCell className="w-12">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -1380,6 +1582,10 @@ ${pod.containers.map(c => `  - name: ${c.name}
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-48">
+                              <CopyNameDropdownItem name={pod.name} namespace={pod.namespace} />
+                              <DropdownMenuItem onClick={() => navigate(`/pods/${pod.namespace}/${pod.name}`)} className="gap-2">
+                                View Details
+                              </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => handleViewLogs(pod)} className="gap-2">
                                 <FileText className="h-4 w-4" />
                                 View Logs
@@ -1399,11 +1605,11 @@ ${pod.containers.map(c => `  - name: ${c.name}
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem 
-                                className="gap-2 text-[hsl(0,72%,51%)]"
+                                className="gap-2 text-destructive"
                                 onClick={() => setDeleteDialog({ open: true, pod })}
                               >
                                 <Trash2 className="h-4 w-4" />
-                                Delete Pod
+                                Delete
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -1417,45 +1623,7 @@ ${pod.containers.map(c => `  - name: ${c.name}
           </TableBody>
         </Table>
         </ResizableTableProvider>
-      </div>
-
-      {/* Pagination: frontend-only; same total as top counter */}
-      <div className="pt-4 pb-2 border-t border-border mt-2">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-2">
-                  {pageSize} per page
-                  <ChevronDown className="h-4 w-4 opacity-50" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <DropdownMenuItem
-                    key={size}
-                    onClick={() => handlePageSizeChange(size)}
-                    className={cn(pageSize === size && 'bg-accent')}
-                  >
-                    {size} per page
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          <ListPagination
-            hasPrev={pagination.hasPrev}
-            hasNext={pagination.hasNext}
-            onPrev={pagination.onPrev}
-            onNext={pagination.onNext}
-            rangeLabel={undefined}
-            currentPage={pagination.currentPage}
-            totalPages={pagination.totalPages}
-            onPageChange={pagination.onPageChange}
-          />
-        </div>
-      </div>
+      </ResourceListTableToolbar>
 
       {/* Create Pod */}
       {showCreateWizard && (

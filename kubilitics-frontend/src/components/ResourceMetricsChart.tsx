@@ -183,7 +183,7 @@ export function ResourceMetricsChart({
                   borderRadius: '6px',
                   fontSize: '12px'
                 }}
-                formatter={(value: any) => [`${value}${unit}`, title]}
+                formatter={(value: number | string) => [`${value}${unit}`, title]}
               />
               <Area
                 type="monotone"
@@ -225,7 +225,7 @@ export function ResourceMetricsChart({
                   borderRadius: '6px',
                   fontSize: '12px'
                 }}
-                formatter={(value: any) => [`${value}${unit}`, title]}
+                formatter={(value: number | string) => [`${value}${unit}`, title]}
               />
               <Line
                 type="monotone"

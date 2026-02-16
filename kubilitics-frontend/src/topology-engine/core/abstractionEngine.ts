@@ -61,7 +61,7 @@ export function applyAbstraction(graph: TopologyGraph, options: FilterOptions): 
     }
 
     // Health filter
-    if (selectedHealth.size > 0 && !selectedHealth.has(node.computed.health)) {
+    if (selectedHealth.size > 0 && !selectedHealth.has(node.computed?.health)) {
       skippedByHealth++;
       continue;
     }

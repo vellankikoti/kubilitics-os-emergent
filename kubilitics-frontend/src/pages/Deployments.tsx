@@ -1,16 +1,18 @@
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { 
+import {
   Search, Filter, RefreshCw, MoreHorizontal, CheckCircle2, XCircle, Clock, Loader2, WifiOff, Plus,
   ChevronDown, ChevronLeft, ChevronRight, Trash2, RotateCcw, Scale, History, Rocket, FileText,
-  List, Layers, Activity,
+  List, Layers, Activity, PauseCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { resourceTableRowClassName, ROW_MOTION, StatusPill, ListPagination, PAGE_SIZE_OPTIONS, ListPageStatCard, TableColumnHeaderWithFilterAndSort, type StatusPillVariant } from '@/components/list';
+import { resourceTableRowClassName, ROW_MOTION, StatusPill, ListPagination, PAGE_SIZE_OPTIONS, ListPageStatCard, ListPageHeader, TableColumnHeaderWithFilterAndSort, TableFilterCell, AgeCell, TableEmptyState, TableSkeletonRows, CopyNameDropdownItem, NamespaceBadge, ResourceListTableToolbar, type StatusPillVariant } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useTableKeyboardNav } from '@/hooks/useTableKeyboardNav';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 import { useWorkloadMetricsMap } from '@/hooks/useWorkloadMetricsMap';
 import { ResizableTableProvider, ResizableTableHead, ResizableTableCell, type ResizableColumnConfig } from '@/components/ui/resizable-table';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
@@ -35,18 +37,19 @@ import { DeploymentIcon } from '@/components/icons/KubernetesIcons';
 interface DeploymentResource extends KubernetesResource {
   spec: {
     replicas: number;
+    paused?: boolean;
     strategy?: { type: string; rollingUpdate?: { maxSurge?: string; maxUnavailable?: string } };
-    template?: { 
-      spec?: { 
-        containers?: Array<{ 
-          name: string; 
+    template?: {
+      spec?: {
+        containers?: Array<{
+          name: string;
           image: string;
           resources?: {
             requests?: { cpu?: string; memory?: string };
             limits?: { cpu?: string; memory?: string };
           };
-        }> 
-      } 
+        }>
+      }
     };
   };
   status: { replicas?: number; readyReplicas?: number; updatedReplicas?: number; availableReplicas?: number; conditions?: Array<{ type: string; status: string }> };
@@ -56,12 +59,13 @@ interface DeploymentResource extends KubernetesResource {
 interface Deployment {
   name: string;
   namespace: string;
-  status: 'Healthy' | 'Progressing' | 'Degraded';
+  status: 'Healthy' | 'Progressing' | 'Degraded' | 'Paused';
   ready: string;
   upToDate: number;
   available: number;
   strategy: string;
   age: string;
+  creationTimestamp?: string;
   replicas: number;
   revision: string;
   images: string[];
@@ -69,6 +73,7 @@ interface Deployment {
   maxUnavailable: string;
   cpu: string;
   memory: string;
+  paused: boolean;
 }
 
 const DEPLOYMENTS_TABLE_COLUMNS: ResizableColumnConfig[] = [
@@ -88,16 +93,34 @@ const DEPLOYMENTS_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'age', defaultWidth: 90, minWidth: 56 },
 ];
 
+const DEPLOYMENTS_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'status', label: 'Status' },
+  { id: 'ready', label: 'Ready' },
+  { id: 'upToDate', label: 'Up-to-date' },
+  { id: 'available', label: 'Available' },
+  { id: 'strategy', label: 'Strategy' },
+  { id: 'maxSurge', label: 'Max Surge' },
+  { id: 'maxUnavailable', label: 'Max Unavailable' },
+  { id: 'revision', label: 'Revision' },
+  { id: 'images', label: 'Images' },
+  { id: 'cpu', label: 'CPU' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'age', label: 'Age' },
+];
+
 const statusConfig = {
   Healthy: { icon: CheckCircle2, color: 'text-[hsl(142,76%,36%)]', bg: 'bg-[hsl(142,76%,36%)]/10' },
   Progressing: { icon: Clock, color: 'text-[hsl(45,93%,47%)]', bg: 'bg-[hsl(45,93%,47%)]/10' },
   Degraded: { icon: XCircle, color: 'text-[hsl(0,72%,51%)]', bg: 'bg-[hsl(0,72%,51%)]/10' },
+  Paused: { icon: PauseCircle, color: 'text-[hsl(220,60%,60%)]', bg: 'bg-[hsl(220,60%,60%)]/10' },
 };
 
 const deploymentStatusToVariant: Record<Deployment['status'], StatusPillVariant> = {
   Healthy: 'success',
   Progressing: 'warning',
   Degraded: 'error',
+  Paused: 'neutral',
 };
 
 function parseReadyFraction(ready: string): number {
@@ -112,9 +135,11 @@ function transformResource(resource: DeploymentResource): Deployment {
   const desired = resource.spec?.replicas ?? 0;
   const ready = resource.status?.readyReplicas ?? 0;
   const available = resource.status?.availableReplicas ?? 0;
+  const isPaused = resource.spec?.paused === true;
 
   let status: Deployment['status'] = 'Healthy';
-  if (ready === 0 && desired > 0) status = 'Degraded';
+  if (isPaused) status = 'Paused';
+  else if (ready === 0 && desired > 0) status = 'Degraded';
   else if (ready < desired) status = 'Progressing';
 
   const annotations = resource.metadata?.annotations ?? {};
@@ -134,6 +159,7 @@ function transformResource(resource: DeploymentResource): Deployment {
     available,
     strategy: resource.spec?.strategy?.type || 'RollingUpdate',
     age: calculateAge(resource.metadata.creationTimestamp),
+    creationTimestamp: resource.metadata?.creationTimestamp,
     replicas: desired,
     revision,
     images,
@@ -141,10 +167,11 @@ function transformResource(resource: DeploymentResource): Deployment {
     maxUnavailable,
     cpu: '-',
     memory: '-',
+    paused: isPaused,
   };
 }
 
-type ListView = 'flat' | 'byNamespace';
+type ListView = 'flat' | 'byNamespace' | 'byStrategy';
 
 export default function Deployments() {
   const navigate = useNavigate();
@@ -157,18 +184,21 @@ export default function Deployments() {
   const [listView, setListView] = useState<ListView>('flat');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [showTableFilters, setShowTableFilters] = useState(false);
 
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = useK8sResourceList<DeploymentResource>('deployments', undefined, { limit: 5000 });
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useK8sResourceList<DeploymentResource>('deployments', undefined, { limit: 5000 });
   const deleteResource = useDeleteK8sResource('deployments');
   const createResource = useCreateK8sResource('deployments');
   const patchDeployment = usePatchK8sResource('deployments');
   const backendBaseUrl = getEffectiveBackendBaseUrl(useBackendConfigStore((s) => s.backendBaseUrl));
   const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
-  const clusterId = useClusterStore((s) => s.activeCluster)?.id ?? useBackendConfigStore((s) => s.currentClusterId);
+  const activeCluster = useClusterStore((s) => s.activeCluster);
+  const currentClusterId = useBackendConfigStore((s) => s.currentClusterId);
+  const clusterId = activeCluster?.id ?? currentClusterId;
 
   const items: Deployment[] = isConnected && data
     ? (data.items ?? []).map(transformResource)
@@ -214,6 +244,7 @@ export default function Deployments() {
     available: items.filter((i) => i.status === 'Healthy').length,
     progressing: items.filter((i) => i.status === 'Progressing').length,
     degraded: items.filter((i) => i.status === 'Degraded').length,
+    paused: items.filter((i) => i.status === 'Paused').length,
     rollingUpdates: items.filter((i) => i.status === 'Progressing').length,
     scaleEvents24h: selectedNamespace === 'all' ? 0 : scaleEvents24h,
   }), [items, selectedNamespace, scaleEvents24h]);
@@ -236,7 +267,7 @@ export default function Deployments() {
       return den > 0 ? parseInt(m[1], 10) / den : -1;
     };
     return [
-      { columnId: 'name', getValue: (i) => i.name, sortable: true, filterable: false },
+      { columnId: 'name', getValue: (i) => i.name, sortable: true, filterable: true },
       { columnId: 'namespace', getValue: (i) => i.namespace, sortable: true, filterable: true },
       { columnId: 'status', getValue: (i) => i.status, sortable: true, filterable: true },
       { columnId: 'ready', getValue: (i) => i.ready, sortable: true, filterable: false, compare: (a, b) => parseReady(a.ready) - parseReady(b.ready) },
@@ -246,14 +277,15 @@ export default function Deployments() {
       { columnId: 'maxSurge', getValue: (i) => i.maxSurge, sortable: true, filterable: false },
       { columnId: 'maxUnavailable', getValue: (i) => i.maxUnavailable, sortable: true, filterable: false },
       { columnId: 'revision', getValue: (i) => i.revision, sortable: true, filterable: false },
-      { columnId: 'images', getValue: (i) => (i.images?.length ? i.images.join(', ') : '-'), sortable: true, filterable: false },
+      { columnId: 'images', getValue: (i) => (i.images?.length ? i.images.join(', ') : '-'), sortable: true, filterable: true },
       { columnId: 'cpu', getValue: (i) => i.cpu, sortable: true, filterable: false },
       { columnId: 'memory', getValue: (i) => i.memory, sortable: true, filterable: false },
+      { columnId: 'hadScaleEvent24h', getValue: () => 'No', sortable: false, filterable: true },
       { columnId: 'age', getValue: (i) => i.age, sortable: true, filterable: false },
     ];
   }, []);
 
-  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: deploymentsTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, valueCountsByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: deploymentsTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
 
   const totalFiltered = filteredItems.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
@@ -307,15 +339,18 @@ export default function Deployments() {
   };
 
   const groupedOnPage = useMemo(() => {
-    if (listView !== 'byNamespace' || itemsOnPage.length === 0) return [];
+    if ((listView !== 'byNamespace' && listView !== 'byStrategy') || itemsOnPage.length === 0) return [];
+    const groupByKey = listView === 'byStrategy' ? (item: Deployment) => item.strategy : (item: Deployment) => item.namespace;
+    const labelPrefix = listView === 'byStrategy' ? 'Strategy: ' : 'Namespace: ';
     const map = new Map<string, Deployment[]>();
     for (const item of itemsOnPage) {
-      const list = map.get(item.namespace) ?? [];
+      const k = groupByKey(item);
+      const list = map.get(k) ?? [];
       list.push(item);
-      map.set(item.namespace, list);
+      map.set(k, list);
     }
     return Array.from(map.entries())
-      .map(([label, deployments]) => ({ groupKey: `ns:${label}`, label, deployments }))
+      .map(([label, deployments]) => ({ groupKey: `${listView}:${label}`, label: `${labelPrefix}${label}`, deployments }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [listView, itemsOnPage]);
 
@@ -345,41 +380,6 @@ export default function Deployments() {
     setDeleteDialog({ open: false, item: null });
   };
 
-  const deploymentExportConfig = {
-    filenamePrefix: 'deployments',
-    resourceLabel: 'deployments',
-    getExportData: (d: Deployment) => ({ name: d.name, namespace: d.namespace, status: d.status, ready: d.ready, upToDate: d.upToDate, available: d.available, strategy: d.strategy, age: d.age, replicas: d.replicas }),
-    csvColumns: [
-      { label: 'Name', getValue: (d: Deployment) => d.name },
-      { label: 'Namespace', getValue: (d: Deployment) => d.namespace },
-      { label: 'Status', getValue: (d: Deployment) => d.status },
-      { label: 'Ready', getValue: (d: Deployment) => d.ready },
-      { label: 'Up to date', getValue: (d: Deployment) => d.upToDate },
-      { label: 'Available', getValue: (d: Deployment) => d.available },
-      { label: 'Strategy', getValue: (d: Deployment) => d.strategy },
-      { label: 'Age', getValue: (d: Deployment) => d.age },
-      { label: 'Replicas', getValue: (d: Deployment) => d.replicas },
-    ],
-    toK8sYaml: (d: Deployment) => `---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${d.name}
-  namespace: ${d.namespace}
-spec:
-  replicas: ${d.replicas}
-  strategy:
-    type: ${d.strategy}
-  selector:
-    matchLabels: {}
-  template:
-    metadata:
-      labels: {}
-    spec:
-      containers: []
-`,
-  };
-
   const toggleSelection = (item: Deployment) => {
     const key = `${item.namespace}/${item.name}`;
     const newSel = new Set(selectedItems);
@@ -404,51 +404,133 @@ spec:
   const isAllSelected = itemsOnPage.length > 0 && selectedItems.size === itemsOnPage.length;
   const isSomeSelected = selectedItems.size > 0 && selectedItems.size < itemsOnPage.length;
 
+  const keyboardNav = useTableKeyboardNav({
+    rowCount: itemsOnPage.length,
+    onOpenRow: (index) => {
+      const item = itemsOnPage[index];
+      if (item) navigate(`/deployments/${item.namespace}/${item.name}`);
+    },
+    getRowKeyAt: (index) => {
+      const item = itemsOnPage[index];
+      return item ? `${item.namespace}/${item.name}` : '';
+    },
+    selectedKeys: selectedItems,
+    onToggleSelect: (key) => {
+      const item = itemsOnPage.find((i) => `${i.namespace}/${i.name}` === key);
+      if (item) toggleSelection(item);
+    },
+    enabled: listView === 'flat' && itemsOnPage.length > 0,
+  });
+
+  const columnVisibility = useColumnVisibility({
+    tableId: 'deployments',
+    columns: DEPLOYMENTS_COLUMNS_FOR_VISIBILITY,
+    alwaysVisible: ['name'],
+  });
+  const visibleColumnCount = useMemo(() => {
+    const dataCols = DEPLOYMENTS_TABLE_COLUMNS.filter((c) => columnVisibility.isColumnVisible(c.id)).length;
+    return 1 + dataCols + 1; // checkbox + data columns + actions
+  }, [columnVisibility.visibleColumns]);
+
+  const deploymentExportConfig = useMemo(() => {
+    const allExportColumns = [
+      { id: 'name', label: 'Name', getValue: (d: Deployment) => d.name },
+      { id: 'namespace', label: 'Namespace', getValue: (d: Deployment) => d.namespace },
+      { id: 'status', label: 'Status', getValue: (d: Deployment) => d.status },
+      { id: 'ready', label: 'Ready', getValue: (d: Deployment) => d.ready },
+      { id: 'upToDate', label: 'Up to date', getValue: (d: Deployment) => d.upToDate },
+      { id: 'available', label: 'Available', getValue: (d: Deployment) => d.available },
+      { id: 'strategy', label: 'Strategy', getValue: (d: Deployment) => d.strategy },
+      { id: 'maxSurge', label: 'Max Surge', getValue: (d: Deployment) => d.maxSurge },
+      { id: 'maxUnavailable', label: 'Max Unavailable', getValue: (d: Deployment) => d.maxUnavailable },
+      { id: 'revision', label: 'Revision', getValue: (d: Deployment) => d.revision },
+      { id: 'images', label: 'Images', getValue: (d: Deployment) => (d.images?.length ? d.images.join(', ') : '-') },
+      { id: 'cpu', label: 'CPU', getValue: (d: Deployment) => d.cpu },
+      { id: 'memory', label: 'Memory', getValue: (d: Deployment) => d.memory },
+      { id: 'age', label: 'Age', getValue: (d: Deployment) => d.age },
+      { id: 'replicas', label: 'Replicas', getValue: (d: Deployment) => d.replicas },
+    ];
+    const visible = (id: string) => id === 'name' || id === 'replicas' || columnVisibility.isColumnVisible(id);
+    const csvColumns = allExportColumns
+      .filter((col) => visible(col.id))
+      .map(({ label, getValue }) => ({ label, getValue }));
+    return {
+      filenamePrefix: 'deployments',
+      resourceLabel: 'deployments',
+      getExportData: (d: Deployment) => {
+        const entries = allExportColumns
+          .filter((col) => visible(col.id))
+          .map((col) => [col.label, col.getValue(d)] as const);
+        return Object.fromEntries(entries);
+      },
+      csvColumns,
+      toK8sYaml: (d: Deployment) => `---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${d.name}
+  namespace: ${d.namespace}
+spec:
+  replicas: ${d.replicas}
+  strategy:
+    type: ${d.strategy}
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels: {}
+    spec:
+      containers: []
+`,
+    };
+  }, [columnVisibility.visibleColumns]);
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="p-2.5 rounded-xl bg-primary/10"><DeploymentIcon className="h-6 w-6 text-primary" /></div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Deployments</h1>
-            <p className="text-sm text-muted-foreground">
-              {filteredItems.length} deployments across {namespaces.length - 1} namespaces
-              {!isConnected && <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]"><WifiOff className="h-3 w-3" /> Connect cluster</span>}
-            </p>
+      <ListPageHeader
+        icon={<DeploymentIcon className="h-6 w-6 text-primary" />}
+        title="Deployments"
+        resourceCount={filteredItems.length}
+        subtitle={namespaces.length > 1 ? `across ${namespaces.length - 1} namespaces` : undefined}
+        demoMode={!isConnected}
+        isLoading={isLoading}
+        onRefresh={() => refetch()}
+        createLabel="Create Deployment"
+        onCreate={() => setShowCreateWizard(true)}
+        actions={
+          <>
+            <ResourceExportDropdown
+              items={filteredItems}
+              selectedKeys={selectedItems}
+              getKey={(i) => `${i.namespace}/${i.name}`}
+              config={deploymentExportConfig}
+              selectionLabel={selectedItems.size > 0 ? 'Selected deployments' : 'All visible deployments'}
+              onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+            />
+            {selectedItems.size > 0 && (
+              <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}><Trash2 className="h-4 w-4" />Delete</Button>
+            )}
+          </>
+        }
+        leftExtra={selectedItems.size > 0 ? (
+          <div className="flex items-center gap-2 ml-2 pl-2 border-l border-border">
+            <span className="text-sm text-muted-foreground">{selectedItems.size} selected</span>
+            <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelectedItems(new Set())}>Clear</Button>
           </div>
-          {selectedItems.size > 0 && (
-            <div className="flex items-center gap-2 ml-2 pl-2 border-l border-border">
-              <span className="text-sm text-muted-foreground">{selectedItems.size} selected</span>
-              <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelectedItems(new Set())}>Clear</Button>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <ResourceExportDropdown
-            items={filteredItems}
-            selectedKeys={selectedItems}
-            getKey={(i) => `${i.namespace}/${i.name}`}
-            config={deploymentExportConfig}
-            selectionLabel={selectedItems.size > 0 ? 'Selected deployments' : 'All visible deployments'}
-            onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
-          />
-          {selectedItems.size > 0 && (
-            <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}><Trash2 className="h-4 w-4" />Delete</Button>
-          )}
-          <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>{isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}</Button>
-          <Button className="gap-2" onClick={() => setShowCreateWizard(true)}><Plus className="h-4 w-4" />Create Deployment</Button>
-        </div>
-      </div>
+        ) : undefined}
+      />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        <ListPageStatCard label="Total" value={stats.total} icon={DeploymentIcon} iconColor="text-primary" selected={!columnFilters.status?.size} onClick={() => setColumnFilter('status', null)} className={cn(!columnFilters.status?.size && 'ring-2 ring-primary')} />
+        <ListPageStatCard label="Total" value={stats.total} icon={DeploymentIcon} iconColor="text-primary" selected={!hasActiveFilters} onClick={clearAllFilters} className={cn(!hasActiveFilters && 'ring-2 ring-primary')} />
         <ListPageStatCard label="Available" value={stats.available} icon={CheckCircle2} iconColor="text-[hsl(142,76%,36%)]" valueClassName="text-[hsl(142,76%,36%)]" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Healthy')} onClick={() => setColumnFilter('status', new Set(['Healthy']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Healthy') && 'ring-2 ring-[hsl(142,76%,36%)]')} />
         <ListPageStatCard label="Progressing" value={stats.progressing} icon={Clock} iconColor="text-[hsl(45,93%,47%)]" valueClassName="text-[hsl(45,93%,47%)]" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Progressing')} onClick={() => setColumnFilter('status', new Set(['Progressing']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Progressing') && 'ring-2 ring-[hsl(45,93%,47%)]')} />
         <ListPageStatCard label="Degraded" value={stats.degraded} icon={XCircle} iconColor="text-[hsl(0,72%,51%)]" valueClassName="text-[hsl(0,72%,51%)]" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Degraded')} onClick={() => setColumnFilter('status', new Set(['Degraded']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Degraded') && 'ring-2 ring-[hsl(0,72%,51%)]')} />
-        <ListPageStatCard label="Rolling Updates" value={stats.rollingUpdates} icon={Rocket} iconColor="text-purple-500" valueClassName="text-purple-600" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Progressing')} onClick={() => setColumnFilter('status', new Set(['Progressing']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Progressing') && 'ring-2 ring-purple-500')} />
-        <ListPageStatCard label="Scale Events (24h)" value={stats.scaleEvents24h} icon={Activity} iconColor="text-cyan-500" valueClassName="text-cyan-600" />
+        <ListPageStatCard label="Paused" value={stats.paused} icon={PauseCircle} iconColor="text-[hsl(220,60%,60%)]" valueClassName="text-[hsl(220,60%,60%)]" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Paused')} onClick={() => setColumnFilter('status', new Set(['Paused']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Paused') && 'ring-2 ring-[hsl(220,60%,60%)]')} />
+        <ListPageStatCard label="Scale Events (24h)" value={stats.scaleEvents24h} icon={Activity} iconColor="text-cyan-500" valueClassName="text-cyan-600" selected={columnFilters.hadScaleEvent24h?.size === 1 && columnFilters.hadScaleEvent24h?.has('Yes')} onClick={() => { if (columnFilters.hadScaleEvent24h?.size === 1 && columnFilters.hadScaleEvent24h?.has('Yes')) setColumnFilter('hadScaleEvent24h', null); else setColumnFilter('hadScaleEvent24h', new Set(['Yes'])); }} className={cn(columnFilters.hadScaleEvent24h?.size === 1 && columnFilters.hadScaleEvent24h?.has('Yes') && 'ring-2 ring-cyan-500')} />
       </div>
 
+      <ResourceListTableToolbar
+        globalFilterBar={
       <ResourceCommandBar
         scope={
           <div className="w-full min-w-0">
@@ -493,204 +575,24 @@ spec:
             options={[
               { id: 'flat', label: 'Flat', icon: List },
               { id: 'byNamespace', label: 'By Namespace', icon: Layers },
+              { id: 'byStrategy', label: 'By Strategy', icon: Activity },
             ]}
             label=""
             ariaLabel="List structure"
           />
         }
-        className="mb-2"
+        className="mb-0"
       />
-
-      <div className="border border-border rounded-xl overflow-x-auto bg-card">
-        <ResizableTableProvider tableId="deployments" columnConfig={DEPLOYMENTS_TABLE_COLUMNS}>
-          <Table className="table-fixed" style={{ minWidth: 1650 }}>
-            <TableHeader>
-              <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
-                <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
-                <ResizableTableHead columnId="name">
-                  <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="namespace">
-                  <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="status">
-                  <TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="ready">
-                  <TableColumnHeaderWithFilterAndSort columnId="ready" label="Ready" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="upToDate">
-                  <TableColumnHeaderWithFilterAndSort columnId="upToDate" label="Up-to-date" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="available">
-                  <TableColumnHeaderWithFilterAndSort columnId="available" label="Available" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="strategy">
-                  <TableColumnHeaderWithFilterAndSort columnId="strategy" label="Strategy" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.strategy ?? []} selectedFilterValues={columnFilters.strategy ?? new Set()} onFilterChange={setColumnFilter} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="maxSurge">
-                  <TableColumnHeaderWithFilterAndSort columnId="maxSurge" label="Max Surge" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="maxUnavailable">
-                  <TableColumnHeaderWithFilterAndSort columnId="maxUnavailable" label="Max Unavailable" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="revision">
-                  <TableColumnHeaderWithFilterAndSort columnId="revision" label="Revision" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="images">
-                  <TableColumnHeaderWithFilterAndSort columnId="images" label="Images" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="cpu" title="CPU">
-                  <TableColumnHeaderWithFilterAndSort columnId="cpu" label="CPU" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="memory" title="Memory">
-                  <TableColumnHeaderWithFilterAndSort columnId="memory" label="Memory" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <ResizableTableHead columnId="age">
-                  <TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
-                </ResizableTableHead>
-                <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading && isConnected ? (
-                <TableRow><TableCell colSpan={15} className="h-32 text-center"><div className="flex flex-col items-center gap-2"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><p className="text-sm text-muted-foreground">Loading...</p></div></TableCell></TableRow>
-              ) : filteredItems.length === 0 ? (
-                <TableRow><TableCell colSpan={15} className="h-32 text-center text-muted-foreground"><div className="flex flex-col items-center gap-2"><Rocket className="h-8 w-8 opacity-50" /><p>No deployments found</p>{(searchQuery || hasActiveFilters) && <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>}</div></TableCell></TableRow>
-              ) : listView === 'flat' ? (
-                itemsOnPage.map((item, idx) => {
-                  const StatusIcon = statusConfig[item.status]?.icon || Clock;
-                  const style = statusConfig[item.status];
-                  const key = `${item.namespace}/${item.name}`;
-                  const isSelected = selectedItems.has(key);
-                  const cpuVal = metricsMap[key]?.cpu ?? '-';
-                  const memVal = metricsMap[key]?.memory ?? '-';
-                  const cpuNum = parseCpu(cpuVal);
-                  const memNum = parseMemory(memVal);
-                  const cpuDataPoints = cpuNum != null ? Array(12).fill(cpuNum) : undefined;
-                  const memDataPoints = memNum != null ? Array(12).fill(memNum) : undefined;
-                  return (
-                    <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
-                      <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
-                      <ResizableTableCell columnId="name"><Link to={`/deployments/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><DeploymentIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
-                      <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
-                      <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={deploymentStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>
-                      <ResizableTableCell columnId="ready" className="font-mono text-sm">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Progress value={parseReadyFraction(item.ready)} className="h-1.5 w-10 flex-shrink-0" />
-                          <span className="tabular-nums">{item.ready}</span>
-                        </div>
-                      </ResizableTableCell>
-                      <ResizableTableCell columnId="upToDate" className="font-mono text-sm">{item.upToDate}</ResizableTableCell>
-                      <ResizableTableCell columnId="available" className="font-mono text-sm">{item.available}</ResizableTableCell>
-                      <ResizableTableCell columnId="strategy"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.strategy}</Badge></ResizableTableCell>
-                      <ResizableTableCell columnId="maxSurge" className="font-mono text-xs">{item.maxSurge}</ResizableTableCell>
-                      <ResizableTableCell columnId="maxUnavailable" className="font-mono text-xs">{item.maxUnavailable}</ResizableTableCell>
-                      <ResizableTableCell columnId="revision" className="font-mono text-xs">{item.revision}</ResizableTableCell>
-                      <ResizableTableCell columnId="images" className="text-xs truncate max-w-[180px]" title={item.images.join(', ')}>{item.images.length ? item.images.join(', ') : '-'}</ResizableTableCell>
-                      <ResizableTableCell columnId="cpu">
-                        <div className="min-w-0 overflow-hidden">
-                          <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} max={deploymentResourceMaxMap[key]?.cpuMax} />
-                        </div>
-                      </ResizableTableCell>
-                      <ResizableTableCell columnId="memory">
-                        <div className="min-w-0 overflow-hidden">
-                          <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={deploymentResourceMaxMap[key]?.memoryMax} />
-                        </div>
-                      </ResizableTableCell>
-                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
-                      <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Deployment actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-48">
-                          <DropdownMenuItem onClick={() => navigate(`/deployments/${item.namespace}/${item.name}`)} className="gap-2">View Details</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => navigate(`/pods?namespace=${item.namespace}&deployment=${item.name}`)} className="gap-2">View Pods</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setScaleDialog({ open: true, item })} className="gap-2" disabled={!isConnected}><Scale className="h-4 w-4" />Scale</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setRolloutDialog({ open: true, item })} className="gap-2" disabled={!isConnected}><History className="h-4 w-4" />Rollout Actions</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => navigate(`/deployments/${item.namespace}/${item.name}?tab=yaml`)} className="gap-2"><FileText className="h-4 w-4" />Download YAML</DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem className="gap-2 text-[hsl(0,72%,51%)]" onClick={() => setDeleteDialog({ open: true, item })} disabled={!isConnected}><Trash2 className="h-4 w-4" />Delete</DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </motion.tr>
-                );
-              })
-            ) : (
-              groupedOnPage.flatMap((group) => {
-                const isCollapsed = collapsedGroups.has(group.groupKey);
-                return [
-                  <TableRow key={group.groupKey} className="bg-muted/30 hover:bg-muted/40 cursor-pointer border-b border-border/60 transition-all duration-200" onClick={() => toggleGroup(group.groupKey)}>
-                    <TableCell colSpan={15} className="py-2">
-                      <div className="flex items-center gap-2 font-medium">
-                        {isCollapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />}
-                        Namespace: {group.label}
-                        <span className="text-muted-foreground font-normal">({group.deployments.length})</span>
-                      </div>
-                    </TableCell>
-                  </TableRow>,
-                  ...(isCollapsed ? [] : group.deployments.map((item, idx) => {
-                    const StatusIcon = statusConfig[item.status]?.icon || Clock;
-                    const style = statusConfig[item.status];
-                    const key = `${item.namespace}/${item.name}`;
-                    const isSelected = selectedItems.has(key);
-                    const cpuVal = metricsMap[key]?.cpu ?? '-';
-                    const memVal = metricsMap[key]?.memory ?? '-';
-                    const cpuNum = parseCpu(cpuVal);
-                    const memNum = parseMemory(memVal);
-                    const cpuDataPoints = cpuNum != null ? Array(12).fill(cpuNum) : undefined;
-                    const memDataPoints = memNum != null ? Array(12).fill(memNum) : undefined;
-                    return (
-                      <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
-                        <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
-                        <ResizableTableCell columnId="name"><Link to={`/deployments/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><DeploymentIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
-                        <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
-                        <ResizableTableCell columnId="status"><div className={cn('inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium truncate w-fit max-w-full', style.bg, style.color)}><StatusIcon className="h-3.5 w-3.5 flex-shrink-0" /><span className="truncate">{item.status}</span></div></ResizableTableCell>
-                        <ResizableTableCell columnId="ready" className="font-mono text-sm">{item.ready}</ResizableTableCell>
-                        <ResizableTableCell columnId="upToDate" className="font-mono text-sm">{item.upToDate}</ResizableTableCell>
-                        <ResizableTableCell columnId="available" className="font-mono text-sm">{item.available}</ResizableTableCell>
-                        <ResizableTableCell columnId="strategy"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.strategy}</Badge></ResizableTableCell>
-                        <ResizableTableCell columnId="maxSurge" className="font-mono text-xs">{item.maxSurge}</ResizableTableCell>
-                        <ResizableTableCell columnId="maxUnavailable" className="font-mono text-xs">{item.maxUnavailable}</ResizableTableCell>
-                        <ResizableTableCell columnId="revision" className="font-mono text-xs">{item.revision}</ResizableTableCell>
-                        <ResizableTableCell columnId="images" className="text-xs truncate max-w-[180px]" title={item.images.join(', ')}>{item.images.length ? item.images.join(', ') : '-'}</ResizableTableCell>
-                        <ResizableTableCell columnId="cpu">
-                          <div className="min-w-0 overflow-hidden">
-                            <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} />
-                          </div>
-                        </ResizableTableCell>
-                        <ResizableTableCell columnId="memory">
-                          <div className="min-w-0 overflow-hidden">
-                            <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} />
-                          </div>
-                        </ResizableTableCell>
-                        <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
-                        <TableCell>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Deployment actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-48">
-                              <DropdownMenuItem onClick={() => navigate(`/deployments/${item.namespace}/${item.name}`)} className="gap-2">View Details</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => navigate(`/pods?namespace=${item.namespace}&deployment=${item.name}`)} className="gap-2">View Pods</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => setScaleDialog({ open: true, item })} className="gap-2" disabled={!isConnected}><Scale className="h-4 w-4" />Scale</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => setRolloutDialog({ open: true, item })} className="gap-2" disabled={!isConnected}><History className="h-4 w-4" />Rollout Actions</DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => navigate(`/deployments/${item.namespace}/${item.name}?tab=yaml`)} className="gap-2"><FileText className="h-4 w-4" />Download YAML</DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem className="gap-2 text-[hsl(0,72%,51%)]" onClick={() => setDeleteDialog({ open: true, item })} disabled={!isConnected}><Trash2 className="h-4 w-4" />Delete</DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </TableCell>
-                      </motion.tr>
-                    );
-                  })),
-                ];
-              })
-            )}
-          </TableBody>
-          </Table>
-        </ResizableTableProvider>
-      </div>
-
-      <div className="pt-4 pb-2 border-t border-border mt-2">
+        }
+        hasActiveFilters={hasActiveFilters}
+        onClearAllFilters={clearAllFilters}
+        showTableFilters={showTableFilters}
+        onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+        columns={DEPLOYMENTS_COLUMNS_FOR_VISIBILITY}
+        visibleColumns={columnVisibility.visibleColumns}
+        onColumnToggle={columnVisibility.setColumnVisible}
+        tableContainerProps={keyboardNav.tableContainerProps}
+        footer={
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-3">
             <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
@@ -723,9 +625,410 @@ spec:
             currentPage={pagination.currentPage}
             totalPages={pagination.totalPages}
             onPageChange={pagination.onPageChange}
+            dataUpdatedAt={dataUpdatedAt}
+            isFetching={isFetching}
           />
         </div>
-      </div>
+        }
+      >
+        <ResizableTableProvider tableId="deployments" columnConfig={DEPLOYMENTS_TABLE_COLUMNS}>
+          <Table className="table-fixed" style={{ minWidth: 1650 }}>
+            <TableHeader>
+              <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
+                <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
+                {columnVisibility.isColumnVisible('name') && (
+                  <ResizableTableHead columnId="name">
+                    <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('namespace') && (
+                  <ResizableTableHead columnId="namespace">
+                    <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('status') && (
+                  <ResizableTableHead columnId="status">
+                    <TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('ready') && (
+                  <ResizableTableHead columnId="ready">
+                    <TableColumnHeaderWithFilterAndSort columnId="ready" label="Ready" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('upToDate') && (
+                  <ResizableTableHead columnId="upToDate">
+                    <TableColumnHeaderWithFilterAndSort columnId="upToDate" label="Up-to-date" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('available') && (
+                  <ResizableTableHead columnId="available">
+                    <TableColumnHeaderWithFilterAndSort columnId="available" label="Available" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('strategy') && (
+                  <ResizableTableHead columnId="strategy">
+                    <TableColumnHeaderWithFilterAndSort columnId="strategy" label="Strategy" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('maxSurge') && (
+                  <ResizableTableHead columnId="maxSurge">
+                    <TableColumnHeaderWithFilterAndSort columnId="maxSurge" label="Max Surge" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('maxUnavailable') && (
+                  <ResizableTableHead columnId="maxUnavailable">
+                    <TableColumnHeaderWithFilterAndSort columnId="maxUnavailable" label="Max Unavailable" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('revision') && (
+                  <ResizableTableHead columnId="revision">
+                    <TableColumnHeaderWithFilterAndSort columnId="revision" label="Revision" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('images') && (
+                  <ResizableTableHead columnId="images">
+                    <TableColumnHeaderWithFilterAndSort columnId="images" label="Images" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('cpu') && (
+                  <ResizableTableHead columnId="cpu" title="CPU">
+                    <TableColumnHeaderWithFilterAndSort columnId="cpu" label="CPU" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('memory') && (
+                  <ResizableTableHead columnId="memory" title="Memory">
+                    <TableColumnHeaderWithFilterAndSort columnId="memory" label="Memory" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                {columnVisibility.isColumnVisible('age') && (
+                  <ResizableTableHead columnId="age">
+                    <TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
+                  </ResizableTableHead>
+                )}
+                <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
+              </TableRow>
+              {/* Filter row - appears under headers when Show filters is on */}
+              {showTableFilters && (
+                <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                  <TableCell className="w-10 p-1.5" />
+                  {columnVisibility.isColumnVisible('name') && (
+                    <ResizableTableCell columnId="name" className="p-1.5">
+                      <TableFilterCell
+                        columnId="name"
+                        label="Name"
+                        distinctValues={distinctValuesByColumn.name ?? []}
+                        selectedFilterValues={columnFilters.name ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.name}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  {columnVisibility.isColumnVisible('namespace') && (
+                    <ResizableTableCell columnId="namespace" className="p-1.5">
+                      <TableFilterCell
+                        columnId="namespace"
+                        label="Namespace"
+                        distinctValues={distinctValuesByColumn.namespace ?? []}
+                        selectedFilterValues={columnFilters.namespace ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.namespace}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  {columnVisibility.isColumnVisible('status') && (
+                    <ResizableTableCell columnId="status" className="p-1.5">
+                      <TableFilterCell
+                        columnId="status"
+                        label="Status"
+                        distinctValues={distinctValuesByColumn.status ?? []}
+                        selectedFilterValues={columnFilters.status ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.status}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  {columnVisibility.isColumnVisible('ready') && <ResizableTableCell columnId="ready" className="p-1.5" />}
+                  {columnVisibility.isColumnVisible('upToDate') && <ResizableTableCell columnId="upToDate" className="p-1.5" />}
+                  {columnVisibility.isColumnVisible('available') && <ResizableTableCell columnId="available" className="p-1.5" />}
+                  {columnVisibility.isColumnVisible('strategy') && (
+                    <ResizableTableCell columnId="strategy" className="p-1.5">
+                      <TableFilterCell
+                        columnId="strategy"
+                        label="Strategy"
+                        distinctValues={distinctValuesByColumn.strategy ?? []}
+                        selectedFilterValues={columnFilters.strategy ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.strategy}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  {columnVisibility.isColumnVisible('maxSurge') && <ResizableTableCell columnId="maxSurge" className="p-1.5" />}
+                  {columnVisibility.isColumnVisible('maxUnavailable') && <ResizableTableCell columnId="maxUnavailable" className="p-1.5" />}
+                  {columnVisibility.isColumnVisible('revision') && <ResizableTableCell columnId="revision" className="p-1.5" />}
+                  {columnVisibility.isColumnVisible('images') && (
+                    <ResizableTableCell columnId="images" className="p-1.5">
+                      <TableFilterCell
+                        columnId="images"
+                        label="Images"
+                        distinctValues={distinctValuesByColumn.images ?? []}
+                        selectedFilterValues={columnFilters.images ?? new Set()}
+                        onFilterChange={setColumnFilter}
+                        valueCounts={valueCountsByColumn.images}
+                      />
+                    </ResizableTableCell>
+                  )}
+                  {columnVisibility.isColumnVisible('cpu') && <ResizableTableCell columnId="cpu" className="p-1.5" />}
+                  {columnVisibility.isColumnVisible('memory') && <ResizableTableCell columnId="memory" className="p-1.5" />}
+                  {columnVisibility.isColumnVisible('age') && <ResizableTableCell columnId="age" className="p-1.5" />}
+                  <TableCell className="w-12 p-1.5" />
+                </TableRow>
+              )}
+            </TableHeader>
+            <TableBody>
+              {isLoading && isConnected ? (
+                <TableSkeletonRows columnCount={visibleColumnCount} />
+              ) : filteredItems.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={visibleColumnCount} className="h-40 text-center">
+                    <TableEmptyState
+                      icon={<DeploymentIcon className="h-8 w-8" />}
+                      title="No Deployments found"
+                      subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Get started by creating a Deployment.'}
+                      hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                      onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                      createLabel="Create Deployment"
+                      onCreate={() => setShowCreateWizard(true)}
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : listView === 'flat' ? (
+                itemsOnPage.map((item, idx) => {
+                  const StatusIcon = statusConfig[item.status]?.icon || Clock;
+                  const style = statusConfig[item.status];
+                  const key = `${item.namespace}/${item.name}`;
+                  const isSelected = selectedItems.has(key);
+                  const cpuVal = metricsMap[key]?.cpu ?? '-';
+                  const memVal = metricsMap[key]?.memory ?? '-';
+                  const cpuNum = parseCpu(cpuVal);
+                  const memNum = parseMemory(memVal);
+                  const cpuDataPoints = cpuNum != null ? Array(12).fill(cpuNum) : undefined;
+                  const memDataPoints = memNum != null ? Array(12).fill(memNum) : undefined;
+                  return (
+                    <motion.tr
+                      key={key}
+                      initial={ROW_MOTION.initial}
+                      animate={ROW_MOTION.animate}
+                      transition={ROW_MOTION.transition(idx)}
+                      {...keyboardNav.getRowProps(idx)}
+                      className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5', keyboardNav.getRowProps(idx).className)}
+                    >
+                      <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
+                      {columnVisibility.isColumnVisible('name') && <ResizableTableCell columnId="name"><Link to={`/deployments/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><DeploymentIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('namespace') && <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={item.namespace} className="font-normal truncate block w-fit max-w-full" /></ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('status') && <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={deploymentStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('ready') && (
+                        <ResizableTableCell columnId="ready" className="font-mono text-sm">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Progress value={parseReadyFraction(item.ready)} className="h-1.5 w-10 flex-shrink-0" />
+                            <span className="tabular-nums">{item.ready}</span>
+                          </div>
+                        </ResizableTableCell>
+                      )}
+                      {columnVisibility.isColumnVisible('upToDate') && <ResizableTableCell columnId="upToDate" className="font-mono text-sm">{item.upToDate}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('available') && <ResizableTableCell columnId="available" className="font-mono text-sm">{item.available}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('strategy') && <ResizableTableCell columnId="strategy"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.strategy}</Badge></ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('maxSurge') && <ResizableTableCell columnId="maxSurge" className="font-mono text-xs">{item.maxSurge}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('maxUnavailable') && <ResizableTableCell columnId="maxUnavailable" className="font-mono text-xs">{item.maxUnavailable}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('revision') && <ResizableTableCell columnId="revision" className="font-mono text-xs">{item.revision}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('images') && <ResizableTableCell columnId="images" className="text-xs truncate max-w-[180px]" title={item.images.join(', ')}>{item.images.length ? item.images.join(', ') : '-'}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('cpu') && (
+                        <ResizableTableCell columnId="cpu">
+                          <div className="min-w-0 overflow-hidden">
+                            <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} max={deploymentResourceMaxMap[key]?.cpuMax} />
+                          </div>
+                        </ResizableTableCell>
+                      )}
+                      {columnVisibility.isColumnVisible('memory') && (
+                        <ResizableTableCell columnId="memory">
+                          <div className="min-w-0 overflow-hidden">
+                            <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} max={deploymentResourceMaxMap[key]?.memoryMax} />
+                          </div>
+                        </ResizableTableCell>
+                      )}
+                      {columnVisibility.isColumnVisible('age') && <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>}
+                      <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Deployment actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-52">
+                          <CopyNameDropdownItem name={item.name} namespace={item.namespace} />
+                          <DropdownMenuItem onClick={() => navigate(`/deployments/${item.namespace}/${item.name}`)} className="gap-2">View Details</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => navigate(`/pods?namespace=${item.namespace}&deployment=${item.name}`)} className="gap-2">View Pods</DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => setScaleDialog({ open: true, item })} className="gap-2" disabled={!isConnected}><Scale className="h-4 w-4" />Scale</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => setRolloutDialog({ open: true, item })} className="gap-2" disabled={!isConnected}><History className="h-4 w-4" />Rollout Actions</DropdownMenuItem>
+                          {!item.paused && (
+                            <DropdownMenuItem
+                              className="gap-2"
+                              disabled={!isConnected}
+                              onClick={async () => {
+                                if (!isConnected) return;
+                                if (isBackendConfigured() && clusterId) {
+                                  await patchDeployment.mutateAsync({ name: item.name, namespace: item.namespace, patch: { spec: { paused: true } } });
+                                  toast.success(`Deployment paused: ${item.name}`);
+                                  refetch();
+                                } else {
+                                  toast.error('Backend connection required to pause deployments.');
+                                }
+                              }}
+                            >
+                              <PauseCircle className="h-4 w-4" />Pause Rollout
+                            </DropdownMenuItem>
+                          )}
+                          {item.paused && (
+                            <DropdownMenuItem
+                              className="gap-2"
+                              disabled={!isConnected}
+                              onClick={async () => {
+                                if (!isConnected) return;
+                                if (isBackendConfigured() && clusterId) {
+                                  await patchDeployment.mutateAsync({ name: item.name, namespace: item.namespace, patch: { spec: { paused: false } } });
+                                  toast.success(`Deployment resumed: ${item.name}`);
+                                  refetch();
+                                } else {
+                                  toast.error('Backend connection required to resume deployments.');
+                                }
+                              }}
+                            >
+                              <Activity className="h-4 w-4" />Resume Rollout
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => navigate(`/deployments/${item.namespace}/${item.name}?tab=yaml`)} className="gap-2"><FileText className="h-4 w-4" />Download YAML</DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem className="gap-2 text-[hsl(0,72%,51%)]" onClick={() => setDeleteDialog({ open: true, item })} disabled={!isConnected}><Trash2 className="h-4 w-4" />Delete</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </motion.tr>
+                );
+              })
+            ) : (
+              groupedOnPage.flatMap((group) => {
+                const isCollapsed = collapsedGroups.has(group.groupKey);
+                return [
+                  <TableRow key={group.groupKey} className="bg-muted/30 hover:bg-muted/40 cursor-pointer border-b border-border/60 transition-all duration-200" onClick={() => toggleGroup(group.groupKey)}>
+                    <TableCell colSpan={visibleColumnCount} className="py-2">
+                      <div className="flex items-center gap-2 font-medium">
+                        {isCollapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />}
+                        {group.label}
+                        <span className="text-muted-foreground font-normal">({group.deployments.length})</span>
+                      </div>
+                    </TableCell>
+                  </TableRow>,
+                  ...(isCollapsed ? [] : group.deployments.map((item, idx) => {
+                    const StatusIcon = statusConfig[item.status]?.icon || Clock;
+                    const style = statusConfig[item.status];
+                    const key = `${item.namespace}/${item.name}`;
+                    const isSelected = selectedItems.has(key);
+                    const cpuVal = metricsMap[key]?.cpu ?? '-';
+                    const memVal = metricsMap[key]?.memory ?? '-';
+                    const cpuNum = parseCpu(cpuVal);
+                    const memNum = parseMemory(memVal);
+                    const cpuDataPoints = cpuNum != null ? Array(12).fill(cpuNum) : undefined;
+                    const memDataPoints = memNum != null ? Array(12).fill(memNum) : undefined;
+                    return (
+                      <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
+                        <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
+                        {columnVisibility.isColumnVisible('name') && <ResizableTableCell columnId="name"><Link to={`/deployments/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><DeploymentIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('namespace') && <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={item.namespace} className="font-normal truncate block w-fit max-w-full" /></ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('status') && <ResizableTableCell columnId="status"><div className={cn('inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium truncate w-fit max-w-full', style.bg, style.color)}><StatusIcon className="h-3.5 w-3.5 flex-shrink-0" /><span className="truncate">{item.status}</span></div></ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('ready') && <ResizableTableCell columnId="ready" className="font-mono text-sm">{item.ready}</ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('upToDate') && <ResizableTableCell columnId="upToDate" className="font-mono text-sm">{item.upToDate}</ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('available') && <ResizableTableCell columnId="available" className="font-mono text-sm">{item.available}</ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('strategy') && <ResizableTableCell columnId="strategy"><Badge variant="secondary" className="font-mono text-xs truncate block w-fit max-w-full">{item.strategy}</Badge></ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('maxSurge') && <ResizableTableCell columnId="maxSurge" className="font-mono text-xs">{item.maxSurge}</ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('maxUnavailable') && <ResizableTableCell columnId="maxUnavailable" className="font-mono text-xs">{item.maxUnavailable}</ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('revision') && <ResizableTableCell columnId="revision" className="font-mono text-xs">{item.revision}</ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('images') && <ResizableTableCell columnId="images" className="text-xs truncate max-w-[180px]" title={item.images.join(', ')}>{item.images.length ? item.images.join(', ') : '-'}</ResizableTableCell>}
+                        {columnVisibility.isColumnVisible('cpu') && (
+                          <ResizableTableCell columnId="cpu">
+                            <div className="min-w-0 overflow-hidden">
+                              <UsageBar variant="sparkline" value={cpuVal} kind="cpu" displayFormat="compact" width={56} />
+                            </div>
+                          </ResizableTableCell>
+                        )}
+                        {columnVisibility.isColumnVisible('memory') && (
+                          <ResizableTableCell columnId="memory">
+                            <div className="min-w-0 overflow-hidden">
+                              <UsageBar variant="sparkline" value={memVal} kind="memory" displayFormat="compact" width={56} />
+                            </div>
+                          </ResizableTableCell>
+                        )}
+                        {columnVisibility.isColumnVisible('age') && <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>}
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Deployment actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-52">
+                              <CopyNameDropdownItem name={item.name} namespace={item.namespace} />
+                              <DropdownMenuItem onClick={() => navigate(`/deployments/${item.namespace}/${item.name}`)} className="gap-2">View Details</DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => navigate(`/pods?namespace=${item.namespace}&deployment=${item.name}`)} className="gap-2">View Pods</DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => setScaleDialog({ open: true, item })} className="gap-2" disabled={!isConnected}><Scale className="h-4 w-4" />Scale</DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => setRolloutDialog({ open: true, item })} className="gap-2" disabled={!isConnected}><History className="h-4 w-4" />Rollout Actions</DropdownMenuItem>
+                              {!item.paused && (
+                                <DropdownMenuItem
+                                  className="gap-2"
+                                  disabled={!isConnected}
+                                  onClick={async () => {
+                                    if (!isConnected) return;
+                                    if (isBackendConfigured() && clusterId) {
+                                      await patchDeployment.mutateAsync({ name: item.name, namespace: item.namespace, patch: { spec: { paused: true } } });
+                                      toast.success(`Deployment paused: ${item.name}`);
+                                      refetch();
+                                    } else {
+                                      toast.error('Backend connection required to pause deployments.');
+                                    }
+                                  }}
+                                >
+                                  <PauseCircle className="h-4 w-4" />Pause Rollout
+                                </DropdownMenuItem>
+                              )}
+                              {item.paused && (
+                                <DropdownMenuItem
+                                  className="gap-2"
+                                  disabled={!isConnected}
+                                  onClick={async () => {
+                                    if (!isConnected) return;
+                                    if (isBackendConfigured() && clusterId) {
+                                      await patchDeployment.mutateAsync({ name: item.name, namespace: item.namespace, patch: { spec: { paused: false } } });
+                                      toast.success(`Deployment resumed: ${item.name}`);
+                                      refetch();
+                                    } else {
+                                      toast.error('Backend connection required to resume deployments.');
+                                    }
+                                  }}
+                                >
+                                  <Activity className="h-4 w-4" />Resume Rollout
+                                </DropdownMenuItem>
+                              )}
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => navigate(`/deployments/${item.namespace}/${item.name}?tab=yaml`)} className="gap-2"><FileText className="h-4 w-4" />Download YAML</DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem className="gap-2 text-[hsl(0,72%,51%)]" onClick={() => setDeleteDialog({ open: true, item })} disabled={!isConnected}><Trash2 className="h-4 w-4" />Delete</DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </motion.tr>
+                    );
+                  })),
+                ];
+              })
+            )}
+          </TableBody>
+          </Table>
+        </ResizableTableProvider>
+      </ResourceListTableToolbar>
 
       {showCreateWizard && (
         <ResourceCreator

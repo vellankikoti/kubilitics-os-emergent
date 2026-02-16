@@ -116,11 +116,5 @@ type AutonomyController interface {
 	GetAutonomyDescription(ctx context.Context, level AutonomyLevel) (string, error)
 }
 
-// NewAutonomyController creates a new autonomy controller with dependencies.
-func NewAutonomyController() AutonomyController {
-	// Initialize user autonomy level store
-	// Connect to Safety Engine
-	// Connect to Blast Radius Calculator
-	// Initialize approval workflow system
-	return nil
-}
+// NewAutonomyController creates a new autonomy controller.
+// The concrete implementation is in controller_impl.go.

@@ -9,10 +9,19 @@ import (
 	"k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
+// ClusterUtilization holds aggregated cluster-wide CPU/memory usage and capacity.
+type ClusterUtilization struct {
+	CPUUsedCores    float64
+	MemoryUsedGiB   float64
+	CPUCapacityCores float64
+	MemoryCapacityGiB float64
+}
+
 // MetricsService provides access to cluster metrics
 type MetricsService interface {
 	GetPodMetrics(ctx context.Context, clusterID, namespace, podName string) (*PodMetrics, error)
 	GetNodeMetrics(ctx context.Context, clusterID, nodeName string) (*NodeMetrics, error)
+	GetClusterUtilization(ctx context.Context, clusterID string) (*ClusterUtilization, error)
 	GetNamespaceMetrics(ctx context.Context, clusterID, namespace string) (*NamespaceMetrics, error)
 	GetDeploymentMetrics(ctx context.Context, clusterID, namespace, deploymentName string) (*DeploymentMetrics, error)
 	GetReplicaSetMetrics(ctx context.Context, clusterID, namespace, name string) (*DeploymentMetrics, error)
@@ -144,6 +153,57 @@ func (s *metricsService) GetNodeMetrics(ctx context.Context, clusterID, nodeName
 		Name:   nodeName,
 		CPU:    formatCPUUsage(cpuCores * 1000),
 		Memory: formatMemoryUsageMi(memMi),
+	}, nil
+}
+
+// GetClusterUtilization returns aggregated cluster-wide CPU/memory usage and capacity.
+// Returns nil when Metrics Server is unavailable.
+func (s *metricsService) GetClusterUtilization(ctx context.Context, clusterID string) (*ClusterUtilization, error) {
+	client, err := s.clusterService.GetClient(clusterID)
+	if err != nil {
+		return nil, err
+	}
+
+	metricsClient, err := versioned.NewForConfig(client.Config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create metrics client: %w", err)
+	}
+
+	nodeMetricsList, err := metricsClient.MetricsV1beta1().NodeMetricses().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list node metrics: %w", err)
+	}
+
+	nodeList, err := client.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	usageByNode := make(map[string]struct{ cpuCores, memGiB float64 })
+	for _, nm := range nodeMetricsList.Items {
+		cpuCores := nm.Usage.Cpu().AsApproximateFloat64()
+		memGiB := float64(nm.Usage.Memory().Value()) / (1024 * 1024 * 1024)
+		usageByNode[nm.Name] = struct{ cpuCores, memGiB float64 }{cpuCores, memGiB}
+	}
+
+	var cpuUsed, memUsed, cpuCap, memCap float64
+	for _, node := range nodeList.Items {
+		cpuAlloc := node.Status.Allocatable[corev1.ResourceCPU]
+		memAlloc := node.Status.Allocatable[corev1.ResourceMemory]
+		cpuCap += cpuAlloc.AsApproximateFloat64()
+		memCap += float64(memAlloc.Value()) / (1024 * 1024 * 1024)
+
+		if u, ok := usageByNode[node.Name]; ok {
+			cpuUsed += u.cpuCores
+			memUsed += u.memGiB
+		}
+	}
+
+	return &ClusterUtilization{
+		CPUUsedCores:       cpuUsed,
+		MemoryUsedGiB:      memUsed,
+		CPUCapacityCores:   cpuCap,
+		MemoryCapacityGiB: memCap,
 	}, nil
 }
 

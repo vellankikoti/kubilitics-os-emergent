@@ -1,10 +1,11 @@
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Scale, Search, RefreshCw, MoreHorizontal, Loader2, WifiOff, Plus, ChevronDown } from 'lucide-react';
+import { Scale, Search, RefreshCw, MoreHorizontal, Loader2, WifiOff, Plus, ChevronDown, Filter, List, Layers, CheckSquare, Trash2 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
 import {
   Table,
   TableBody,
@@ -26,6 +27,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Checkbox } from '@/components/ui/checkbox';
 import { usePaginatedResourceList, useDeleteK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
@@ -35,14 +37,23 @@ import { cn } from '@/lib/utils';
 import {
   ResourceCommandBar,
   ResourceExportDropdown,
+  ListViewSegmentedControl,
   ListPagination,
   ListPageStatCard,
+  ListPageHeader,
   TableColumnHeaderWithFilterAndSort,
   resourceTableRowClassName,
   ROW_MOTION,
   PAGE_SIZE_OPTIONS,
+  AgeCell,
+  TableEmptyState,
+  NamespaceBadge,
+  ResourceListTableToolbar,
+  TableFilterCell,
 } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
+import { getDetailPath } from '@/utils/resourceKindMapper';
 
 interface HPAResource extends KubernetesResource {
   spec?: {
@@ -74,10 +85,14 @@ interface HPARow {
   customMetricsCount: number;
   lastScale: string;
   age: string;
+  creationTimestamp?: string;
   isScaling: boolean;
+  scalingUp: boolean;
+  scalingDown: boolean;
   atMax: boolean;
   atMin: boolean;
   scalingLimited: boolean;
+  minMaxReplicas: string;
 }
 
 function transformHPA(h: HPAResource): HPARow {
@@ -92,6 +107,7 @@ function transformHPA(h: HPAResource): HPARow {
   const currentCpu = h.status?.currentMetrics?.find((m) => m.resource?.name === 'cpu')?.resource?.current?.averageUtilization;
   const customMetricsCount = (h.spec?.metrics ?? []).filter((m) => m.type !== 'Resource' || (m.resource?.name && m.resource.name !== 'cpu' && m.resource.name !== 'memory')).length;
   const scalingLimited = (h.status?.conditions ?? []).some((c) => c.type === 'ScalingLimited' && c.status === 'True');
+  const isScaling = currentReplicas !== desiredReplicas;
   return {
     name: h.metadata.name,
     namespace: h.metadata.namespace || 'default',
@@ -99,6 +115,7 @@ function transformHPA(h: HPAResource): HPARow {
     targetName,
     minReplicas,
     maxReplicas,
+    minMaxReplicas: `${minReplicas}/${maxReplicas}`,
     currentReplicas,
     desiredReplicas,
     cpuTarget: cpuMetric != null ? `${cpuMetric}%` : '–',
@@ -106,7 +123,10 @@ function transformHPA(h: HPAResource): HPARow {
     customMetricsCount,
     lastScale: h.status?.lastScaleTime ? calculateAge(h.status.lastScaleTime) : '–',
     age: calculateAge(h.metadata.creationTimestamp),
-    isScaling: currentReplicas !== desiredReplicas,
+    creationTimestamp: h.metadata?.creationTimestamp,
+    isScaling,
+    scalingUp: isScaling && desiredReplicas > currentReplicas,
+    scalingDown: isScaling && desiredReplicas < currentReplicas,
     atMax: desiredReplicas >= maxReplicas && maxReplicas > 0,
     atMin: desiredReplicas <= minReplicas,
     scalingLimited,
@@ -117,38 +137,65 @@ const HPA_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'name', defaultWidth: 160, minWidth: 100 },
   { id: 'namespace', defaultWidth: 120, minWidth: 80 },
   { id: 'target', defaultWidth: 160, minWidth: 100 },
-  { id: 'minReplicas', defaultWidth: 90, minWidth: 60 },
-  { id: 'maxReplicas', defaultWidth: 90, minWidth: 60 },
-  { id: 'current', defaultWidth: 80, minWidth: 50 },
-  { id: 'desired', defaultWidth: 80, minWidth: 50 },
-  { id: 'cpuTarget', defaultWidth: 90, minWidth: 60 },
-  { id: 'cpuCurrent', defaultWidth: 90, minWidth: 60 },
-  { id: 'lastScale', defaultWidth: 90, minWidth: 60 },
+  { id: 'minMaxReplicas', defaultWidth: 100, minWidth: 70 },
+  { id: 'current', defaultWidth: 90, minWidth: 56 },
+  { id: 'cpuTarget', defaultWidth: 95, minWidth: 60 },
+  { id: 'cpuCurrent', defaultWidth: 95, minWidth: 60 },
+  { id: 'lastScale', defaultWidth: 100, minWidth: 64 },
   { id: 'age', defaultWidth: 90, minWidth: 56 },
+];
+
+const HPA_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'target', label: 'Target' },
+  { id: 'minMaxReplicas', label: 'Min/Max Replicas' },
+  { id: 'current', label: 'Current Replicas' },
+  { id: 'cpuTarget', label: 'Target CPU' },
+  { id: 'cpuCurrent', label: 'Current CPU' },
+  { id: 'lastScale', label: 'Last Scale Time' },
+  { id: 'age', label: 'Age' },
 ];
 
 export default function HorizontalPodAutoscalers() {
   const navigate = useNavigate();
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = usePaginatedResourceList<HPAResource>('horizontalpodautoscalers');
+  const { data, isLoading, refetch, pagination: hookPagination } = usePaginatedResourceList<HPAResource>('horizontalpodautoscalers');
   const deleteResource = useDeleteK8sResource('horizontalpodautoscalers');
 
-  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: HPARow | null }>({ open: false, item: null });
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: HPARow | null; bulk?: boolean }>({ open: false, item: null });
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showCreator, setShowCreator] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
+  const [listView, setListView] = useState<'flat' | 'byNamespace'>('flat');
+  const [showTableFilters, setShowTableFilters] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
   const allItems = (data?.allItems ?? []) as HPAResource[];
   const items: HPARow[] = useMemo(() => (isConnected ? allItems.map(transformHPA) : []), [isConnected, allItems]);
 
+  const namespaces = useMemo(() => ['all', ...Array.from(new Set(items.map((i) => i.namespace)))], [items]);
+  const itemsAfterNs = useMemo(
+    () => (selectedNamespace === 'all' ? items : items.filter((i) => i.namespace === selectedNamespace)),
+    [items, selectedNamespace]
+  );
+
   const tableConfig: ColumnConfig<HPARow>[] = useMemo(() => [
     { columnId: 'name', getValue: (i) => i.name, sortable: true, filterable: false },
     { columnId: 'namespace', getValue: (i) => i.namespace, sortable: true, filterable: true },
+    { columnId: 'scalingStatus', getValue: (i) => i.scalingUp ? 'Scaling Up' : i.scalingDown ? 'Scaling Down' : i.atMax ? 'At Max' : i.atMin ? 'At Min' : 'Stable', sortable: true, filterable: true },
+    { columnId: 'target', getValue: (i) => `${i.targetKind}/${i.targetName}`, sortable: true, filterable: false },
+    { columnId: 'minMaxReplicas', getValue: (i) => i.minMaxReplicas, sortable: true, filterable: false, compare: (a, b) => a.minReplicas - b.minReplicas || a.maxReplicas - b.maxReplicas },
+    { columnId: 'current', getValue: (i) => i.currentReplicas, sortable: true, filterable: false, compare: (a, b) => a.currentReplicas - b.currentReplicas },
+    { columnId: 'cpuTarget', getValue: (i) => i.cpuTarget, sortable: true, filterable: false },
+    { columnId: 'cpuCurrent', getValue: (i) => i.cpuCurrent, sortable: true, filterable: false },
+    { columnId: 'lastScale', getValue: (i) => i.lastScale, sortable: true, filterable: false },
     { columnId: 'age', getValue: (i) => i.age, sortable: true, filterable: false },
   ], []);
 
-  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(items, { columns: tableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, valueCountsByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterNs, { columns: tableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const columnVisibility = useColumnVisibility({ tableId: 'horizontalpodautoscalers', columns: HPA_COLUMNS_FOR_VISIBILITY, alwaysVisible: ['name'] });
 
   const searchFiltered = useMemo(() => {
     if (!searchQuery.trim()) return filteredItems;
@@ -158,11 +205,11 @@ export default function HorizontalPodAutoscalers() {
 
   const stats = useMemo(() => {
     const total = items.length;
-    const scaling = items.filter((i) => i.isScaling).length;
-    const atMax = items.filter((i) => i.atMax).length;
+    const scalingUp = items.filter((i) => i.scalingUp).length;
+    const scalingDown = items.filter((i) => i.scalingDown).length;
     const atMin = items.filter((i) => i.atMin).length;
-    const unableToScale = items.filter((i) => i.scalingLimited).length;
-    return { total, scaling, atMax, atMin, unableToScale };
+    const atMax = items.filter((i) => i.atMax).length;
+    return { total, scalingUp, scalingDown, atMin, atMax };
   }, [items]);
 
   const totalFiltered = searchFiltered.length;
@@ -189,18 +236,43 @@ export default function HorizontalPodAutoscalers() {
     currentPage: safePageIndex + 1,
     totalPages: Math.max(1, totalPages),
     onPageChange: (p: number) => setPageIndex(Math.max(0, Math.min(p - 1, totalPages - 1))),
+    dataUpdatedAt: hookPagination?.dataUpdatedAt,
+    isFetching: hookPagination?.isFetching,
   };
 
   const handleDelete = async () => {
-    if (!deleteDialog.item) return;
-    if (isConnected) {
-      await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
-      setDeleteDialog({ open: false, item: null });
-      refetch();
-    } else {
+    if (!isConnected) {
       toast.info('Connect cluster to delete resources');
+      return;
     }
+    if (deleteDialog.bulk && selectedItems.size > 0) {
+      for (const key of selectedItems) {
+        const [ns, n] = key.split('/');
+        if (n && ns) await deleteResource.mutateAsync({ name: n, namespace: ns });
+      }
+      toast.success(`Deleted ${selectedItems.size} HPA(s)`);
+      setSelectedItems(new Set());
+    } else if (deleteDialog.item) {
+      await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
+      toast.success(`HPA ${deleteDialog.item.name} deleted`);
+    }
+    setDeleteDialog({ open: false, item: null });
+    refetch();
   };
+
+  const toggleSelection = (r: HPARow) => {
+    const key = `${r.namespace}/${r.name}`;
+    const next = new Set(selectedItems);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setSelectedItems(next);
+  };
+  const toggleAll = () => {
+    if (selectedItems.size === itemsOnPage.length) setSelectedItems(new Set());
+    else setSelectedItems(new Set(itemsOnPage.map((r) => `${r.namespace}/${r.name}`)));
+  };
+  const isAllSelected = itemsOnPage.length > 0 && selectedItems.size === itemsOnPage.length;
+  const isSomeSelected = selectedItems.size > 0 && selectedItems.size < itemsOnPage.length;
 
   const exportConfig = {
     filenamePrefix: 'hpa',
@@ -215,12 +287,9 @@ export default function HorizontalPodAutoscalers() {
     ],
   };
 
-  const targetLink = (r: HPARow) => {
-    const kind = (r.targetKind || '').toLowerCase();
-    if (kind === 'deployment') return `/deployments/${r.namespace}/${r.targetName}`;
-    if (kind === 'statefulset') return `/statefulsets/${r.namespace}/${r.targetName}`;
-    if (kind === 'replicaset') return `/replicasets/${r.namespace}/${r.targetName}`;
-    return '#';
+  const targetLink = (r: HPARow): string => {
+    const path = getDetailPath(r.targetKind, r.targetName, r.namespace);
+    return path ?? '#';
   };
 
   if (showCreator) {
@@ -237,69 +306,157 @@ export default function HorizontalPodAutoscalers() {
   return (
     <>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="p-2.5 rounded-xl bg-primary/10">
-              <Scale className="h-6 w-6 text-primary" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Horizontal Pod Autoscalers</h1>
-              <p className="text-sm text-muted-foreground">
-                {searchFiltered.length} HPAs
-                {!isConnected && (
-                  <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]">
-                    <WifiOff className="h-3 w-3" /> Connect cluster
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <ResourceExportDropdown items={searchFiltered} selectedKeys={new Set()} getKey={(r) => `${r.namespace}/${r.name}`} config={exportConfig} selectionLabel="All visible" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
-            <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>
-              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            </Button>
-            <Button className="gap-2" onClick={() => setShowCreator(true)}><Plus className="h-4 w-4" /> Create</Button>
-          </div>
-        </div>
+        <ListPageHeader
+          icon={<Scale className="h-6 w-6 text-primary" />}
+          title="Horizontal Pod Autoscalers"
+          resourceCount={searchFiltered.length}
+          subtitle={namespaces.length > 1 ? `across ${namespaces.length - 1} namespaces` : undefined}
+          demoMode={!isConnected}
+          isLoading={isLoading}
+          onRefresh={() => refetch()}
+          createLabel="Create"
+          onCreate={() => setShowCreator(true)}
+          actions={
+            <>
+              <ResourceExportDropdown items={searchFiltered} selectedKeys={selectedItems} getKey={(r) => `${r.namespace}/${r.name}`} config={exportConfig} selectionLabel={selectedItems.size > 0 ? 'Selected HPAs' : 'All visible'} onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
+              {selectedItems.size > 0 && (
+                <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete {selectedItems.size} selected
+                </Button>
+              )}
+            </>
+          }
+        />
 
         <div className={cn('grid grid-cols-2 sm:grid-cols-5 gap-4', !isConnected && 'opacity-60')}>
-          <ListPageStatCard label="Total HPAs" value={stats.total} icon={Scale} iconColor="text-primary" />
-          <ListPageStatCard label="Scaling" value={stats.scaling} icon={Scale} iconColor="text-amber-600" />
-          <ListPageStatCard label="At Max" value={stats.atMax} icon={Scale} iconColor="text-muted-foreground" />
-          <ListPageStatCard label="At Min" value={stats.atMin} icon={Scale} iconColor="text-muted-foreground" />
-          <ListPageStatCard label="Unable to Scale" value={stats.unableToScale} icon={Scale} iconColor="text-destructive" />
+          <ListPageStatCard label="Total" value={stats.total} icon={Scale} iconColor="text-primary" selected={!hasActiveFilters} onClick={clearAllFilters} className={cn(!hasActiveFilters && 'ring-2 ring-primary')} />
+          <ListPageStatCard label="Scaling Up" value={stats.scalingUp} icon={Scale} iconColor="text-[hsl(142,76%,36%)]" valueClassName="text-[hsl(142,76%,36%)]" selected={columnFilters.scalingStatus?.size === 1 && columnFilters.scalingStatus.has('Scaling Up')} onClick={() => setColumnFilter('scalingStatus', new Set(['Scaling Up']))} className={cn(columnFilters.scalingStatus?.size === 1 && columnFilters.scalingStatus.has('Scaling Up') && 'ring-2 ring-[hsl(142,76%,36%)]')} />
+          <ListPageStatCard label="Scaling Down" value={stats.scalingDown} icon={Scale} iconColor="text-amber-600" valueClassName="text-amber-600" selected={columnFilters.scalingStatus?.size === 1 && columnFilters.scalingStatus.has('Scaling Down')} onClick={() => setColumnFilter('scalingStatus', new Set(['Scaling Down']))} className={cn(columnFilters.scalingStatus?.size === 1 && columnFilters.scalingStatus.has('Scaling Down') && 'ring-2 ring-amber-600')} />
+          <ListPageStatCard label="At Min" value={stats.atMin} icon={Scale} iconColor="text-muted-foreground" selected={columnFilters.scalingStatus?.size === 1 && columnFilters.scalingStatus.has('At Min')} onClick={() => setColumnFilter('scalingStatus', new Set(['At Min']))} className={cn(columnFilters.scalingStatus?.size === 1 && columnFilters.scalingStatus.has('At Min') && 'ring-2 ring-muted-foreground')} />
+          <ListPageStatCard label="At Max" value={stats.atMax} icon={Scale} iconColor="text-muted-foreground" selected={columnFilters.scalingStatus?.size === 1 && columnFilters.scalingStatus.has('At Max')} onClick={() => setColumnFilter('scalingStatus', new Set(['At Max']))} className={cn(columnFilters.scalingStatus?.size === 1 && columnFilters.scalingStatus.has('At Max') && 'ring-2 ring-muted-foreground')} />
         </div>
 
+        {/* Bulk Actions Bar */}
+        {selectedItems.size > 0 && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between p-3 bg-primary/5 border border-primary/20 rounded-lg">
+            <Badge variant="secondary" className="gap-1.5">
+              <CheckSquare className="h-3.5 w-3.5" />
+              {selectedItems.size} selected
+            </Badge>
+            <div className="flex items-center gap-2">
+              <ResourceExportDropdown items={searchFiltered} selectedKeys={selectedItems} getKey={(r) => `${r.namespace}/${r.name}`} config={exportConfig} selectionLabel="Selected HPAs" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} triggerLabel={`Export (${selectedItems.size})`} />
+              <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete selected
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedItems(new Set())}>
+                Clear
+              </Button>
+            </div>
+          </motion.div>
+        )}
+
+        <ResourceListTableToolbar
+          hasActiveFilters={hasActiveFilters}
+          onClearAllFilters={clearAllFilters}
+          globalFilterBar={
         <ResourceCommandBar
-          scope={<span className="text-sm font-medium text-muted-foreground">All</span>}
+          scope={
+            <div className="w-full min-w-0">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full min-w-0 justify-between h-10 gap-2 rounded-lg border border-border bg-background font-medium shadow-sm hover:bg-muted/50 hover:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/20">
+                    <Filter className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{selectedNamespace === 'all' ? 'All Namespaces' : selectedNamespace}</span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-48">
+                  {namespaces.map((ns) => (
+                    <DropdownMenuItem key={ns} onClick={() => setSelectedNamespace(ns)} className={cn(selectedNamespace === ns && 'bg-accent')}>
+                      {ns === 'all' ? 'All Namespaces' : ns}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          }
           search={
             <div className="relative w-full min-w-0">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input placeholder="Search HPAs..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full h-10 pl-9 rounded-lg border border-border bg-background text-sm font-medium shadow-sm placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20" aria-label="Search HPAs" />
             </div>
           }
-          className="mb-2"
+          structure={
+            <ListViewSegmentedControl
+              value={listView}
+              onChange={(v) => setListView(v as 'flat' | 'byNamespace')}
+              options={[
+                { id: 'flat', label: 'Flat', icon: List },
+                { id: 'byNamespace', label: 'By Namespace', icon: Layers },
+              ]}
+              label=""
+              ariaLabel="List structure"
+            />
+          }
         />
-
-        <div className="border border-border rounded-xl overflow-x-auto bg-card">
+          }
+          showTableFilters={showTableFilters}
+          onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+          columns={HPA_COLUMNS_FOR_VISIBILITY}
+          visibleColumns={columnVisibility.visibleColumns}
+          onColumnToggle={columnVisibility.setColumnVisible}
+          footer={
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} dataUpdatedAt={pagination.dataUpdatedAt} isFetching={pagination.isFetching} />
+          </div>
+          }
+        >
           <ResizableTableProvider tableId="horizontalpodautoscalers" columnConfig={HPA_TABLE_COLUMNS}>
-            <Table className="table-fixed" style={{ minWidth: 1050 }}>
+            <Table className="table-fixed" style={{ minWidth: 980 }}>
               <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+                <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
+                  <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} aria-label="Select all" className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
                   <ResizableTableHead columnId="name"><TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
-                  <ResizableTableHead columnId="namespace"><TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} /></ResizableTableHead>
-                  <ResizableTableHead columnId="target"><span className="text-sm font-medium">Target</span></ResizableTableHead>
-                  <ResizableTableHead columnId="minReplicas"><span className="text-sm font-medium">Min</span></ResizableTableHead>
-                  <ResizableTableHead columnId="maxReplicas"><span className="text-sm font-medium">Max</span></ResizableTableHead>
-                  <ResizableTableHead columnId="current"><span className="text-sm font-medium">Current</span></ResizableTableHead>
-                  <ResizableTableHead columnId="desired"><span className="text-sm font-medium">Desired</span></ResizableTableHead>
-                  <ResizableTableHead columnId="cpuTarget"><span className="text-sm font-medium">CPU Target</span></ResizableTableHead>
-                  <ResizableTableHead columnId="cpuCurrent"><span className="text-sm font-medium">CPU Current</span></ResizableTableHead>
-                  <ResizableTableHead columnId="lastScale"><span className="text-sm font-medium">Last Scale</span></ResizableTableHead>
+                  <ResizableTableHead columnId="namespace"><TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="target"><TableColumnHeaderWithFilterAndSort columnId="target" label="Target" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="minMaxReplicas"><TableColumnHeaderWithFilterAndSort columnId="minMaxReplicas" label="Min/Max Replicas" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="current"><TableColumnHeaderWithFilterAndSort columnId="current" label="Current Replicas" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="cpuTarget"><TableColumnHeaderWithFilterAndSort columnId="cpuTarget" label="Target CPU" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="cpuCurrent"><TableColumnHeaderWithFilterAndSort columnId="cpuCurrent" label="Current CPU" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="lastScale"><TableColumnHeaderWithFilterAndSort columnId="lastScale" label="Last Scale Time" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <ResizableTableHead columnId="age"><TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
                 </TableRow>
+                {showTableFilters && (
+                  <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                    <TableCell className="w-10" />
+                    <ResizableTableCell columnId="name" className="p-1.5" />
+                    <ResizableTableCell columnId="namespace" className="p-1.5"><TableFilterCell columnId="namespace" label="Namespace" distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.namespace} /></ResizableTableCell>
+                    <ResizableTableCell columnId="target" className="p-1.5" />
+                    <ResizableTableCell columnId="minMaxReplicas" className="p-1.5" />
+                    <ResizableTableCell columnId="current" className="p-1.5"><TableFilterCell columnId="scalingStatus" label="Scaling Status" distinctValues={distinctValuesByColumn.scalingStatus ?? []} selectedFilterValues={columnFilters.scalingStatus ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.scalingStatus} /></ResizableTableCell>
+                    <ResizableTableCell columnId="cpuTarget" className="p-1.5" />
+                    <ResizableTableCell columnId="cpuCurrent" className="p-1.5" />
+                    <ResizableTableCell columnId="lastScale" className="p-1.5" />
+                    <ResizableTableCell columnId="age" className="p-1.5" />
+                    <TableCell className="w-12" />
+                  </TableRow>
+                )}
               </TableHeader>
               <TableBody>
                 {isLoading && isConnected ? (
@@ -313,26 +470,29 @@ export default function HorizontalPodAutoscalers() {
                   </TableRow>
                 ) : searchFiltered.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={12} className="h-32 text-center text-muted-foreground">
-                      <div className="flex flex-col items-center gap-2">
-                        <Scale className="h-8 w-8 opacity-50" />
-                        <p>No HPAs found</p>
-                        {(searchQuery || hasActiveFilters) && (
-                          <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
-                        )}
-                      </div>
+                    <TableCell colSpan={12} className="h-40 text-center">
+                      <TableEmptyState
+                        icon={<Scale className="h-8 w-8" />}
+                        title="No HPAs found"
+                        subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Create an HPA to scale workloads by CPU or custom metrics.'}
+                        hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                        onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                        createLabel="Create HPA"
+                        onCreate={() => setShowCreator(true)}
+                      />
                     </TableCell>
                   </TableRow>
                 ) : (
                   itemsOnPage.map((r, idx) => (
-                    <motion.tr key={`${r.namespace}/${r.name}`} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5')}>
+                    <motion.tr key={`${r.namespace}/${r.name}`} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', selectedItems.has(`${r.namespace}/${r.name}`) && 'bg-primary/5')}>
+                      <TableCell><Checkbox checked={selectedItems.has(`${r.namespace}/${r.name}`)} onCheckedChange={() => toggleSelection(r)} aria-label={`Select ${r.name}`} /></TableCell>
                       <ResizableTableCell columnId="name">
                         <Link to={`/horizontalpodautoscalers/${r.namespace}/${r.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate">
                           <Scale className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                           <span className="truncate">{r.name}</span>
                         </Link>
                       </ResizableTableCell>
-                      <ResizableTableCell columnId="namespace"><Badge variant="outline">{r.namespace}</Badge></ResizableTableCell>
+                      <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={r.namespace} /></ResizableTableCell>
                       <ResizableTableCell columnId="target">
                         {r.targetName !== '–' ? (
                           <Link to={targetLink(r)} className="font-mono text-sm text-primary hover:underline truncate block">{r.targetKind}/{r.targetName}</Link>
@@ -340,14 +500,20 @@ export default function HorizontalPodAutoscalers() {
                           <span className="text-muted-foreground">–</span>
                         )}
                       </ResizableTableCell>
-                      <ResizableTableCell columnId="minReplicas" className="font-mono text-sm">{r.minReplicas}</ResizableTableCell>
-                      <ResizableTableCell columnId="maxReplicas" className="font-mono text-sm">{r.maxReplicas}</ResizableTableCell>
-                      <ResizableTableCell columnId="current" className="font-mono text-sm">{r.currentReplicas}</ResizableTableCell>
-                      <ResizableTableCell columnId="desired" className="font-mono text-sm">{r.desiredReplicas}</ResizableTableCell>
-                      <ResizableTableCell columnId="cpuTarget" className="text-muted-foreground">{r.cpuTarget}</ResizableTableCell>
-                      <ResizableTableCell columnId="cpuCurrent" className="text-muted-foreground">{r.cpuCurrent}</ResizableTableCell>
-                      <ResizableTableCell columnId="lastScale" className="text-muted-foreground text-sm">{r.lastScale}</ResizableTableCell>
-                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{r.age}</ResizableTableCell>
+                      <ResizableTableCell columnId="minMaxReplicas" className="font-mono text-sm tabular-nums">{r.minMaxReplicas}</ResizableTableCell>
+                      <ResizableTableCell columnId="current">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Progress
+                            value={r.maxReplicas > 0 ? Math.round((r.currentReplicas / r.maxReplicas) * 100) : 0}
+                            className="h-1.5 w-12 flex-shrink-0"
+                          />
+                          <span className="font-mono text-sm tabular-nums">{r.currentReplicas}</span>
+                        </div>
+                      </ResizableTableCell>
+                      <ResizableTableCell columnId="cpuTarget" className="text-muted-foreground font-mono text-sm">{r.cpuTarget}</ResizableTableCell>
+                      <ResizableTableCell columnId="cpuCurrent" className="text-muted-foreground font-mono text-sm">{r.cpuCurrent}</ResizableTableCell>
+                      <ResizableTableCell columnId="lastScale" className="text-muted-foreground text-sm whitespace-nowrap">{r.lastScale}</ResizableTableCell>
+                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={r.age} timestamp={r.creationTimestamp} /></ResizableTableCell>
                       <TableCell>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -360,6 +526,7 @@ export default function HorizontalPodAutoscalers() {
                             {r.targetName !== '–' && <DropdownMenuItem onClick={() => navigate(targetLink(r))} className="gap-2">View Target Workload</DropdownMenuItem>}
                             <DropdownMenuSeparator />
                             <DropdownMenuItem onClick={() => navigate(`/horizontalpodautoscalers/${r.namespace}/${r.name}?tab=yaml`)} className="gap-2">Download YAML</DropdownMenuItem>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem className="gap-2 text-destructive" onClick={() => setDeleteDialog({ open: true, item: r })} disabled={!isConnected}>Delete</DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -370,41 +537,17 @@ export default function HorizontalPodAutoscalers() {
               </TableBody>
             </Table>
           </ResizableTableProvider>
-        </div>
-
-        <div className="pt-4 pb-2 border-t border-border mt-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="gap-2">
-                    {pageSize} per page
-                    <ChevronDown className="h-4 w-4 opacity-50" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {PAGE_SIZE_OPTIONS.map((size) => (
-                    <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>
-                      {size} per page
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} />
-          </div>
-        </div>
+        </ResourceListTableToolbar>
       </motion.div>
 
       <DeleteConfirmDialog
         open={deleteDialog.open}
-        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null })}
+        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null, bulk: open ? deleteDialog.bulk : false })}
         resourceType="HorizontalPodAutoscaler"
-        resourceName={deleteDialog.item?.name || ''}
-        namespace={deleteDialog.item?.namespace}
+        resourceName={deleteDialog.bulk ? `${selectedItems.size} selected` : (deleteDialog.item?.name || '')}
+        namespace={deleteDialog.bulk ? undefined : deleteDialog.item?.namespace}
         onConfirm={handleDelete}
-        requireNameConfirmation
+        requireNameConfirmation={!deleteDialog.bulk}
       />
     </>
   );

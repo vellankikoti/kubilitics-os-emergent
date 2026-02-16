@@ -1,10 +1,12 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { Globe, Clock, Server, Download, Trash2, ExternalLink, Network, Loader2, RefreshCw, Copy, Activity, Shield, Layers } from 'lucide-react';
+import { Globe, Clock, Server, Download, Trash2, ExternalLink, Network, Loader2, Copy, Activity, Shield, Layers, Search } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Progress } from '@/components/ui/progress';
+import { cn } from '@/lib/utils';
 import {
   ResourceDetailLayout,
   YamlViewer,
@@ -21,6 +23,8 @@ import {
 } from '@/components/resources';
 import { useResourceDetail, useResourceEvents, resourceToYaml } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, useUpdateK8sResource, useK8sResource, useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
+import { Input } from '@/components/ui/input';
+import { AgeCell } from '@/components/list/AgeCell';
 import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
@@ -69,6 +73,7 @@ export default function ServiceDetail() {
   const initialTab = searchParams.get('tab') || 'overview';
   const [activeTab, setActiveTab] = useState(initialTab);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [podsTabSearch, setPodsTabSearch] = useState('');
 
   const namespace = nsParam ?? '';
   const baseUrl = getEffectiveBackendBaseUrl();
@@ -158,6 +163,15 @@ export default function ServiceDetail() {
       return Object.entries(sel).every(([k, v]) => labels[k] === v);
     });
   }, [podsInNs.data?.items, svc.spec?.selector]);
+
+  const selectorPodsFiltered = useMemo(() => {
+    if (!podsTabSearch.trim()) return selectorPods;
+    const q = podsTabSearch.trim().toLowerCase();
+    return selectorPods.filter((p: KubernetesResource & { spec?: { nodeName?: string } }) =>
+      (p.metadata?.name ?? '').toLowerCase().includes(q) ||
+      ((p.spec as { nodeName?: string })?.nodeName ?? '').toLowerCase().includes(q)
+    );
+  }, [selectorPods, podsTabSearch]);
 
   const backingDeployment = useMemo(() => {
     const ref = selectorPods.find((p: KubernetesResource & { metadata?: { ownerReferences?: Array<{ kind: string; name: string }> } }) =>
@@ -365,22 +379,40 @@ export default function ServiceDetail() {
               <p className="text-muted-foreground text-sm">No endpoints. Ensure pods match the service selector.</p>
             ) : (
               <>
-                <div className="mb-4 flex items-center gap-2">
-                  <Link to={`/endpoints/${namespace}/${svcName}`} className="text-primary text-sm hover:underline">View Endpoints resource</Link>
+                <div className="mb-4 flex flex-wrap items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">Health:</span>
+                    <span className={cn('text-sm font-mono', endpointsReady === endpointsTotal ? 'text-green-600' : endpointsReady > 0 ? 'text-amber-600' : 'text-destructive')}>
+                      {endpointsReady} ready / {endpointsTotal} total
+                    </span>
+                  </div>
+                  <Progress
+                    value={endpointsTotal > 0 ? (endpointsReady / endpointsTotal) * 100 : 0}
+                    className="h-2 w-32 max-w-[200px]"
+                  />
+                  <Link to={`/endpoints/${namespace}/${svcName}`} className="text-primary text-sm hover:underline ml-auto">View Endpoints resource</Link>
                 </div>
                 <div className="rounded-md border overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead><tr className="border-b bg-muted/40"><th className="text-left p-2">Address</th><th className="text-left p-2">Port</th><th className="text-left p-2">Protocol</th><th className="text-left p-2">Ready</th><th className="text-left p-2">Hostname</th><th className="text-left p-2">Node</th><th className="text-left p-2">Pod</th></tr></thead>
+                    <thead><tr className="border-b bg-muted/40"><th className="text-left p-3 font-medium">IP Address</th><th className="text-left p-3 font-medium">Port</th><th className="text-left p-3 font-medium">Protocol</th><th className="text-left p-3 font-medium">Ready</th><th className="text-left p-3 font-medium">Hostname</th><th className="text-left p-3 font-medium">Node Name</th><th className="text-left p-3 font-medium">Pod</th></tr></thead>
                     <tbody>
                       {endpointRows.map((row, i) => (
-                        <tr key={i} className="border-b">
-                          <td className="p-2 font-mono">{row.address}</td>
-                          <td className="p-2">{row.port}</td>
-                          <td className="p-2">{row.protocol}</td>
-                          <td className="p-2">{row.ready ? <Badge variant="default" className="bg-green-600">Ready</Badge> : <Badge variant="secondary">Not Ready</Badge>}</td>
-                          <td className="p-2">{row.hostname ?? '—'}</td>
-                          <td className="p-2">{row.nodeName ?? '—'}</td>
-                          <td className="p-2">{row.podRef ? <Link to={`/pods/${row.podRef.ns}/${row.podRef.name}`} className="text-primary hover:underline">{row.podRef.name}</Link> : '—'}</td>
+                        <tr
+                          key={i}
+                          className={cn(
+                            'border-b',
+                            row.ready ? 'bg-[hsl(142,76%,36%)]/5 border-l-4 border-l-[hsl(142,76%,36%)]' : 'bg-destructive/5 border-l-4 border-l-destructive'
+                          )}
+                        >
+                          <td className="p-3 font-mono text-xs">{row.address}</td>
+                          <td className="p-3 font-mono text-xs">{row.port}</td>
+                          <td className="p-3 font-mono text-xs">{row.protocol}</td>
+                          <td className="p-3">
+                            {row.ready ? <Badge variant="default" className="bg-[hsl(142,76%,36%)] text-white border-0">Yes</Badge> : <Badge variant="destructive" className="border-0">No</Badge>}
+                          </td>
+                          <td className="p-3 font-mono text-xs text-muted-foreground">{row.hostname ?? '—'}</td>
+                          <td className="p-3 font-mono text-xs text-muted-foreground">{row.nodeName ?? '—'}</td>
+                          <td className="p-3">{row.podRef ? <Link to={`/pods/${row.podRef.ns}/${row.podRef.name}`} className="text-primary hover:underline text-sm">{row.podRef.name}</Link> : '—'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -410,15 +442,84 @@ export default function ServiceDetail() {
       id: 'dns',
       label: 'DNS',
       content: (
-        <SectionCard title="DNS" icon={Globe}>
-          <DetailRow label="DNS name" value={<span className="font-mono">{dnsName || '—'}</span>} />
-          <div className="mt-2 flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={copyDns} disabled={!dnsName}>
-              <Copy className="h-3.5 w-3.5 mr-1" /> Copy
-            </Button>
-          </div>
-          <p className="text-muted-foreground text-sm mt-4">A/AAAA and SRV records are created automatically for this service in the cluster DNS.</p>
-        </SectionCard>
+        <div className="space-y-4">
+          <SectionCard title="Primary DNS Name" icon={Globe}>
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">Full DNS name for this service within the cluster:</p>
+              <code className="block w-full rounded-md bg-muted px-4 py-2 font-mono text-sm select-all break-all">
+                {dnsName || '—'}
+              </code>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={copyDns} disabled={!dnsName}>
+                  <Copy className="h-3.5 w-3.5 mr-1" /> Copy DNS name
+                </Button>
+              </div>
+              {clusterIP === 'None' && (
+                <div className="mt-3 space-y-2">
+                  <p className="text-sm font-medium text-blue-600 dark:text-blue-400">Headless service</p>
+                  <p className="text-xs text-muted-foreground">Per-pod DNS entries (resolve to individual pod IPs):</p>
+                  {endpointRows.some((r) => r.podRef) ? (
+                    <div className="space-y-1.5">
+                      {endpointRows.filter((r) => r.podRef).map((row, i) => {
+                        const podDns = `${row.podRef!.name}.${svcName}.${namespace}.svc.cluster.local`;
+                        return (
+                          <div key={i} className="flex items-center gap-2 flex-wrap">
+                            <code className="flex-1 min-w-0 font-mono text-xs bg-muted rounded px-2 py-1.5 break-all">{podDns}</code>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 shrink-0"
+                              onClick={() => {
+                                navigator.clipboard.writeText(podDns);
+                                toast.success('DNS name copied');
+                              }}
+                            >
+                              <Copy className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <code className="block font-mono text-xs bg-muted rounded px-2 py-1 break-all">
+                      &lt;pod-name&gt;.{svcName}.{namespace}.svc.cluster.local
+                    </code>
+                  )}
+                </div>
+              )}
+            </div>
+          </SectionCard>
+          {ports.length > 0 && (
+            <SectionCard title="Port-Specific DNS (SRV Records)" icon={Globe}>
+              <p className="text-sm text-muted-foreground mb-3">SRV records are generated per port for service discovery:</p>
+              <div className="space-y-2">
+                {ports.map((port, idx) => {
+                  const portName = port.name || `port-${idx}`;
+                  const protocol = (port.protocol || 'TCP').toLowerCase();
+                  const srvRecord = `_${portName}._${protocol}.${svcName}.${namespace}.svc.cluster.local`;
+                  return (
+                    <div key={port.name || idx} className="flex items-center justify-between p-2 rounded-md bg-muted/50">
+                      <div className="min-w-0 flex-1">
+                        <code className="font-mono text-xs break-all">{srvRecord}</code>
+                      </div>
+                      <Badge variant="outline" className="ml-2 shrink-0 font-mono text-xs">{port.port}</Badge>
+                    </div>
+                  );
+                })}
+              </div>
+            </SectionCard>
+          )}
+          <SectionCard title="DNS Notes" icon={Globe}>
+            <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
+              <li>A/AAAA records are created automatically for this service in the cluster DNS.</li>
+              <li>Short name <code className="text-xs bg-muted px-1 rounded">{svcName}</code> resolves within the same namespace.</li>
+              <li>Cross-namespace access requires the full FQDN: <code className="text-xs bg-muted px-1 rounded">{dnsName}</code></li>
+              {serviceType === 'ExternalName' && svc.spec?.externalName && (
+                <li>ExternalName services create a CNAME record pointing to <code className="text-xs bg-muted px-1 rounded">{svc.spec.externalName}</code></li>
+              )}
+            </ul>
+          </SectionCard>
+        </div>
       ),
     },
     {
@@ -435,22 +536,77 @@ export default function ServiceDetail() {
       id: 'pods',
       label: 'Pods',
       content: (
-        <SectionCard title="Pods (selector match)" icon={Server}>
-          {selectorPods.length === 0 ? <p className="text-muted-foreground text-sm">No pods match the service selector.</p> : (
-            <div className="rounded-md border overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead><tr className="border-b bg-muted/40"><th className="text-left p-2">Name</th><th className="text-left p-2">Actions</th></tr></thead>
-                <tbody>
-                  {selectorPods.map((p) => (
-                    <tr key={p.metadata?.name} className="border-b">
-                      <td className="p-2 font-mono">{p.metadata?.name}</td>
-                      <td className="p-2"><Link to={`/pods/${namespace}/${p.metadata?.name}`} className="text-primary text-sm hover:underline">View</Link></td>
+        <SectionCard title="Pods (selector match)" icon={Server} tooltip={<p className="text-xs text-muted-foreground">Pods matching this service&apos;s selector</p>}>
+          <div className="space-y-3">
+            {selectorPods.length > 0 && (
+              <div className="relative max-w-sm">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search by pod name or node..."
+                  value={podsTabSearch}
+                  onChange={(e) => setPodsTabSearch(e.target.value)}
+                  className="pl-9 h-10 text-sm"
+                  aria-label="Search pods"
+                />
+              </div>
+            )}
+            {selectorPods.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No pods match the service selector.</p>
+            ) : selectorPodsFiltered.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No pods match the search.</p>
+            ) : (
+              <div className="rounded-lg border overflow-x-auto">
+                <table className="w-full text-sm min-w-[700px]">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="text-left p-3 font-medium">Name</th>
+                      <th className="text-left p-3 font-medium">Status</th>
+                      <th className="text-left p-3 font-medium">Ready</th>
+                      <th className="text-left p-3 font-medium">Restarts</th>
+                      <th className="text-left p-3 font-medium">Node</th>
+                      <th className="text-left p-3 font-medium">CPU</th>
+                      <th className="text-left p-3 font-medium">Memory</th>
+                      <th className="text-left p-3 font-medium">Age</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  </thead>
+                  <tbody>
+                    {selectorPodsFiltered.map((p: KubernetesResource & { status?: { phase?: string; containerStatuses?: Array<{ ready?: boolean; restartCount?: number }> }; spec?: { nodeName?: string } }) => {
+                      const podName = p.metadata?.name ?? '';
+                      const podNs = p.metadata?.namespace ?? namespace ?? '';
+                      const status = p.status;
+                      const phase = status?.phase ?? '–';
+                      const containerStatuses = status?.containerStatuses ?? [];
+                      const readyCount = containerStatuses.filter((c) => c.ready).length;
+                      const totalContainers = containerStatuses.length || 1;
+                      const readyStr = `${readyCount}/${totalContainers}`;
+                      const restarts = containerStatuses.reduce((sum, c) => sum + (c.restartCount ?? 0), 0);
+                      const nodeName = p.spec?.nodeName ?? '–';
+                      return (
+                        <tr
+                          key={podName}
+                          className="border-t hover:bg-muted/20 cursor-pointer"
+                          onClick={() => navigate(`/pods/${podNs}/${podName}`)}
+                        >
+                          <td className="p-3">
+                            <Link to={`/pods/${podNs}/${podName}`} className="text-primary hover:underline font-medium" onClick={(e) => e.stopPropagation()}>
+                              {podName}
+                            </Link>
+                          </td>
+                          <td className="p-3"><Badge variant={phase === 'Running' ? 'default' : 'secondary'} className="text-xs">{phase}</Badge></td>
+                          <td className="p-3 font-mono text-xs">{readyStr}</td>
+                          <td className="p-3 font-mono text-xs">{restarts}</td>
+                          <td className="p-3 font-mono text-xs truncate max-w-[140px]" title={nodeName}>{nodeName}</td>
+                          <td className="p-3 font-mono text-xs text-muted-foreground">–</td>
+                          <td className="p-3 font-mono text-xs text-muted-foreground">–</td>
+                          <td className="p-3"><AgeCell age={p.metadata?.creationTimestamp ? calculateAge(p.metadata.creationTimestamp) : '–'} timestamp={p.metadata?.creationTimestamp} /></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </SectionCard>
       ),
     },
@@ -563,7 +719,6 @@ export default function ServiceDetail() {
         backLabel="Services"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}{isConnected && <Badge variant="outline" className="ml-2 text-xs">Live</Badge>}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Port Forward', icon: ExternalLink, variant: 'outline', onClick: () => toast.info(`kubectl port-forward svc/${svcName} -n ${namespace} <localPort>:<servicePort>`) },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

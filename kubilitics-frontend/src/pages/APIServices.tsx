@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { FileCode, Search, RefreshCw, MoreHorizontal, Loader2, WifiOff, ChevronDown } from 'lucide-react';
+import { FileCode, Search, RefreshCw, MoreHorizontal, Loader2, WifiOff, ChevronDown, CheckSquare, Trash2 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,6 +25,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { usePaginatedResourceList, useDeleteK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { DeleteConfirmDialog } from '@/components/resources';
@@ -33,15 +35,23 @@ import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import {
   ResourceCommandBar,
+  ClusterScopedScope,
   ResourceExportDropdown,
   ListPagination,
   ListPageStatCard,
+  ListPageHeader,
   TableColumnHeaderWithFilterAndSort,
+  TableFilterCell,
   resourceTableRowClassName,
   ROW_MOTION,
   PAGE_SIZE_OPTIONS,
+  AgeCell,
+  TableEmptyState,
+  ResourceListTableToolbar,
 } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
+import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
 
 interface APIServiceResource extends KubernetesResource {
   spec?: {
@@ -63,6 +73,7 @@ interface APIService {
   version: string;
   status: string;
   age: string;
+  creationTimestamp?: string;
   insecureSkipTLS: boolean;
 }
 
@@ -76,6 +87,7 @@ function transformAPIService(item: APIServiceResource): APIService {
     version: item.spec?.version || '-',
     status: condition?.status === 'True' ? 'Available' : 'Unavailable',
     age: calculateAge(item.metadata.creationTimestamp),
+    creationTimestamp: item.metadata?.creationTimestamp,
     insecureSkipTLS: !!item.spec?.insecureSkipTLSVerify,
   };
 }
@@ -90,14 +102,26 @@ const API_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'age', defaultWidth: 90, minWidth: 56 },
 ];
 
+const API_COLUMNS_FOR_VISIBILITY = [
+  { id: 'service', label: 'Service' },
+  { id: 'group', label: 'Group' },
+  { id: 'version', label: 'Version' },
+  { id: 'status', label: 'Status' },
+  { id: 'insecureSkipTLS', label: 'Insecure Skip TLS' },
+  { id: 'age', label: 'Age' },
+];
+
 export default function APIServices() {
   const navigate = useNavigate();
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = usePaginatedResourceList<APIServiceResource>('apiservices');
+  const { data, isLoading, refetch, pagination: hookPagination } = usePaginatedResourceList<APIServiceResource>('apiservices');
   const deleteResource = useDeleteK8sResource('apiservices');
 
-  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: APIService | null }>({ open: false, item: null });
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: APIService | null; bulk?: boolean }>({ open: false, item: null });
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showTableFilters, setShowTableFilters] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
@@ -107,13 +131,18 @@ export default function APIServices() {
   const tableConfig: ColumnConfig<APIService>[] = useMemo(
     () => [
       { columnId: 'name', getValue: (i) => i.name, sortable: true, filterable: false },
+      { columnId: 'service', getValue: (i) => i.service, sortable: true, filterable: false },
+      { columnId: 'group', getValue: (i) => i.group, sortable: true, filterable: false },
+      { columnId: 'version', getValue: (i) => i.version, sortable: true, filterable: false },
       { columnId: 'status', getValue: (i) => i.status, sortable: true, filterable: true },
+      { columnId: 'insecureSkipTLS', getValue: (i) => (i.insecureSkipTLS ? 'Yes' : 'No'), sortable: true, filterable: false },
       { columnId: 'age', getValue: (i) => i.age, sortable: true, filterable: false },
     ],
     []
   );
 
-  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(items, { columns: tableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, valueCountsByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(items, { columns: tableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const columnVisibility = useColumnVisibility({ tableId: 'apiservices', columns: API_COLUMNS_FOR_VISIBILITY, alwaysVisible: ['name'] });
 
   const searchFiltered = useMemo(() => {
     if (!searchQuery.trim()) return filteredItems;
@@ -153,18 +182,41 @@ export default function APIServices() {
     currentPage: safePageIndex + 1,
     totalPages: Math.max(1, totalPages),
     onPageChange: (p: number) => setPageIndex(Math.max(0, Math.min(p - 1, totalPages - 1))),
+    dataUpdatedAt: hookPagination?.dataUpdatedAt,
+    isFetching: hookPagination?.isFetching,
   };
 
   const handleDelete = async () => {
-    if (!deleteDialog.item) return;
-    if (isConnected) {
-      await deleteResource.mutateAsync({ name: deleteDialog.item.name });
-      setDeleteDialog({ open: false, item: null });
-      refetch();
-    } else {
+    if (!isConnected) {
       toast.info('Connect cluster to delete resources');
+      return;
     }
+    if (deleteDialog.bulk && selectedItems.size > 0) {
+      for (const name of selectedItems) {
+        await deleteResource.mutateAsync({ name });
+      }
+      toast.success(`Deleted ${selectedItems.size} API service(s)`);
+      setSelectedItems(new Set());
+    } else if (deleteDialog.item) {
+      await deleteResource.mutateAsync({ name: deleteDialog.item.name });
+      toast.success(`API service ${deleteDialog.item.name} deleted`);
+    }
+    setDeleteDialog({ open: false, item: null });
+    refetch();
   };
+
+  const toggleSelection = (item: APIService) => {
+    const next = new Set(selectedItems);
+    if (next.has(item.name)) next.delete(item.name);
+    else next.add(item.name);
+    setSelectedItems(next);
+  };
+  const toggleAll = () => {
+    if (selectedItems.size === itemsOnPage.length) setSelectedItems(new Set());
+    else setSelectedItems(new Set(itemsOnPage.map((i) => i.name)));
+  };
+  const isAllSelected = itemsOnPage.length > 0 && selectedItems.size === itemsOnPage.length;
+  const isSomeSelected = selectedItems.size > 0 && selectedItems.size < itemsOnPage.length;
 
   const exportConfig = {
     filenamePrefix: 'apiservices',
@@ -184,30 +236,28 @@ export default function APIServices() {
   return (
     <>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="p-2.5 rounded-xl bg-primary/10">
-              <FileCode className="h-6 w-6 text-primary" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">API Services</h1>
-              <p className="text-sm text-muted-foreground">
-                {searchFiltered.length} API services
-                {!isConnected && (
-                  <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]">
-                    <WifiOff className="h-3 w-3" /> Connect cluster
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <ResourceExportDropdown items={searchFiltered} selectedKeys={new Set()} getKey={(i) => i.name} config={exportConfig} selectionLabel="All visible" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
-            <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>
-              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            </Button>
-          </div>
-        </div>
+        <ListPageHeader
+          icon={<FileCode className="h-6 w-6 text-primary" />}
+          title="API Services"
+          resourceCount={searchFiltered.length}
+          subtitle="Cluster-scoped"
+          demoMode={!isConnected}
+          isLoading={isLoading}
+          onRefresh={() => refetch()}
+          createLabel="Create"
+          onCreate={() => setShowCreateWizard(true)}
+          actions={
+            <>
+              <ResourceExportDropdown items={searchFiltered} selectedKeys={selectedItems} getKey={(i) => i.name} config={exportConfig} selectionLabel={selectedItems.size > 0 ? 'Selected API services' : 'All visible'} onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
+              {selectedItems.size > 0 && (
+                <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete {selectedItems.size} selected
+                </Button>
+              )}
+            </>
+          }
+        />
 
         <div className={cn('grid grid-cols-2 sm:grid-cols-4 gap-4', !isConnected && 'opacity-60')}>
           <ListPageStatCard label="Total API Services" value={stats.total} icon={FileCode} iconColor="text-primary" />
@@ -216,36 +266,96 @@ export default function APIServices() {
           <ListPageStatCard label="Local" value={stats.local} icon={FileCode} iconColor="text-muted-foreground" />
         </div>
 
+        {/* Bulk Actions Bar */}
+        {selectedItems.size > 0 && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between p-3 bg-primary/5 border border-primary/20 rounded-lg">
+            <Badge variant="secondary" className="gap-1.5">
+              <CheckSquare className="h-3.5 w-3.5" />
+              {selectedItems.size} selected
+            </Badge>
+            <div className="flex items-center gap-2">
+              <ResourceExportDropdown items={searchFiltered} selectedKeys={selectedItems} getKey={(i) => i.name} config={exportConfig} selectionLabel="Selected API services" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} triggerLabel={`Export (${selectedItems.size})`} />
+              <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete selected
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedItems(new Set())}>
+                Clear
+              </Button>
+            </div>
+          </motion.div>
+        )}
+
+        <ResourceListTableToolbar
+          globalFilterBar={
         <ResourceCommandBar
-          scope={<span className="text-sm font-medium text-muted-foreground">All</span>}
+          scope={<ClusterScopedScope />}
           search={
             <div className="relative w-full min-w-0">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input placeholder="Search API services..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full h-10 pl-9 rounded-lg border border-border bg-background text-sm font-medium shadow-sm placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20" aria-label="Search API services" />
             </div>
           }
-          className="mb-2"
         />
-
-        <div className="border border-border rounded-xl overflow-x-auto bg-card">
+          }
+          hasActiveFilters={hasActiveFilters}
+          onClearAllFilters={clearAllFilters}
+          showTableFilters={showTableFilters}
+          onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+          columns={API_COLUMNS_FOR_VISIBILITY}
+          visibleColumns={columnVisibility.visibleColumns}
+          onColumnToggle={columnVisibility.setColumnVisible}
+          footer={
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} dataUpdatedAt={pagination.dataUpdatedAt} isFetching={pagination.isFetching} />
+          </div>
+          }
+        >
           <ResizableTableProvider tableId="apiservices" columnConfig={API_TABLE_COLUMNS}>
             <Table className="table-fixed" style={{ minWidth: 800 }}>
               <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+                <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
+                  <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} aria-label="Select all" className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
                   <ResizableTableHead columnId="name"><TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
-                  <ResizableTableHead columnId="service"><span className="text-sm font-medium">Service</span></ResizableTableHead>
-                  <ResizableTableHead columnId="group"><span className="text-sm font-medium">Group</span></ResizableTableHead>
-                  <ResizableTableHead columnId="version"><span className="text-sm font-medium">Version</span></ResizableTableHead>
-                  <ResizableTableHead columnId="status"><TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} /></ResizableTableHead>
-                  <ResizableTableHead columnId="insecureSkipTLS"><span className="text-sm font-medium">Insecure Skip TLS</span></ResizableTableHead>
-                  <ResizableTableHead columnId="age"><TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  {columnVisibility.isColumnVisible('service') && <ResizableTableHead columnId="service"><TableColumnHeaderWithFilterAndSort columnId="service" label="Service" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>}
+                  {columnVisibility.isColumnVisible('group') && <ResizableTableHead columnId="group"><TableColumnHeaderWithFilterAndSort columnId="group" label="Group" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>}
+                  {columnVisibility.isColumnVisible('version') && <ResizableTableHead columnId="version"><TableColumnHeaderWithFilterAndSort columnId="version" label="Version" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>}
+                  {columnVisibility.isColumnVisible('status') && <ResizableTableHead columnId="status"><TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>}
+                  {columnVisibility.isColumnVisible('insecureSkipTLS') && <ResizableTableHead columnId="insecureSkipTLS"><TableColumnHeaderWithFilterAndSort columnId="insecureSkipTLS" label="Insecure Skip TLS" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>}
+                  {columnVisibility.isColumnVisible('age') && <ResizableTableHead columnId="age"><TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>}
                   <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
                 </TableRow>
+                {showTableFilters && (
+                  <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                    <TableCell className="w-10 p-1.5" />
+                    <ResizableTableCell columnId="name" className="p-1.5" />
+                    {columnVisibility.isColumnVisible('service') && <ResizableTableCell columnId="service" className="p-1.5" />}
+                    {columnVisibility.isColumnVisible('group') && <ResizableTableCell columnId="group" className="p-1.5" />}
+                    {columnVisibility.isColumnVisible('version') && <ResizableTableCell columnId="version" className="p-1.5" />}
+                    {columnVisibility.isColumnVisible('status') && <ResizableTableCell columnId="status" className="p-1.5"><TableFilterCell columnId="status" label="Status" distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.status} /></ResizableTableCell>}
+                    {columnVisibility.isColumnVisible('insecureSkipTLS') && <ResizableTableCell columnId="insecureSkipTLS" className="p-1.5" />}
+                    {columnVisibility.isColumnVisible('age') && <ResizableTableCell columnId="age" className="p-1.5" />}
+                    <TableCell className="w-12 p-1.5" />
+                  </TableRow>
+                )}
               </TableHeader>
               <TableBody>
                 {isLoading && isConnected ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-32 text-center">
+                    <TableCell colSpan={10} className="h-32 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                         <p className="text-sm text-muted-foreground">Loading...</p>
@@ -254,33 +364,34 @@ export default function APIServices() {
                   </TableRow>
                 ) : searchFiltered.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-32 text-center text-muted-foreground">
-                      <div className="flex flex-col items-center gap-2">
-                        <FileCode className="h-8 w-8 opacity-50" />
-                        <p>No API services found</p>
-                        {(searchQuery || hasActiveFilters) && (
-                          <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
-                        )}
-                      </div>
+                    <TableCell colSpan={10} className="h-40 text-center">
+                      <TableEmptyState
+                        icon={<FileCode className="h-8 w-8" />}
+                        title="No API services found"
+                        subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Get started by creating an APIService to register extension APIs.'}
+                        hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                        onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                        createLabel="Create APIService"
+                        onCreate={() => setShowCreateWizard(true)}
+                      />
                     </TableCell>
                   </TableRow>
                 ) : (
                   itemsOnPage.map((item, idx) => (
-                    <motion.tr key={item.id} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5')}>
+                    <motion.tr key={item.id} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', selectedItems.has(item.name) && 'bg-primary/5')}>
+                      <TableCell><Checkbox checked={selectedItems.has(item.name)} onCheckedChange={() => toggleSelection(item)} aria-label={`Select ${item.name}`} /></TableCell>
                       <ResizableTableCell columnId="name">
                         <Link to={`/apiservices/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate">
                           <FileCode className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                           <span className="truncate">{item.name}</span>
                         </Link>
                       </ResizableTableCell>
-                      <ResizableTableCell columnId="service" className="font-mono text-sm">{item.service}</ResizableTableCell>
-                      <ResizableTableCell columnId="group" className="text-muted-foreground">{item.group || '–'}</ResizableTableCell>
-                      <ResizableTableCell columnId="version" className="font-mono text-sm">{item.version}</ResizableTableCell>
-                      <ResizableTableCell columnId="status">
-                        <StatusPill label={item.status} variant={item.status === 'Available' ? 'success' : 'error'} />
-                      </ResizableTableCell>
-                      <ResizableTableCell columnId="insecureSkipTLS">{item.insecureSkipTLS ? 'Yes' : 'No'}</ResizableTableCell>
-                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
+                      {columnVisibility.isColumnVisible('service') && <ResizableTableCell columnId="service" className="font-mono text-sm">{item.service}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('group') && <ResizableTableCell columnId="group" className="text-muted-foreground">{item.group || '–'}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('version') && <ResizableTableCell columnId="version" className="font-mono text-sm">{item.version}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('status') && <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={item.status === 'Available' ? 'success' : 'error'} /></ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('insecureSkipTLS') && <ResizableTableCell columnId="insecureSkipTLS">{item.insecureSkipTLS ? 'Yes' : 'No'}</ResizableTableCell>}
+                      {columnVisibility.isColumnVisible('age') && <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>}
                       <TableCell>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -292,6 +403,7 @@ export default function APIServices() {
                             <DropdownMenuItem onClick={() => navigate(`/apiservices/${item.name}`)} className="gap-2">View Details</DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem onClick={() => navigate(`/apiservices/${item.name}?tab=yaml`)} className="gap-2">Download YAML</DropdownMenuItem>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem className="gap-2 text-destructive" onClick={() => setDeleteDialog({ open: true, item })} disabled={!isConnected}>Delete</DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -302,41 +414,30 @@ export default function APIServices() {
               </TableBody>
             </Table>
           </ResizableTableProvider>
-        </div>
-
-        <div className="pt-4 pb-2 border-t border-border mt-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="gap-2">
-                    {pageSize} per page
-                    <ChevronDown className="h-4 w-4 opacity-50" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {PAGE_SIZE_OPTIONS.map((size) => (
-                    <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>
-                      {size} per page
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} />
-          </div>
-        </div>
+        </ResourceListTableToolbar>
       </motion.div>
 
       <DeleteConfirmDialog
         open={deleteDialog.open}
-        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null })}
+        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null, bulk: open ? deleteDialog.bulk : false })}
         resourceType="APIService"
-        resourceName={deleteDialog.item?.name || ''}
+        resourceName={deleteDialog.bulk ? `${selectedItems.size} selected` : (deleteDialog.item?.name || '')}
         onConfirm={handleDelete}
-        requireNameConfirmation
+        requireNameConfirmation={!deleteDialog.bulk}
       />
+
+      {showCreateWizard && (
+        <ResourceCreator
+          resourceKind="APIService"
+          defaultYaml={DEFAULT_YAMLS.APIService}
+          onClose={() => setShowCreateWizard(false)}
+          onApply={(_yaml) => {
+            toast.success('APIService created');
+            setShowCreateWizard(false);
+            refetch();
+          }}
+        />
+      )}
     </>
   );
 }

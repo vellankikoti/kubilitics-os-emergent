@@ -74,10 +74,5 @@ type BudgetTracker interface {
 	GetBudgetLimits(ctx context.Context, userID string) (interface{}, error)
 }
 
-// NewBudgetTracker creates a new budget tracker with dependencies.
-func NewBudgetTracker() BudgetTracker {
-	// Load global budget from config
-	// Initialize per-user budget store
-	// Load provider pricing
-	return nil
-}
+// NewBudgetTracker creates a new budget tracker.
+// The concrete implementation is in tracker_impl.go.

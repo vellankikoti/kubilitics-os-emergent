@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config represents the server configuration
@@ -32,6 +33,16 @@ type Config struct {
 
 	// Analytics settings
 	AnalyticsEnabled bool `json:"analytics_enabled"`
+
+	// WebSocket settings
+	// AllowedOrigins is a comma-separated list of permitted WebSocket origins.
+	// Use "*" to allow all origins (development only). Defaults to localhost origins.
+	AllowedOrigins []string `json:"allowed_origins"`
+
+	// Persistence settings (A-CORE-013)
+	// DatabasePath is the path to the SQLite database file.
+	// Use ":memory:" for in-memory (non-persistent) storage (default for testing).
+	DatabasePath string `json:"database_path"`
 }
 
 // LoadConfig loads configuration from environment variables
@@ -118,12 +129,37 @@ func LoadConfig() (*Config, error) {
 		cfg.AnalyticsEnabled = analytics == "true" || analytics == "1"
 	}
 
+	// Database path (A-CORE-013)
+	cfg.DatabasePath = os.Getenv("KUBILITICS_DATABASE_PATH")
+	// Default to a local file for production use; ":memory:" is used when not set in tests.
+
+	// WebSocket allowed origins (comma-separated)
+	if origins := os.Getenv("KUBILITICS_WS_ALLOWED_ORIGINS"); origins != "" {
+		for _, o := range splitCSV(origins) {
+			if o != "" {
+				cfg.AllowedOrigins = append(cfg.AllowedOrigins, o)
+			}
+		}
+	}
+
 	// Validate
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// splitCSV splits a comma-separated string into trimmed non-empty parts.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			result = append(result, t)
+		}
+	}
+	return result
 }
 
 // Validate validates the configuration

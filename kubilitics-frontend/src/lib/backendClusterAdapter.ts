@@ -64,6 +64,7 @@ export function backendClusterToCluster(b: BackendCluster): Cluster {
     provider,
     nodes: b.node_count ?? 0,
     namespaces: b.namespace_count ?? 0,
+    isCurrent: b.is_current,
     pods: { running: 0, pending: 0, failed: 0 },
     cpu: { used: 0, total: 100 },
     memory: { used: 0, total: 100 },

@@ -6,7 +6,6 @@ import {
   Clock,
   Server,
   RotateCcw,
-  RefreshCw,
   Download,
   Trash2,
   Terminal,
@@ -1028,7 +1027,6 @@ export default function PodDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
           { label: 'Port Forward', icon: ExternalLink, variant: 'outline', onClick: () => setShowPortForwardDialog(true) },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

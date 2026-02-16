@@ -73,4 +73,22 @@ type LLMAdapter interface {
 
 	// NormalizeToolCall converts provider-specific tool call format to standard format.
 	NormalizeToolCall(ctx context.Context, toolCall interface{}) (map[string]interface{}, error)
+
+	// CompleteWithTools runs the full agentic loop:
+	//   LLM call → tool execution → LLM call (with results) → ... → final answer
+	// The returned channel receives AgentStreamEvents containing streamed text
+	// tokens, tool lifecycle notifications, and a final Done event.
+	//
+	// executor: implementation that executes tool calls (MCP server).
+	// cfg: controls loop limits and parallel execution (use DefaultAgentConfig()).
+	//
+	// The caller MUST consume all events until Done==true or Err!=nil.
+	// The channel is closed after the terminal event is sent.
+	CompleteWithTools(
+		ctx context.Context,
+		messages []types.Message,
+		tools []types.Tool,
+		executor types.ToolExecutor,
+		cfg types.AgentConfig,
+	) (<-chan types.AgentStreamEvent, error)
 }

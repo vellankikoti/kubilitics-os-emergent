@@ -37,9 +37,9 @@ export function ListPageStatCard({
   return (
     <Card
       className={cn(
-        'transition-all',
-        onClick && 'cursor-pointer hover:border-primary/30',
-        selected && 'ring-2 ring-primary',
+        'transition-all duration-200',
+        onClick && 'cursor-pointer hover:border-primary/40 hover:shadow-sm',
+        selected && 'ring-2 ring-primary border-primary/30 shadow-sm',
         className
       )}
       onClick={onClick}

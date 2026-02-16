@@ -16,6 +16,10 @@ export interface ResourceDetailLayoutProps {
   backLabel: string;
   actions?: ResourceAction[];
   headerMetadata?: ReactNode;
+  /** Relative created label (e.g. "2h ago") for header */
+  createdLabel?: string;
+  /** ISO timestamp for created tooltip */
+  createdAt?: string;
   statusCards: ResourceStatusCardProps[];
   tabs: TabConfig[];
   activeTab: string;
@@ -38,6 +42,8 @@ export function ResourceDetailLayout({
   backLabel,
   actions,
   headerMetadata,
+  createdLabel,
+  createdAt,
   statusCards,
   tabs,
   activeTab,
@@ -64,6 +70,8 @@ export function ResourceDetailLayout({
         backLabel={backLabel}
         actions={actions}
         metadata={headerMetadata}
+        createdLabel={createdLabel}
+        createdAt={createdAt}
       />
       <ResourceStatusCards cards={statusCards} />
       <ResourceTabs tabs={tabs} activeTab={activeTab} onTabChange={onTabChange} className="pt-2" />

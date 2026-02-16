@@ -1,7 +1,7 @@
 # Kubilitics — Enterprise-grade one-command dev and test (B3)
 # Usage: make dev | test | backend | frontend | clean
 
-.PHONY: dev test backend frontend backend-test frontend-test test-reports clean env-example restart
+.PHONY: dev test backend frontend kcli backend-test frontend-test kcli-test test-reports clean env-example restart
 
 # Default: run full stack (backend + frontend) via script
 dev: env-example
@@ -27,6 +27,10 @@ frontend-dev:
 backend:
 	cd kubilitics-backend && go build -o bin/kubilitics-backend ./cmd/server
 
+# Build kcli binary
+kcli:
+	cd kcli && go build -o bin/kcli ./cmd/kcli
+
 # Build frontend (production)
 frontend:
 	cd kubilitics-frontend && npm run build
@@ -36,6 +40,7 @@ test: test-reports
 	@mkdir -p test_reports/backend test_reports/frontend test_reports/playwright
 	$(MAKE) backend-test 2>&1 | tee test_reports/backend/test.log; exit $${PIPESTATUS[0]}
 	$(MAKE) frontend-test 2>&1 | tee test_reports/frontend/test.log; exit $${PIPESTATUS[0]}
+	$(MAKE) kcli-test 2>&1 | tee test_reports/backend/kcli-test.log; exit $${PIPESTATUS[0]}
 	@echo "Test reports: test_reports/"
 
 # Run backend + frontend tests + E2E (full local verification before push)
@@ -47,6 +52,9 @@ backend-test:
 
 frontend-test:
 	cd kubilitics-frontend && npm run test 2>&1
+
+kcli-test:
+	cd kcli && go test -v -count=1 ./... 2>&1
 
 # E2E (optional; requires backend + frontend running or playwright config). Use CI=true to auto-start preview server.
 e2e:

@@ -1,6 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Scale, Clock, Download, Trash2, TrendingUp, Server, Cpu, RefreshCw, Network } from 'lucide-react';
+import { Scale, Clock, Download, Trash2, TrendingUp, TrendingDown, Server, Cpu, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -19,10 +19,11 @@ import {
   type ResourceStatus,
   type YamlVersion,
 } from '@/components/resources';
-import { useResourceDetail, useResourceEvents } from '@/hooks/useK8sResourceDetail';
+import { useResourceDetail, useResourceEvents, type EventInfo } from '@/hooks/useK8sResourceDetail';
 import { useDeleteK8sResource, type KubernetesResource } from '@/hooks/useKubernetes';
-import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
+import { normalizeKindForTopology, getDetailPath } from '@/utils/resourceKindMapper';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 interface HPAResource extends KubernetesResource {
   spec?: {
@@ -43,6 +44,44 @@ interface HPAResource extends KubernetesResource {
     lastScaleTime?: string;
     conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
   };
+}
+
+/** Parse scaling-related events into direction, old→new, timestamp. */
+function parseScalingEvents(events: EventInfo[]): Array<{ direction: 'up' | 'down'; from: number | null; to: number; time: string; reason: string; message: string }> {
+  const scaling: Array<{ direction: 'up' | 'down'; from: number | null; to: number; time: string; reason: string; message: string }> = [];
+  const scaleRe = /scale|replica|size|rescale/i;
+  const fromToRe = /(?:from|:)\s*(\d+)\s*(?:to|->|→)\s*(\d+)/i;
+  const arrowRe = /(\d+)\s*(?:->|→)\s*(\d+)/;
+  const newSizeRe = /new size:\s*(\d+)/i;
+  for (const e of events) {
+    if (!scaleRe.test(e.reason) && !scaleRe.test(e.message)) continue;
+    const fromTo = e.message.match(fromToRe) ?? e.message.match(arrowRe);
+    const newSize = e.message.match(newSizeRe);
+    const isUp = /up|increase|expand|above/i.test(e.reason) || /up|increase|above/i.test(e.message);
+    if (fromTo) {
+      const from = parseInt(fromTo[1], 10);
+      const to = parseInt(fromTo[2], 10);
+      scaling.push({
+        direction: to >= from ? 'up' : 'down',
+        from,
+        to,
+        time: e.time,
+        reason: e.reason,
+        message: e.message,
+      });
+    } else if (newSize) {
+      const to = parseInt(newSize[1], 10);
+      scaling.push({
+        direction: isUp ? 'up' : 'down',
+        from: null,
+        to,
+        time: e.time,
+        reason: e.reason,
+        message: e.message,
+      });
+    }
+  }
+  return scaling;
 }
 
 export default function HorizontalPodAutoscalerDetail() {
@@ -79,10 +118,16 @@ export default function HorizontalPodAutoscalerDetail() {
   const cpuTarget = metrics.find((m) => m.resource?.name === 'cpu')?.resource?.target?.averageUtilization;
   const cpuCurrent = currentMetrics.find((m) => m.resource?.name === 'cpu')?.resource?.current?.averageUtilization;
 
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
+  const scalingEvents = useMemo(() => parseScalingEvents(events), [events]);
+
+  const currentMetricsWithTarget = useMemo(() => {
+    return currentMetrics.map((cm) => {
+      const name = cm.resource?.name ?? 'resource';
+      const current = cm.resource?.current?.averageUtilization;
+      const target = metrics.find((m) => m.resource?.name === name)?.resource?.target?.averageUtilization;
+      return { name, current, target };
+    });
+  }, [currentMetrics, metrics]);
 
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
@@ -104,13 +149,7 @@ export default function HorizontalPodAutoscalerDetail() {
     { label: 'Age', value: age, icon: Clock, iconColor: 'muted' as const },
   ];
 
-  const targetLink = () => {
-    const kind = (targetKind || '').toLowerCase();
-    if (kind === 'deployment') return `/deployments/${hpaNamespace}/${targetName}`;
-    if (kind === 'statefulset') return `/statefulsets/${hpaNamespace}/${targetName}`;
-    if (kind === 'replicaset') return `/replicasets/${hpaNamespace}/${targetName}`;
-    return '#';
-  };
+  const targetLink = () => getDetailPath(targetKind, targetName, hpaNamespace) ?? '#';
 
   if (isLoading) {
     return (
@@ -156,43 +195,59 @@ export default function HorizontalPodAutoscalerDetail() {
                   <p className="font-mono">–</p>
                 )}
               </div>
-              <div className="grid grid-cols-3 gap-4 text-center">
-                <div className="p-3 rounded-lg bg-muted/50">
-                  <p className="text-2xl font-bold">{minReplicas}</p>
-                  <p className="text-xs text-muted-foreground">Min</p>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span className="font-mono">Min {minReplicas}</span>
+                  <span className="font-mono font-medium text-foreground">Current {currentReplicas}</span>
+                  <span className="font-mono">Max {maxReplicas}</span>
                 </div>
-                <div className="p-3 rounded-lg bg-primary/10 border border-primary/20">
-                  <p className="text-2xl font-bold text-primary">{currentReplicas}</p>
-                  <p className="text-xs text-muted-foreground">Current</p>
+                <div className="relative h-8 rounded-full bg-muted overflow-visible" role="slider" aria-valuemin={minReplicas} aria-valuemax={maxReplicas} aria-valuenow={currentReplicas}>
+                  <div
+                    className="absolute top-1/2 h-10 w-1 rounded-full bg-primary shadow-md border-2 border-background"
+                    style={{
+                      left: maxReplicas > minReplicas
+                        ? `${Math.min(100, Math.max(0, ((currentReplicas - minReplicas) / (maxReplicas - minReplicas)) * 100))}%`
+                        : '50%',
+                      transform: 'translateY(-50%) translateX(-50%)',
+                    }}
+                  />
                 </div>
-                <div className="p-3 rounded-lg bg-muted/50">
-                  <p className="text-2xl font-bold">{maxReplicas}</p>
-                  <p className="text-xs text-muted-foreground">Max</p>
-                </div>
+                <p className="text-sm text-muted-foreground">Desired replicas: <span className="font-mono font-medium">{desiredReplicas}</span></p>
               </div>
-              <p className="text-sm text-muted-foreground">Desired replicas: <span className="font-mono">{desiredReplicas}</span></p>
             </CardContent>
           </Card>
           <Card>
-            <CardHeader><CardTitle className="text-base">Metrics</CardTitle></CardHeader>
-            <CardContent className="space-y-4">
-              {metrics.length === 0 ? (
-                <p className="text-muted-foreground text-sm">No metrics configured.</p>
+            <CardHeader><CardTitle className="text-base">Current metrics</CardTitle></CardHeader>
+            <CardContent>
+              {currentMetricsWithTarget.length === 0 ? (
+                <p className="text-muted-foreground text-sm">No current metrics reported yet.</p>
               ) : (
-                metrics.map((metric, i) => {
-                  const resName = metric.resource?.name ?? 'resource';
-                  const target = metric.resource?.target?.averageUtilization;
-                  const current = currentMetrics.find((m) => m.resource?.name === resName)?.resource?.current?.averageUtilization;
-                  return (
-                    <div key={i} className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium capitalize">{resName}</span>
-                        <span className="font-mono text-sm">{current != null ? `${current}%` : '–'} / {target != null ? `${target}%` : '–'}</span>
-                      </div>
-                      {target != null && current != null && <Progress value={Math.min(Math.round((current / target) * 100), 100)} className="h-2" />}
-                    </div>
-                  );
-                })
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40">
+                      <TableHead className="font-medium">Metric</TableHead>
+                      <TableHead className="font-medium">Current</TableHead>
+                      <TableHead className="font-medium">Target</TableHead>
+                      <TableHead className="font-medium min-w-[120px]">Usage</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {currentMetricsWithTarget.map((row, i) => (
+                      <TableRow key={i}>
+                        <TableCell className="font-medium capitalize">{row.name}</TableCell>
+                        <TableCell className="font-mono">{row.current != null ? `${row.current}%` : '–'}</TableCell>
+                        <TableCell className="font-mono">{row.target != null ? `${row.target}%` : '–'}</TableCell>
+                        <TableCell>
+                          {row.target != null && row.current != null ? (
+                            <Progress value={Math.min(Math.round((row.current / row.target) * 100), 100)} className="h-2" />
+                          ) : (
+                            <span className="text-muted-foreground text-sm">–</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               )}
             </CardContent>
           </Card>
@@ -221,7 +276,40 @@ export default function HorizontalPodAutoscalerDetail() {
         </div>
       ),
     },
-    { id: 'events', label: 'Events', content: <EventsSection events={events} /> },
+    {
+      id: 'events',
+      label: 'Events',
+      content: (
+        <div className="space-y-6">
+          {scalingEvents.length > 0 && (
+            <Card>
+              <CardHeader><CardTitle className="text-base">Scaling events</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {scalingEvents.map((ev, i) => (
+                    <div key={i} className="flex items-center gap-4 p-3 rounded-lg bg-muted/50">
+                      {ev.direction === 'up' ? (
+                        <TrendingUp className="h-5 w-5 text-[hsl(142,76%,36%)] shrink-0" aria-hidden />
+                      ) : (
+                        <TrendingDown className="h-5 w-5 text-amber-600 shrink-0" aria-hidden />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <span className="font-mono text-sm font-medium">
+                          {ev.from != null ? `${ev.from} → ${ev.to}` : `→ ${ev.to}`}
+                        </span>
+                        <span className="text-muted-foreground text-sm ml-2">{ev.time}</span>
+                        {ev.reason && <Badge variant="secondary" className="ml-2 text-xs">{ev.reason}</Badge>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          <EventsSection events={events} />
+        </div>
+      ),
+    },
     { id: 'yaml', label: 'YAML', content: <YamlViewer yaml={yaml} resourceName={hpaName} /> },
     { id: 'compare', label: 'Compare', content: <YamlCompareViewer versions={yamlVersions} resourceName={hpaName} /> },
     {
@@ -267,7 +355,6 @@ export default function HorizontalPodAutoscalerDetail() {
         backLabel="HPAs"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Edit', icon: TrendingUp, variant: 'outline', onClick: () => toast.info('Edit not implemented') },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

@@ -5,7 +5,6 @@ import {
   Clock,
   Play,
   Pause,
-  RefreshCw,
   Download,
   Trash2,
   Copy,
@@ -60,6 +59,7 @@ import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { useQuery } from '@tanstack/react-query';
 import { postCronJobTrigger } from '@/services/backendApiClient';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface CronJobResource extends KubernetesResource {
   spec?: {
@@ -93,6 +93,151 @@ interface CronJobResource extends KubernetesResource {
     lastScheduleTime?: string;
     lastSuccessfulTime?: string;
   };
+}
+
+/** Parse 5-field cron into labeled parts (minute hour day-of-month month day-of-week). */
+function parseCronFields(schedule: string): { minute: string; hour: string; dayOfMonth: string; month: string; dayOfWeek: string } | null {
+  if (!schedule?.trim()) return null;
+  const parts = schedule.trim().split(/\s+/);
+  if (parts.length < 5) return null;
+  return {
+    minute: parts[0],
+    hour: parts[1],
+    dayOfMonth: parts[2],
+    month: parts[3],
+    dayOfWeek: parts[4],
+  };
+}
+
+/** Human-readable description for common cron patterns. */
+function cronToHuman(schedule: string): string {
+  if (!schedule || schedule === '-') return '—';
+  const p = parseCronFields(schedule);
+  if (!p) return schedule;
+  const { minute, hour, dayOfMonth, month, dayOfWeek } = p;
+  const allStar = dayOfMonth === '*' && month === '*' && dayOfWeek === '*';
+  if (minute.startsWith('*/') && hour === '*' && allStar) {
+    const n = parseInt(minute.slice(2), 10);
+    if (n === 1) return 'Every minute';
+    if (Number.isFinite(n) && n <= 60) return `Every ${n} minutes`;
+  }
+  if (minute === '0' && hour === '*' && allStar) return 'Every hour';
+  if (minute === '0' && hour.startsWith('*/') && allStar) {
+    const n = parseInt(hour.slice(2), 10);
+    if (n === 1) return 'Every hour';
+    if (Number.isFinite(n)) return `Every ${n} hours`;
+  }
+  if (minute === '0' && hour !== '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    const h = parseInt(hour, 10);
+    if (Number.isFinite(h)) {
+      if (h === 0) return 'Every day at midnight';
+      return `Every day at ${h}:00`;
+    }
+  }
+  if (minute !== '*' && !minute.startsWith('*/') && hour !== '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    const h = parseInt(hour, 10);
+    const m = parseInt(minute, 10);
+    if (Number.isFinite(h) && Number.isFinite(m)) {
+      const h12 = h % 12 || 12;
+      const ampm = h < 12 ? 'AM' : 'PM';
+      return `Every day at ${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+    }
+  }
+  return schedule;
+}
+
+/** Next N run times (client-side). Supports every-n-min, hourly (0 *), daily (0 H), daily at H:M (0 H M). */
+function getNextRunTimes(schedule: string, count: number): Date[] {
+  if (!schedule?.trim() || count < 1) return [];
+  const parts = schedule.trim().split(/\s+/);
+  if (parts.length < 5) return [];
+  const [minPart, hourPart, dayOfMonth, month, dayOfWeek] = parts;
+  const allStar = dayOfMonth === '*' && month === '*' && dayOfWeek === '*';
+  const result: Date[] = [];
+  let t = new Date();
+  t.setSeconds(0, 0);
+
+  if (minPart.startsWith('*/') && hourPart === '*' && allStar) {
+    const n = parseInt(minPart.slice(2), 10);
+    if (!Number.isFinite(n) || n < 1) return [];
+    const currMin = t.getMinutes();
+    let nextMin = Math.ceil((currMin + 1) / n) * n;
+    if (nextMin >= 60) {
+      t.setMinutes(0);
+      t.setHours(t.getHours() + 1);
+    } else {
+      t.setMinutes(nextMin);
+    }
+    for (let i = 0; i < count; i++) {
+      result.push(new Date(t));
+      t.setMinutes(t.getMinutes() + n);
+      if (t.getMinutes() < n) t.setHours(t.getHours() + 1);
+    }
+    return result;
+  }
+
+  if (minPart === '0' && hourPart === '*' && allStar) {
+    t.setMinutes(0, 0, 0);
+    if (t.getTime() <= Date.now()) t.setHours(t.getHours() + 1);
+    for (let i = 0; i < count; i++) {
+      result.push(new Date(t));
+      t.setHours(t.getHours() + 1);
+    }
+    return result;
+  }
+
+  if (minPart === '0' && hourPart.startsWith('*/') && allStar) {
+    const n = parseInt(hourPart.slice(2), 10);
+    if (!Number.isFinite(n) || n < 1) return [];
+    t.setMinutes(0);
+    const currH = t.getHours();
+    let nextH = Math.ceil((currH + 1) / n) * n;
+    if (nextH >= 24) {
+      t.setDate(t.getDate() + 1);
+      t.setHours(nextH % 24);
+    } else {
+      t.setHours(nextH);
+    }
+    t.setMinutes(0);
+    for (let i = 0; i < count; i++) {
+      result.push(new Date(t));
+      t.setHours(t.getHours() + n);
+      if (t.getHours() < 24) continue;
+      t.setHours(t.getHours() % 24);
+      t.setDate(t.getDate() + 1);
+    }
+    return result;
+  }
+
+  if (minPart === '0' && hourPart !== '*' && allStar) {
+    const h = parseInt(hourPart, 10);
+    if (!Number.isFinite(h) || h < 0 || h > 23) return [];
+    t.setMinutes(0);
+    t.setHours(h);
+    if (t.getTime() <= Date.now()) t.setDate(t.getDate() + 1);
+    for (let i = 0; i < count; i++) {
+      result.push(new Date(t));
+      t.setDate(t.getDate() + 1);
+    }
+    return result;
+  }
+
+  if (hourPart !== '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    const h = parseInt(hourPart, 10);
+    const m = parseInt(minPart, 10);
+    if (Number.isFinite(h) && Number.isFinite(m) && h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      t.setMinutes(m);
+      t.setHours(h);
+      if (t.getTime() <= Date.now()) t.setDate(t.getDate() + 1);
+      for (let i = 0; i < count; i++) {
+        result.push(new Date(t));
+        t.setDate(t.getDate() + 1);
+      }
+      return result;
+    }
+  }
+
+  return [];
 }
 
 export default function CronJobDetail() {
@@ -148,6 +293,44 @@ export default function CronJobDetail() {
   type PodLike = KubernetesResource & { metadata?: { name?: string; labels?: Record<string, string> }; status?: { phase?: string }; spec?: { nodeName?: string; containers?: Array<{ name: string }> } };
   const { data: jobsList } = useK8sResourceList<JobLike>('jobs', namespace ?? undefined, { enabled: !!namespace && !!name, limit: 5000 });
   const childJobs = (jobsList?.items ?? []).filter((job) => job.metadata?.ownerReferences?.some((ref) => ref.kind === 'CronJob' && ref.name === name));
+  const childJobsSorted = useMemo(() => {
+    return [...childJobs].sort((a, b) => {
+      const aStart = (a.status as { startTime?: string })?.startTime ?? a.metadata?.creationTimestamp ?? '';
+      const bStart = (b.status as { startTime?: string })?.startTime ?? b.metadata?.creationTimestamp ?? '';
+      return new Date(bStart).getTime() - new Date(aStart).getTime();
+    });
+  }, [childJobs]);
+  const childJobsLast30 = useMemo(() => childJobsSorted.slice(0, 30), [childJobsSorted]);
+  const jobsHistorySuccessRate = useMemo(() => {
+    if (childJobsLast30.length === 0) return null;
+    const completed = childJobsLast30.filter((job) => {
+      const jStatus = job.status as { completionTime?: string } | undefined;
+      return jStatus?.completionTime != null;
+    });
+    if (completed.length === 0) return null;
+    const succeeded = completed.filter((job) => {
+      const jStatus = job.status as { succeeded?: number } | undefined;
+      const completions = (job.spec as { completions?: number } | undefined)?.completions ?? 1;
+      return (jStatus?.succeeded ?? 0) >= completions;
+    });
+    return Math.round((succeeded.length / completed.length) * 100);
+  }, [childJobsLast30]);
+  const jobsHistoryChartData = useMemo(() => {
+    return childJobsLast30.map((job) => {
+      const jStatus = job.status as { succeeded?: number; failed?: number; startTime?: string } | undefined;
+      const completions = (job.spec as { completions?: number } | undefined)?.completions ?? 1;
+      const succeeded = jStatus?.succeeded ?? 0;
+      const statusStr = succeeded >= completions ? 'Succeeded' : jStatus?.failed ? 'Failed' : 'Running';
+      return {
+        name: (job.metadata?.name ?? '').slice(-12),
+        fullName: job.metadata?.name ?? '',
+        Succeeded: statusStr === 'Succeeded' ? 1 : 0,
+        Failed: statusStr === 'Failed' ? 1 : 0,
+        Running: statusStr === 'Running' ? 1 : 0,
+        status: statusStr,
+      };
+    }).reverse();
+  }, [childJobsLast30]);
   const childJobNames = new Set(childJobs.map((j) => j.metadata?.name).filter(Boolean) as string[]);
 
   const { data: podsList } = useK8sResourceList<PodLike>('pods', namespace ?? undefined, { enabled: !!namespace && childJobNames.size > 0, limit: 5000 });
@@ -262,6 +445,9 @@ export default function CronJobDetail() {
   }
 
   const scheduleStr = cronJob.spec?.schedule || '-';
+  const cronFields = useMemo(() => parseCronFields(scheduleStr), [scheduleStr]);
+  const scheduleHumanLabel = useMemo(() => cronToHuman(scheduleStr), [scheduleStr]);
+  const next10Runs = useMemo(() => (isSuspended ? [] : getNextRunTimes(scheduleStr, 10)), [scheduleStr, isSuspended]);
   const scheduleHuman = scheduleStr !== '-' && /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(scheduleStr)
     ? (scheduleStr.startsWith('*/') ? `Every ${scheduleStr.slice(2).split(' ')[0]} min` : scheduleStr)
     : scheduleStr;
@@ -403,23 +589,67 @@ export default function CronJobDetail() {
       label: 'Schedule Details',
       icon: Calendar,
       content: (
-        <SectionCard icon={Calendar} title="Schedule Details" tooltip={<p className="text-xs text-muted-foreground">Cron expression and next runs</p>}>
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <p className="text-muted-foreground mb-1">Cron expression</p>
-                <Badge variant="outline" className="font-mono">{scheduleStr}</Badge>
-              </div>
-              <div>
-                <p className="text-muted-foreground mb-1">Human-readable</p>
-                <p className="font-medium">{scheduleHuman}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground mb-1">Next run</p>
-                <p className="font-mono">{nextRunStr}</p>
-              </div>
+        <SectionCard icon={Calendar} title="Schedule Details" tooltip={<p className="text-xs text-muted-foreground">Cron expression breakdown and next runs</p>}>
+          <div className="space-y-6">
+            <div>
+              <p className="text-muted-foreground text-sm mb-2">Cron expression (minute hour day-of-month month day-of-week)</p>
+              <Badge variant="outline" className="font-mono text-sm">{scheduleStr}</Badge>
             </div>
-            <p className="text-xs text-muted-foreground">Cron format: minute hour day-of-month month day-of-week. Next N runs can be computed client-side with a cron library.</p>
+            {cronFields && (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-sm">
+                <div>
+                  <p className="text-muted-foreground mb-0.5">minute</p>
+                  <p className="font-mono">{cronFields.minute}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground mb-0.5">hour</p>
+                  <p className="font-mono">{cronFields.hour}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground mb-0.5">day-of-month</p>
+                  <p className="font-mono">{cronFields.dayOfMonth}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground mb-0.5">month</p>
+                  <p className="font-mono">{cronFields.month}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground mb-0.5">day-of-week</p>
+                  <p className="font-mono">{cronFields.dayOfWeek}</p>
+                </div>
+              </div>
+            )}
+            <div>
+              <p className="text-muted-foreground text-sm mb-1">Human-readable</p>
+              <p className="font-medium">{scheduleHumanLabel}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground text-sm mb-2">Next 10 runs</p>
+              {isSuspended ? (
+                <p className="text-sm text-muted-foreground">CronJob is suspended; no upcoming runs.</p>
+              ) : next10Runs.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Unable to compute next runs for this expression (only */n min, hourly, daily patterns supported).</p>
+              ) : (
+                <div className="rounded-lg border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50">
+                      <tr>
+                        <th className="text-left p-3 font-medium">#</th>
+                        <th className="text-left p-3 font-medium">Scheduled time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {next10Runs.map((d, i) => (
+                        <tr key={i} className="border-t">
+                          <td className="p-3 font-mono">{i + 1}</td>
+                          <td className="p-3 font-mono text-muted-foreground">{d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         </SectionCard>
       ),
@@ -430,51 +660,96 @@ export default function CronJobDetail() {
       icon: History,
       badge: childJobs.length.toString(),
       content: (
-        <SectionCard icon={History} title="Jobs History" tooltip={<p className="text-xs text-muted-foreground">Child jobs with status and duration</p>}>
+        <SectionCard icon={History} title="Jobs History" tooltip={<p className="text-xs text-muted-foreground">Child jobs with status, duration, and success rate</p>}>
           {childJobs.length === 0 ? (
             <p className="text-sm text-muted-foreground">No jobs created by this CronJob yet.</p>
           ) : (
-            <div className="rounded-lg border overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="text-left p-3 font-medium">Name</th>
-                    <th className="text-left p-3 font-medium">Status</th>
-                    <th className="text-left p-3 font-medium">Start Time</th>
-                    <th className="text-left p-3 font-medium">Duration</th>
-                    <th className="text-left p-3 font-medium">Completions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {childJobs.slice(0, 50).map((job) => {
-                    const jobName = job.metadata?.name ?? '';
-                    const jobNs = job.metadata?.namespace ?? namespace ?? '';
-                    const jStatus = job.status as { succeeded?: number; failed?: number; active?: number; startTime?: string; completionTime?: string } | undefined;
-                    const succeeded = jStatus?.succeeded ?? 0;
-                    const completions = (job.spec as { completions?: number } | undefined)?.completions ?? 1;
-                    const statusStr = succeeded >= completions ? 'Succeeded' : jStatus?.failed ? 'Failed' : 'Running';
-                    const startTime = jStatus?.startTime;
-                    const endTime = jStatus?.completionTime;
-                    let durationStr = '-';
-                    if (startTime && endTime) {
-                      const sec = Math.floor((new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000);
-                      durationStr = sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m` : `${Math.floor(sec / 3600)}h`;
-                    } else if (startTime) durationStr = 'Running';
-                    return (
-                      <tr key={jobName} className="border-t">
-                        <td className="p-3">
-                          <Link to={`/jobs/${jobNs}/${jobName}`} className="text-primary hover:underline font-medium">{jobName}</Link>
-                        </td>
-                        <td className="p-3"><Badge variant={statusStr === 'Succeeded' ? 'default' : statusStr === 'Failed' ? 'destructive' : 'secondary'}>{statusStr}</Badge></td>
-                        <td className="p-3 text-muted-foreground whitespace-nowrap">{startTime ? new Date(startTime).toLocaleString() : '-'}</td>
-                        <td className="p-3 font-mono">{durationStr}</td>
-                        <td className="p-3 font-mono">{succeeded}/{completions}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {childJobs.length > 50 && <p className="p-3 text-xs text-muted-foreground">Showing first 50 of {childJobs.length} jobs.</p>}
+            <div className="space-y-6">
+              <div className="flex flex-wrap items-center gap-6">
+                <div>
+                  <p className="text-xs text-muted-foreground mb-0.5">Success rate (last 30 runs)</p>
+                  <p className="text-2xl font-semibold tabular-nums">
+                    {jobsHistorySuccessRate != null ? `${jobsHistorySuccessRate}%` : '—'}
+                  </p>
+                </div>
+              </div>
+              {jobsHistoryChartData.length > 0 && (
+                <div className="h-[240px] w-full">
+                  <p className="text-xs text-muted-foreground mb-2">Last 30 runs — Success (green) / Failed (red) / Running (gray)</p>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={jobsHistoryChartData} layout="vertical" margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
+                      <XAxis type="number" domain={[0, 1]} hide />
+                      <YAxis type="category" dataKey="name" width={80} tick={{ fontSize: 10 }} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.[0]) return null;
+                          const d = payload[0].payload;
+                          return (
+                            <div className="rounded-md border bg-background px-3 py-2 text-xs shadow">
+                              <p className="font-mono font-medium">{d.fullName}</p>
+                              <p className="text-muted-foreground">Status: {d.status}</p>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Bar dataKey="Succeeded" stackId="a" fill="hsl(142,76%,36%)" radius={[0, 2, 2, 0]} />
+                      <Bar dataKey="Failed" stackId="a" fill="hsl(0,72%,51%)" radius={[0, 2, 2, 0]} />
+                      <Bar dataKey="Running" stackId="a" fill="hsl(var(--muted-foreground))" radius={[0, 2, 2, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              <div className="rounded-lg border overflow-x-auto">
+                <table className="w-full text-sm min-w-[600px]">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="text-left p-3 font-medium">Job Name</th>
+                      <th className="text-left p-3 font-medium">Status</th>
+                      <th className="text-left p-3 font-medium">Start Time</th>
+                      <th className="text-left p-3 font-medium">Duration</th>
+                      <th className="text-left p-3 font-medium">Completions</th>
+                      <th className="text-left p-3 font-medium">Age</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {childJobsSorted.slice(0, 50).map((job) => {
+                      const jobName = job.metadata?.name ?? '';
+                      const jobNs = job.metadata?.namespace ?? namespace ?? '';
+                      const jStatus = job.status as { succeeded?: number; failed?: number; startTime?: string; completionTime?: string } | undefined;
+                      const succeeded = jStatus?.succeeded ?? 0;
+                      const completions = (job.spec as { completions?: number } | undefined)?.completions ?? 1;
+                      const statusStr = succeeded >= completions ? 'Succeeded' : jStatus?.failed ? 'Failed' : 'Running';
+                      const startTime = jStatus?.startTime;
+                      const endTime = jStatus?.completionTime;
+                      let durationStr = '–';
+                      if (startTime && endTime) {
+                        const sec = Math.floor((new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000);
+                        durationStr = sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m` : `${Math.floor(sec / 3600)}h`;
+                      } else if (startTime) durationStr = 'Running';
+                      const age = job.metadata?.creationTimestamp ? calculateAge(job.metadata.creationTimestamp) : '–';
+                      return (
+                        <tr
+                          key={jobName}
+                          className="border-t hover:bg-muted/20 cursor-pointer"
+                          onClick={() => navigate(`/jobs/${jobNs}/${jobName}`)}
+                        >
+                          <td className="p-3">
+                            <Link to={`/jobs/${jobNs}/${jobName}`} className="text-primary hover:underline font-medium" onClick={(e) => e.stopPropagation()}>{jobName}</Link>
+                          </td>
+                          <td className="p-3">
+                            <Badge variant={statusStr === 'Succeeded' ? 'default' : statusStr === 'Failed' ? 'destructive' : 'secondary'} className="text-xs">{statusStr}</Badge>
+                          </td>
+                          <td className="p-3 text-muted-foreground whitespace-nowrap">{startTime ? new Date(startTime).toLocaleString() : '–'}</td>
+                          <td className="p-3 font-mono">{durationStr}</td>
+                          <td className="p-3 font-mono">{succeeded}/{completions}</td>
+                          <td className="p-3 text-muted-foreground">{age}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {childJobsSorted.length > 50 && <p className="p-3 text-xs text-muted-foreground">Showing first 50 of {childJobsSorted.length} jobs.</p>}
+              </div>
             </div>
           )}
         </SectionCard>
@@ -809,7 +1084,6 @@ export default function CronJobDetail() {
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => { refetch(); resourceEvents.refetch(); } },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Trigger', icon: Play, variant: 'outline', onClick: handleTriggerNow },
           { label: isSuspended ? 'Resume' : 'Suspend', icon: isSuspended ? Play : Pause, variant: 'outline', onClick: handleToggleSuspend },

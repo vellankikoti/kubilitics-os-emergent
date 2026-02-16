@@ -115,7 +115,7 @@ export function SmartResourceGrouping<T>({
 
   const formatGroupLabel = (key: string, groupType: GroupByOption): string => {
     switch (groupType) {
-      case 'health':
+      case 'health': {
         const healthLabels: Record<string, string> = {
           healthy: 'Healthy (80-100%)',
           warning: 'Warning (60-79%)',
@@ -123,11 +123,12 @@ export function SmartResourceGrouping<T>({
           critical: 'Critical (<30%)'
         };
         return healthLabels[key] || key;
+      }
 
       case 'risk':
         return `${key.charAt(0).toUpperCase() + key.slice(1)} Risk`;
 
-      case 'cost':
+      case 'cost': {
         const costLabels: Record<string, string> = {
           'high-cost': 'High Cost (≥$10/day)',
           'medium-cost': 'Medium Cost ($5-10/day)',
@@ -135,6 +136,7 @@ export function SmartResourceGrouping<T>({
           'minimal-cost': 'Minimal Cost (<$1/day)'
         };
         return costLabels[key] || key;
+      }
 
       case 'namespace':
         return `Namespace: ${key}`;
@@ -146,7 +148,7 @@ export function SmartResourceGrouping<T>({
 
   const getGroupColor = (key: string, groupType: GroupByOption): string => {
     switch (groupType) {
-      case 'health':
+      case 'health': {
         const healthColors: Record<string, string> = {
           healthy: 'bg-green-50 border-green-200',
           warning: 'bg-yellow-50 border-yellow-200',
@@ -154,8 +156,9 @@ export function SmartResourceGrouping<T>({
           critical: 'bg-red-50 border-red-200'
         };
         return healthColors[key] || 'bg-gray-50 border-gray-200';
+      }
 
-      case 'risk':
+      case 'risk': {
         const riskColors: Record<string, string> = {
           low: 'bg-green-50 border-green-200',
           medium: 'bg-yellow-50 border-yellow-200',
@@ -163,8 +166,9 @@ export function SmartResourceGrouping<T>({
           critical: 'bg-red-50 border-red-200'
         };
         return riskColors[key] || 'bg-gray-50 border-gray-200';
+      }
 
-      case 'cost':
+      case 'cost': {
         const costColors: Record<string, string> = {
           'high-cost': 'bg-red-50 border-red-200',
           'medium-cost': 'bg-orange-50 border-orange-200',
@@ -172,6 +176,7 @@ export function SmartResourceGrouping<T>({
           'minimal-cost': 'bg-green-50 border-green-200'
         };
         return costColors[key] || 'bg-gray-50 border-gray-200';
+      }
 
       default:
         return 'bg-gray-50 border-gray-200';
@@ -180,7 +185,7 @@ export function SmartResourceGrouping<T>({
 
   const getGroupPriority = (key: string, groupType: GroupByOption): number => {
     switch (groupType) {
-      case 'health':
+      case 'health': {
         const healthPriority: Record<string, number> = {
           critical: 1,
           degraded: 2,
@@ -188,8 +193,9 @@ export function SmartResourceGrouping<T>({
           healthy: 4
         };
         return healthPriority[key] || 99;
+      }
 
-      case 'risk':
+      case 'risk': {
         const riskPriority: Record<string, number> = {
           critical: 1,
           high: 2,
@@ -197,8 +203,9 @@ export function SmartResourceGrouping<T>({
           low: 4
         };
         return riskPriority[key] || 99;
+      }
 
-      case 'cost':
+      case 'cost': {
         const costPriority: Record<string, number> = {
           'high-cost': 1,
           'medium-cost': 2,
@@ -206,6 +213,7 @@ export function SmartResourceGrouping<T>({
           'minimal-cost': 4
         };
         return costPriority[key] || 99;
+      }
 
       default:
         return 99;

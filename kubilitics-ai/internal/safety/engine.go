@@ -95,6 +95,20 @@ type Action struct {
 	Justification string                 `json:"justification"`
 	UserID        string                 `json:"user_id"`
 	Timestamp     time.Time              `json:"timestamp"`
+	Metadata      map[string]interface{} `json:"metadata"`
+}
+
+// ToMap converts Action to map[string]interface{} for sub-component consumption.
+func (a *Action) ToMap() map[string]interface{} {
+	return map[string]interface{}{
+		"operation":     a.Operation,
+		"namespace":     a.Namespace,
+		"resource_type": a.ResourceType,
+		"resource_name": a.ResourceName,
+		"target_state":  a.TargetState,
+		"user_id":       a.UserID,
+		"id":            a.ID,
+	}
 }
 
 // SafetyResult represents the outcome of safety evaluation
@@ -171,10 +185,19 @@ func (e *Engine) EvaluateAction(ctx context.Context, action *Action) (*SafetyRes
 	}
 
 	// Step 1: Policy Engine - Check immutable and configurable rules
-	policyResult, reason, riskLevel, err := e.policyEngine.Evaluate(ctx, action.UserID, action)
+	// Pass action.ToMap() so sub-components can use map[string]interface{} extraction helpers.
+	policyResult, reason, riskLevel, err := e.policyEngine.Evaluate(ctx, action.UserID, action.ToMap())
 	if err != nil {
 		return nil, fmt.Errorf("policy evaluation failed: %w", err)
 	}
+
+	// Populate PolicyChecks from policy result
+	result.PolicyChecks = append(result.PolicyChecks, PolicyCheck{
+		PolicyName: "immutable_rules_check",
+		Passed:     policyResult != policy.ResultDeny,
+		Reason:     reason,
+		Severity:   riskLevel,
+	})
 
 	result.Result = string(policyResult)
 	result.Reason = reason
@@ -188,7 +211,7 @@ func (e *Engine) EvaluateAction(ctx context.Context, action *Action) (*SafetyRes
 	}
 
 	// Step 2: Blast Radius - Assess impact
-	affectedResources, impactSummary, err := e.blastCalculator.CalculateBlastRadius(ctx, action)
+	affectedResources, impactSummary, err := e.blastCalculator.CalculateBlastRadius(ctx, action.ToMap())
 	if err != nil {
 		return nil, fmt.Errorf("blast radius calculation failed: %w", err)
 	}
@@ -202,7 +225,7 @@ func (e *Engine) EvaluateAction(ctx context.Context, action *Action) (*SafetyRes
 	result.Metadata["affected_count"] = affectedCount
 
 	// Step 3: Data Loss Risk Assessment
-	hasDataLossRisk, affectedVolumes, backupStatus, err := e.blastCalculator.AssessDataLossRisk(ctx, action)
+	hasDataLossRisk, affectedVolumes, backupStatus, err := e.blastCalculator.AssessDataLossRisk(ctx, action.ToMap())
 	if err != nil {
 		return nil, fmt.Errorf("data loss risk assessment failed: %w", err)
 	}
@@ -215,10 +238,11 @@ func (e *Engine) EvaluateAction(ctx context.Context, action *Action) (*SafetyRes
 		result.RequiresHuman = true
 		result.Result = "request_approval"
 		result.Reason = "Action involves risk of data loss - requires human approval"
+		result.RiskLevel = "high"
 	}
 
 	// Step 4: Autonomy Level Check
-	requiresApproval, approvalReason, err := e.autonomyController.DetermineApprovalRequired(ctx, action.UserID, action)
+	requiresApproval, approvalReason, err := e.autonomyController.DetermineApprovalRequired(ctx, action.UserID, action.ToMap())
 	if err != nil {
 		// Log error but don't fail - default to requiring approval for safety
 		requiresApproval = true
@@ -240,12 +264,20 @@ func (e *Engine) EvaluateAction(ctx context.Context, action *Action) (*SafetyRes
 	if policyResult == policy.ResultApprove && !result.RequiresHuman {
 		result.Approved = true
 		result.Result = "approve"
+		if result.RiskLevel == "" {
+			result.RiskLevel = riskLevel
+		}
 	} else if policyResult == policy.ResultRequestApproval || result.RequiresHuman {
 		result.Approved = false
 		result.Result = "request_approval"
 	} else if policyResult == policy.ResultWarn {
 		result.Approved = true
 		result.Result = "warn"
+	}
+
+	// Ensure RiskLevel is always set
+	if result.RiskLevel == "" {
+		result.RiskLevel = riskLevel
 	}
 
 	return result, nil
@@ -256,7 +288,7 @@ func (e *Engine) ValidateAction(ctx context.Context, action *Action) (bool, []st
 	if e.policyEngine == nil {
 		return false, nil, fmt.Errorf("policy engine not initialized")
 	}
-	return e.policyEngine.ValidateAction(ctx, action)
+	return e.policyEngine.ValidateAction(ctx, action.ToMap())
 }
 
 // CreateRollbackCheckpoint creates a checkpoint before executing action
@@ -274,7 +306,7 @@ func (e *Engine) CreateRollbackCheckpoint(ctx context.Context, action *Action) (
 	}
 
 	// Start monitoring the action
-	return e.rollbackManager.MonitorAction(ctx, action.ID, action, baseline)
+	return e.rollbackManager.MonitorAction(ctx, action.ID, action.ToMap(), baseline)
 }
 
 // RollbackAction rolls back to previous state
@@ -334,7 +366,7 @@ func (e *Engine) ScanForViolations(ctx context.Context) ([]interface{}, error) {
 	return e.policyEngine.ScanForViolations(ctx)
 }
 
-// SetAutonomyLevel configures the autonomy level (1-5) for a user
+// SetAutonomyLevel configures the autonomy level (0-4) for a user
 func (e *Engine) SetAutonomyLevel(ctx context.Context, userID string, level int) error {
 	if e.autonomyController == nil {
 		return fmt.Errorf("autonomy controller not initialized")
@@ -361,7 +393,7 @@ func (e *Engine) EstimateDowntime(ctx context.Context, action *Action) (int, int
 	if e.blastCalculator == nil {
 		return 0, 0, fmt.Errorf("blast radius calculator not initialized")
 	}
-	return e.blastCalculator.EstimateDowntime(ctx, action)
+	return e.blastCalculator.EstimateDowntime(ctx, action.ToMap())
 }
 
 // CompareAlternatives compares safety of multiple action options
@@ -372,9 +404,9 @@ func (e *Engine) CompareAlternatives(ctx context.Context, primary *Action, alter
 	// Convert to interface{} slice for blast calculator
 	altInterfaces := make([]interface{}, len(alternatives))
 	for i, alt := range alternatives {
-		altInterfaces[i] = alt
+		altInterfaces[i] = alt.ToMap()
 	}
-	return e.blastCalculator.CompareAlternatives(ctx, primary, altInterfaces)
+	return e.blastCalculator.CompareAlternatives(ctx, primary.ToMap(), altInterfaces)
 }
 
 // CheckCompliance checks if a resource is compliant with policies

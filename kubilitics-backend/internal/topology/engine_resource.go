@@ -21,7 +21,7 @@ const resourceSubgraphMaxNodes = 500
 
 // ResourceTopologyKinds lists canonical kinds that support resource-scoped topology
 // (BuildResourceSubgraph). API accepts plural lowercase (e.g. "statefulsets").
-var ResourceTopologyKinds = []string{"Pod", "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "Job", "CronJob", "Service", "Ingress", "IngressClass", "Endpoints", "EndpointSlice", "NetworkPolicy", "ConfigMap", "Secret", "PersistentVolumeClaim", "PersistentVolume", "StorageClass", "VolumeAttachment"}
+var ResourceTopologyKinds = []string{"Node", "Pod", "Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "Job", "CronJob", "Service", "Ingress", "IngressClass", "Endpoints", "EndpointSlice", "NetworkPolicy", "ConfigMap", "Secret", "PersistentVolumeClaim", "PersistentVolume", "StorageClass", "VolumeAttachment"}
 
 // buildResourceEdge adds an edge with the given label (used for resource-scoped topology).
 func buildResourceEdge(source, target, label string) models.TopologyEdge {
@@ -51,10 +51,10 @@ func ensureNode(g *Graph, kind, namespace, name, status string, meta metav1.Obje
 	return node.ID
 }
 
-// NormalizeResourceKind maps API kind (e.g. "jobs", "pods") to canonical Kind (e.g. "Job", "Pod").
+// NormalizeResourceKind maps API kind (e.g. "jobs", "pods", "nodes") to canonical Kind (e.g. "Job", "Pod", "Node").
 // Exported so the REST handler can pass a canonical kind to the topology service.
 func NormalizeResourceKind(kind string) string {
-	return normalizeResourceKind(kind)
+	return normalizeResourceKind(strings.TrimSpace(kind))
 }
 
 func normalizeResourceKind(kind string) string {
@@ -110,7 +110,7 @@ func normalizeResourceKind(kind string) string {
 // Returns error with message "resource not found" when the seed resource does not exist.
 // Cap: resourceSubgraphMaxNodes nodes.
 func (e *Engine) BuildResourceSubgraph(ctx context.Context, kind, namespace, name string) (*Graph, error) {
-	canonicalKind := normalizeResourceKind(kind)
+	canonicalKind := normalizeResourceKind(strings.TrimSpace(kind))
 	switch canonicalKind {
 	case "Pod":
 		return e.buildPodSubgraph(ctx, namespace, name)
@@ -150,8 +150,10 @@ func (e *Engine) BuildResourceSubgraph(ctx context.Context, kind, namespace, nam
 		return e.buildStorageClassSubgraph(ctx, namespace, name)
 	case "VolumeAttachment":
 		return e.buildVolumeAttachmentSubgraph(ctx, namespace, name)
+	case "Node":
+		return e.buildNodeSubgraph(ctx, name)
 	default:
-		return nil, fmt.Errorf("resource topology not implemented for kind %q (supported kinds: %s)", kind, strings.Join(ResourceTopologyKinds, ", "))
+		return nil, fmt.Errorf("resource topology not implemented for kind %q (supported kinds: %s)", canonicalKind, strings.Join(ResourceTopologyKinds, ", "))
 	}
 }
 
@@ -230,6 +232,7 @@ func (e *Engine) buildDeploymentSubgraph(ctx context.Context, namespace, name st
 	}
 
 	// Services that select the deployment's pods (same selector as deployment)
+	var deploymentServiceNames []string
 	if selector != nil && !selector.Empty() {
 		svcList, err := e.client.Clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
 		if err == nil && dep.Spec.Selector != nil && len(dep.Spec.Selector.MatchLabels) > 0 {
@@ -242,6 +245,47 @@ func (e *Engine) buildDeploymentSubgraph(ctx context.Context, namespace, name st
 				if labels.SelectorFromSet(svc.Spec.Selector).Matches(depLabels) {
 					svcID := ensureNode(g, "Service", svc.Namespace, svc.Name, "Active", svc.ObjectMeta)
 					addResourceEdge(g, svcID, depID, "Selects")
+					deploymentServiceNames = append(deploymentServiceNames, svc.Name)
+				}
+			}
+		}
+	}
+
+	// Ingresses that route to any of the deployment's services
+	if len(deploymentServiceNames) > 0 {
+		svcSet := make(map[string]bool)
+		for _, n := range deploymentServiceNames {
+			svcSet[n] = true
+		}
+		ingList, err := e.client.Clientset.NetworkingV1().Ingresses(ns).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for i := range ingList.Items {
+				ing := &ingList.Items[i]
+				refsService := false
+				var refSvcName string
+				for _, rule := range ing.Spec.Rules {
+					if rule.HTTP == nil {
+						continue
+					}
+					for _, path := range rule.HTTP.Paths {
+						if path.Backend.Service != nil && svcSet[path.Backend.Service.Name] {
+							refsService = true
+							refSvcName = path.Backend.Service.Name
+							break
+						}
+					}
+					if refsService {
+						break
+					}
+				}
+				if !refsService && ing.Spec.DefaultBackend != nil && ing.Spec.DefaultBackend.Service != nil && svcSet[ing.Spec.DefaultBackend.Service.Name] {
+					refsService = true
+					refSvcName = ing.Spec.DefaultBackend.Service.Name
+				}
+				if refsService && refSvcName != "" {
+					ingID := ensureNode(g, "Ingress", ing.Namespace, ing.Name, "Active", ing.ObjectMeta)
+					svcID := "Service/" + ns + "/" + refSvcName
+					addResourceEdge(g, ingID, svcID, "Exposes")
 				}
 			}
 		}
@@ -1184,6 +1228,96 @@ func (e *Engine) buildPodSubgraph(ctx context.Context, namespace, name string) (
 			if selector.Empty() || selector.Matches(podLabels) {
 				npID := ensureNode(g, "NetworkPolicy", np.Namespace, np.Name, "Active", np.ObjectMeta)
 				addResourceEdge(g, npID, podID, "Restricts")
+			}
+		}
+	}
+
+	g.LayoutSeed = g.GenerateLayoutSeed()
+	if err := g.Validate(); err != nil {
+		return nil, fmt.Errorf("graph validation failed: %w", err)
+	}
+	return g, nil
+}
+
+// buildNodeSubgraph builds Node + all Pods scheduled on it, with optional workload owners (Deployment, ReplicaSet, etc.).
+// Node is cluster-scoped; namespace is ignored.
+func (e *Engine) buildNodeSubgraph(ctx context.Context, name string) (*Graph, error) {
+	node, err := e.client.Clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, ErrResourceNotFound
+	}
+	status := "Ready"
+	for _, c := range node.Status.Conditions {
+		if c.Type == corev1.NodeReady && c.Status != corev1.ConditionTrue {
+			status = "NotReady"
+			break
+		}
+	}
+	g := NewGraph(resourceSubgraphMaxNodes)
+	nodeID := ensureNode(g, "Node", "", node.Name, status, node.ObjectMeta)
+
+	podList, err := e.client.Clientset.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + name,
+	})
+	if err != nil {
+		g.LayoutSeed = g.GenerateLayoutSeed()
+		if err := g.Validate(); err != nil {
+			return nil, fmt.Errorf("graph validation failed: %w", err)
+		}
+		return g, nil
+	}
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		ns := pod.Namespace
+		podID := ensureNode(g, "Pod", ns, pod.Name, string(pod.Status.Phase), pod.ObjectMeta)
+		addResourceEdge(g, podID, nodeID, "Runs on")
+
+		// Owner (ReplicaSet, Deployment, StatefulSet, DaemonSet, Job, ReplicationController)
+		if len(pod.OwnerReferences) > 0 {
+			ref := pod.OwnerReferences[0]
+			ownerKind := ref.Kind
+			ownerName := ref.Name
+			switch ownerKind {
+			case "ReplicaSet":
+				rs, err := e.client.Clientset.AppsV1().ReplicaSets(ns).Get(ctx, ownerName, metav1.GetOptions{})
+				if err == nil {
+					ownerID := ensureNode(g, "ReplicaSet", rs.Namespace, rs.Name, "Active", rs.ObjectMeta)
+					addResourceEdge(g, ownerID, podID, "Manages")
+					for _, r := range rs.OwnerReferences {
+						if r.Kind == "Deployment" {
+							dep, err := e.client.Clientset.AppsV1().Deployments(ns).Get(ctx, r.Name, metav1.GetOptions{})
+							if err == nil {
+								depID := ensureNode(g, "Deployment", dep.Namespace, dep.Name, "Active", dep.ObjectMeta)
+								addResourceEdge(g, depID, ownerID, "Manages")
+							}
+							break
+						}
+					}
+				}
+			case "StatefulSet":
+				sts, err := e.client.Clientset.AppsV1().StatefulSets(ns).Get(ctx, ownerName, metav1.GetOptions{})
+				if err == nil {
+					ownerID := ensureNode(g, "StatefulSet", sts.Namespace, sts.Name, "Active", sts.ObjectMeta)
+					addResourceEdge(g, ownerID, podID, "Manages")
+				}
+			case "DaemonSet":
+				ds, err := e.client.Clientset.AppsV1().DaemonSets(ns).Get(ctx, ownerName, metav1.GetOptions{})
+				if err == nil {
+					ownerID := ensureNode(g, "DaemonSet", ds.Namespace, ds.Name, "Active", ds.ObjectMeta)
+					addResourceEdge(g, ownerID, podID, "Manages")
+				}
+			case "Job":
+				job, err := e.client.Clientset.BatchV1().Jobs(ns).Get(ctx, ownerName, metav1.GetOptions{})
+				if err == nil {
+					ownerID := ensureNode(g, "Job", job.Namespace, job.Name, "Active", job.ObjectMeta)
+					addResourceEdge(g, ownerID, podID, "Manages")
+				}
+			case "ReplicationController":
+				rc, err := e.client.Clientset.CoreV1().ReplicationControllers(ns).Get(ctx, ownerName, metav1.GetOptions{})
+				if err == nil {
+					ownerID := ensureNode(g, "ReplicationController", rc.Namespace, rc.Name, "Active", rc.ObjectMeta)
+					addResourceEdge(g, ownerID, podID, "Manages")
+				}
 			}
 		}
 	}

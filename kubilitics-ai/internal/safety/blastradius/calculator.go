@@ -91,10 +91,5 @@ type BlastRadiusCalculator interface {
 	CompareAlternatives(ctx context.Context, primaryAction interface{}, alternativeActions []interface{}) (interface{}, error)
 }
 
-// NewBlastRadiusCalculator creates a new blast radius calculator with dependencies.
-func NewBlastRadiusCalculator() BlastRadiusCalculator {
-	// Initialize World Model query
-	// Load resource dependency rules
-	// Initialize topology traversal engine
-	return nil
-}
+// NewBlastRadiusCalculator creates a new blast radius calculator.
+// The concrete implementation is in calculator_impl.go.

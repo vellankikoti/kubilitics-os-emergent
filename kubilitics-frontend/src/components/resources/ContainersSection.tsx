@@ -83,19 +83,48 @@ const stateConfig = {
   terminated: { icon: XCircle, color: 'text-muted-foreground', bg: 'bg-muted', label: 'Terminated' },
 };
 
+interface ProbeHttpGet {
+  path?: string;
+  port?: number | string;
+}
+
+interface ProbeTcpSocket {
+  port?: number | string;
+}
+
+interface Probe {
+  httpGet?: ProbeHttpGet;
+  tcpSocket?: ProbeTcpSocket;
+  exec?: unknown;
+  grpc?: unknown;
+  initialDelaySeconds?: number;
+  timeoutSeconds?: number;
+  periodSeconds?: number;
+  successThreshold?: number;
+  failureThreshold?: number;
+}
+
 function probeToChips(probe: Record<string, unknown> | undefined): string[] {
   if (!probe || typeof probe !== 'object') return [];
   const chips: string[] = [];
-  if (probe.httpGet && typeof (probe.httpGet as any).path === 'string') chips.push(`path: ${(probe.httpGet as any).path}`);
-  if (probe.httpGet && (probe.httpGet as any).port !== undefined) chips.push(`port: ${(probe.httpGet as any).port}`);
-  if (probe.tcpSocket && (probe.tcpSocket as any).port !== undefined) chips.push(`tcp:${(probe.tcpSocket as any).port}`);
-  if (probe.exec) chips.push('exec');
-  if (probe.grpc) chips.push('grpc');
-  if ((probe as any).initialDelaySeconds != null) chips.push(`delay=${(probe as any).initialDelaySeconds}s`);
-  if ((probe as any).timeoutSeconds != null) chips.push(`timeout=${(probe as any).timeoutSeconds}s`);
-  if ((probe as any).periodSeconds != null) chips.push(`period=${(probe as any).periodSeconds}s`);
-  if ((probe as any).successThreshold != null) chips.push(`#success=${(probe as any).successThreshold}`);
-  if ((probe as any).failureThreshold != null) chips.push(`#failure=${(probe as any).failureThreshold}`);
+  const typedProbe = probe as Probe;
+  
+  if (typedProbe.httpGet && typeof typedProbe.httpGet.path === 'string') {
+    chips.push(`path: ${typedProbe.httpGet.path}`);
+  }
+  if (typedProbe.httpGet && typedProbe.httpGet.port !== undefined) {
+    chips.push(`port: ${typedProbe.httpGet.port}`);
+  }
+  if (typedProbe.tcpSocket && typedProbe.tcpSocket.port !== undefined) {
+    chips.push(`tcp:${typedProbe.tcpSocket.port}`);
+  }
+  if (typedProbe.exec) chips.push('exec');
+  if (typedProbe.grpc) chips.push('grpc');
+  if (typedProbe.initialDelaySeconds != null) chips.push(`delay=${typedProbe.initialDelaySeconds}s`);
+  if (typedProbe.timeoutSeconds != null) chips.push(`timeout=${typedProbe.timeoutSeconds}s`);
+  if (typedProbe.periodSeconds != null) chips.push(`period=${typedProbe.periodSeconds}s`);
+  if (typedProbe.successThreshold != null) chips.push(`#success=${typedProbe.successThreshold}`);
+  if (typedProbe.failureThreshold != null) chips.push(`#failure=${typedProbe.failureThreshold}`);
   return chips;
 }
 

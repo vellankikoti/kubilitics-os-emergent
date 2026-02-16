@@ -1,14 +1,14 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Layers, Clock, Download, Trash2, Server, Settings, Star, RefreshCw, Info, Network, Loader2, Edit, FileCode, GitCompare } from 'lucide-react';
+import { Layers, Clock, Download, Trash2, Server, Settings, Star, Info, Network, Loader2, Edit, FileCode, GitCompare } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import {
   ResourceDetailLayout,
+  ResourceOverviewMetadata,
   SectionCard,
-  MetadataCard,
   YamlViewer,
   YamlCompareViewer,
   EventsSection,
@@ -65,11 +65,6 @@ export default function StorageClassDetail() {
     if (!name?.trim()) navigate('/storageclasses', { replace: true });
   }, [name, navigate]);
 
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
-
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
     const blob = new Blob([yaml], { type: 'application/yaml' });
@@ -120,7 +115,6 @@ export default function StorageClassDetail() {
   const allowVolumeExpansion = sc?.allowVolumeExpansion ?? false;
   const isDefault = sc?.metadata?.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true';
   const parameters = sc?.parameters ?? {};
-  const labels = sc?.metadata?.labels ?? {};
 
   const statusCards = [
     { label: 'Provisioner', value: provisioner, icon: Server, iconColor: 'primary' as const },
@@ -151,6 +145,10 @@ export default function StorageClassDetail() {
       icon: Info,
       content: (
         <div className="space-y-6">
+          <ResourceOverviewMetadata
+            metadata={sc?.metadata ?? { name: scName }}
+            createdLabel={age}
+          />
           <SectionCard icon={Layers} title="Storage Class information" tooltip={<p className="text-xs text-muted-foreground">Provisioner and volume behavior</p>}>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
               <div><p className="text-muted-foreground mb-1">Provisioner</p><p className="font-mono text-xs">{provisioner}</p></div>
@@ -172,17 +170,6 @@ export default function StorageClassDetail() {
               </div>
             </SectionCard>
           )}
-          <SectionCard icon={Info} title="Labels" tooltip={<p className="text-xs text-muted-foreground">Kubernetes labels</p>}>
-            {Object.keys(labels).length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {Object.entries(labels).map(([k, v]) => (
-                  <Badge key={k} variant="secondary" className="font-mono text-xs">{k}={v}</Badge>
-                ))}
-              </div>
-            ) : (
-              <p className="text-muted-foreground text-sm">No labels</p>
-            )}
-          </SectionCard>
         </div>
       ),
     },
@@ -226,15 +213,15 @@ export default function StorageClassDetail() {
         status={status}
         backLink="/storageclasses"
         backLabel="Storage Classes"
+        createdLabel={age}
+        createdAt={sc?.metadata?.creationTimestamp}
         headerMetadata={
           <span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground">
-            <Clock className="h-3.5 w-3.5" />Created {age}
-            {isConnected && <Badge variant="outline" className="ml-2 text-xs">Live</Badge>}
+            {isConnected && <Badge variant="outline" className="text-xs">Live</Badge>}
             {isDefault && <><span className="mx-2">•</span><Star className="h-3.5 w-3.5 text-[hsl(var(--warning))]" />Default</>}
           </span>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Edit', icon: Edit, variant: 'outline', onClick: () => { setActiveTab('yaml'); setSearchParams((p) => { const n = new URLSearchParams(p); n.set('tab', 'yaml'); return n; }, { replace: true }); } },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

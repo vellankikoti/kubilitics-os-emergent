@@ -11,6 +11,9 @@ import (
 	"github.com/kubilitics/kubilitics-ai/internal/config"
 	"github.com/kubilitics/kubilitics-ai/internal/integration/backend"
 	"github.com/kubilitics/kubilitics-ai/internal/mcp/tools"
+	analysistools "github.com/kubilitics/kubilitics-ai/internal/mcp/tools/analysis"
+	executiontools "github.com/kubilitics/kubilitics-ai/internal/mcp/tools/execution"
+	"github.com/kubilitics/kubilitics-ai/internal/safety"
 )
 
 // Package server implements the Model Context Protocol (MCP) server.
@@ -74,9 +77,11 @@ type ToolCall struct {
 
 // mcpServerImpl is the concrete implementation of MCPServer.
 type mcpServerImpl struct {
-	config      *config.Config
-	backendProxy *backend.Proxy
-	auditLog    audit.Logger
+	config        *config.Config
+	backendProxy  *backend.Proxy
+	auditLog      audit.Logger
+	analysisTools  *analysistools.AnalysisTools  // Tier-2 deep analysis tools (A-CORE-003)
+	executionTools *executiontools.ExecutionTools // Safety-gated execution tools (A-CORE-004)
 
 	// Tool registry
 	mu       sync.RWMutex
@@ -129,14 +134,21 @@ func NewMCPServer(cfg *config.Config, backendProxy *backend.Proxy, auditLog audi
 		return nil, fmt.Errorf("audit logger is required")
 	}
 
+	safetyEngine, err := safety.NewEngine()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create safety engine: %w", err)
+	}
+
 	server := &mcpServerImpl{
-		config:      cfg,
-		backendProxy: backendProxy,
-		auditLog:    auditLog,
-		tools:       make(map[string]*toolRegistration),
-		handlers:    make(map[string]ToolHandler),
-		stopChan:    make(chan struct{}),
-		rateLimiter: newRateLimiter(100, time.Second), // 100 calls per second
+		config:         cfg,
+		backendProxy:   backendProxy,
+		auditLog:       auditLog,
+		analysisTools:  analysistools.NewAnalysisTools(backendProxy),
+		executionTools: executiontools.NewExecutionTools(backendProxy, safetyEngine, auditLog),
+		tools:          make(map[string]*toolRegistration),
+		handlers:       make(map[string]ToolHandler),
+		stopChan:       make(chan struct{}),
+		rateLimiter:    newRateLimiter(100, time.Second), // 100 calls per second
 	}
 
 	server.stats.CallsByTool = make(map[string]int64)
@@ -439,149 +451,108 @@ func (s *mcpServerImpl) registerAllTools() error {
 		totalTools++
 	}
 
+	// Register execution tools (safety-gated)
+	executionToolDefs := tools.GetToolsByCategory(tools.CategoryExecution)
+	for _, toolDef := range executionToolDefs {
+		handler := s.createExecutionHandler(&toolDef)
+		if err := s.registerToolWithCategory(toolDef.Name, toolDef.Description, toolDef.InputSchema, handler, string(toolDef.Category), toolDef.Destructive, toolDef.RequiresAI); err != nil {
+			return fmt.Errorf("failed to register execution tool %s: %w", toolDef.Name, err)
+		}
+		totalTools++
+	}
+
 	s.auditLog.Log(context.Background(), audit.NewEvent(audit.EventServerStarted).
-		WithDescription(fmt.Sprintf("Registered %d tools across 8 categories", totalTools)).
+		WithDescription(fmt.Sprintf("Registered %d tools across 9 categories (includes 12 deep-analysis A-CORE-003 tools and 9 safety-gated A-CORE-004 execution tools)", totalTools)).
 		WithResult(audit.ResultSuccess))
 
 	return nil
 }
 
 // createObservationHandler creates a handler for observation tools.
+// All routing is delegated to routeObservationTool (handlers_observation.go).
 func (s *mcpServerImpl) createObservationHandler(toolDef *tools.ToolDefinition) ToolHandler {
+	name := toolDef.Name // capture
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-		switch toolDef.Name {
-		case "observe_cluster_overview":
-			return s.handleClusterOverview(ctx, args)
-		case "observe_resource":
-			return s.handleObserveResource(ctx, args)
-		case "observe_pod_logs":
-			return s.handlePodLogs(ctx, args)
-		case "observe_events":
-			return s.handleEvents(ctx, args)
-		case "observe_metrics":
-			return s.handleMetrics(ctx, args)
-		default:
-			return nil, fmt.Errorf("observation tool not implemented: %s", toolDef.Name)
-		}
+		return s.routeObservationTool(ctx, name, args)
 	}
 }
 
 // createAnalysisHandler creates a handler for analysis tools.
+// Tier-2 deep analysis tools (added in A-CORE-003) are routed to analysisTools.HandlerMap();
+// the legacy Tier-1 AI-synthesised tools fall through to routeAnalysisTool.
 func (s *mcpServerImpl) createAnalysisHandler(toolDef *tools.ToolDefinition) ToolHandler {
+	name := toolDef.Name
+	// Check if this tool has a deep-analysis handler (A-CORE-003 tools).
+	if deepHandler, ok := s.analysisTools.HandlerMap()[name]; ok {
+		return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+			return deepHandler(ctx, args)
+		}
+	}
+	// Fall back to Tier-1 HTTP-based analysis router.
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-		return nil, fmt.Errorf("analysis tool not yet implemented: %s", toolDef.Name)
+		return s.routeAnalysisTool(ctx, name, args)
 	}
 }
 
 // createRecommendationHandler creates a handler for recommendation tools.
 func (s *mcpServerImpl) createRecommendationHandler(toolDef *tools.ToolDefinition) ToolHandler {
+	name := toolDef.Name
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-		return nil, fmt.Errorf("recommendation tool not yet implemented: %s", toolDef.Name)
+		return s.routeRecommendationTool(ctx, name, args)
 	}
 }
 
 // createTroubleshootingHandler creates a handler for troubleshooting tools.
 func (s *mcpServerImpl) createTroubleshootingHandler(toolDef *tools.ToolDefinition) ToolHandler {
+	name := toolDef.Name
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-		return nil, fmt.Errorf("troubleshooting tool not yet implemented: %s", toolDef.Name)
+		return s.routeTroubleshootingTool(ctx, name, args)
 	}
 }
 
 // createSecurityHandler creates a handler for security tools.
 func (s *mcpServerImpl) createSecurityHandler(toolDef *tools.ToolDefinition) ToolHandler {
+	name := toolDef.Name
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-		return nil, fmt.Errorf("security tool not yet implemented: %s", toolDef.Name)
+		return s.routeSecurityTool(ctx, name, args)
 	}
 }
 
 // createCostHandler creates a handler for cost tools.
 func (s *mcpServerImpl) createCostHandler(toolDef *tools.ToolDefinition) ToolHandler {
+	name := toolDef.Name
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-		return nil, fmt.Errorf("cost tool not yet implemented: %s", toolDef.Name)
+		return s.routeCostTool(ctx, name, args)
 	}
 }
 
 // createActionHandler creates a handler for action tools.
 func (s *mcpServerImpl) createActionHandler(toolDef *tools.ToolDefinition) ToolHandler {
+	name := toolDef.Name
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-		return nil, fmt.Errorf("action tool not yet implemented: %s", toolDef.Name)
+		return s.routeActionTool(ctx, name, args)
+	}
+}
+
+// createExecutionHandler creates a handler for safety-gated execution tools.
+func (s *mcpServerImpl) createExecutionHandler(toolDef *tools.ToolDefinition) ToolHandler {
+	name := toolDef.Name
+	if execHandler, ok := s.executionTools.HandlerMap()[name]; ok {
+		return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+			return execHandler(ctx, args)
+		}
+	}
+	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		return nil, fmt.Errorf("execution tool handler not found: %s", name)
 	}
 }
 
 // createAutomationHandler creates a handler for automation tools.
 func (s *mcpServerImpl) createAutomationHandler(toolDef *tools.ToolDefinition) ToolHandler {
+	name := toolDef.Name
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-		return nil, fmt.Errorf("automation tool not yet implemented: %s", toolDef.Name)
+		return s.routeAutomationTool(ctx, name, args)
 	}
-}
-
-// handleClusterOverview returns comprehensive cluster overview.
-func (s *mcpServerImpl) handleClusterOverview(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-	health, err := s.backendProxy.GetClusterHealth(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get cluster health: %w", err)
-	}
-
-	return map[string]interface{}{
-		"cluster_health": health,
-		"timestamp":      time.Now(),
-	}, nil
-}
-
-// handleObserveResource retrieves a specific resource.
-func (s *mcpServerImpl) handleObserveResource(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-	kind, ok := args["kind"].(string)
-	if !ok {
-		return nil, fmt.Errorf("kind parameter required")
-	}
-
-	namespace, _ := args["namespace"].(string)
-	name, ok := args["name"].(string)
-	if !ok {
-		return nil, fmt.Errorf("name parameter required")
-	}
-
-	resource, err := s.backendProxy.GetResource(ctx, kind, namespace, name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get resource: %w", err)
-	}
-
-	return resource, nil
-}
-
-// handlePodLogs retrieves pod logs.
-func (s *mcpServerImpl) handlePodLogs(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-	namespace, _ := args["namespace"].(string)
-	podName, ok := args["pod_name"].(string)
-	if !ok {
-		return nil, fmt.Errorf("pod_name parameter required")
-	}
-
-	// TODO: Implement log streaming via backend proxy
-	return map[string]interface{}{
-		"message": fmt.Sprintf("Log retrieval for pod %s/%s not yet implemented", namespace, podName),
-	}, nil
-}
-
-// handleEvents retrieves cluster events.
-func (s *mcpServerImpl) handleEvents(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-	namespace, _ := args["namespace"].(string)
-
-	// Get events from backend
-	events, err := s.backendProxy.ListResources(ctx, "Event", namespace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list events: %w", err)
-	}
-
-	return events, nil
-}
-
-// handleMetrics retrieves resource metrics.
-func (s *mcpServerImpl) handleMetrics(ctx context.Context, args map[string]interface{}) (interface{}, error) {
-	// TODO: Implement metrics retrieval via backend proxy
-	return map[string]interface{}{
-		"message": "Metrics retrieval not yet implemented",
-	}, nil
 }
 
 // newRateLimiter creates a new rate limiter.

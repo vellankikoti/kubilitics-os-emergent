@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Scale, Clock, Cpu, HardDrive, Download, Trash2, RefreshCw, Network } from 'lucide-react';
+import { Scale, Clock, Cpu, HardDrive, Download, Trash2, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -60,11 +60,6 @@ export default function LimitRangeDetail() {
   const defaultCpu = containerLimit?.default?.cpu ?? containerLimit?.defaultRequest?.cpu ?? '–';
   const defaultMemory = containerLimit?.default?.memory ?? containerLimit?.defaultRequest?.memory ?? '–';
   const maxCpu = containerLimit?.max?.cpu ?? limits.find((l) => l.type === 'Pod')?.max?.cpu ?? '–';
-
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
 
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
@@ -246,7 +241,6 @@ export default function LimitRangeDetail() {
         backLabel="Limit Ranges"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },
         ]}

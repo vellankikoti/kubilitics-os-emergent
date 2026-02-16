@@ -5,12 +5,18 @@ import { useReducedMotion } from 'framer-motion';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import { BackendStatusBanner } from './BackendStatusBanner';
+import { ConnectionRequiredBanner } from './ConnectionRequiredBanner';
 import { AIAssistant } from '@/components/ai';
+import { useConnectionStatus } from '@/hooks/useConnectionStatus';
+import { useRecentlyVisited } from '@/hooks/useRecentlyVisited';
+import { cn } from '@/lib/utils';
 
 export function AppLayout() {
+  useRecentlyVisited();
   const navigate = useNavigate();
   const location = useLocation();
   const reduceMotion = useReducedMotion();
+  const { isConnected } = useConnectionStatus();
   const gPendingRef = useRef(false);
   const gTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -65,16 +71,25 @@ export function AppLayout() {
       <div className="flex">
         <Sidebar />
         <main id="main-content" className="flex-1 p-6 pb-28 pr-3 overflow-auto flex flex-col gap-4 min-h-0" role="main" aria-label="Main content">
+          <ConnectionRequiredBanner />
           <BackendStatusBanner />
-          <motion.div
-            key={location.pathname}
-            initial={reduceMotion ? false : { opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: reduceMotion ? 0 : 0.25, ease: 'easeOut' }}
-            className="flex flex-col gap-4 min-h-0 flex-1"
+          <div
+            className={cn(
+              'flex flex-col gap-4 min-h-0 flex-1 transition-opacity duration-200',
+              !isConnected && 'opacity-50 pointer-events-none select-none'
+            )}
+            aria-hidden={!isConnected}
           >
-            <Outlet />
-          </motion.div>
+            <motion.div
+              key={location.pathname}
+              initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: reduceMotion ? 0 : 0.25, ease: 'easeOut' }}
+              className="flex flex-col gap-4 min-h-0 flex-1"
+            >
+              <Outlet />
+            </motion.div>
+          </div>
         </main>
       </div>
       <AIAssistant />

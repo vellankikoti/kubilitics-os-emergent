@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { normalizeKindForTopology } from '@/utils/resourceKindMapper';
-import { Layers, Clock, Server, Download, Trash2, RefreshCw, Scale, AlertTriangle, Package, Network } from 'lucide-react';
+import { Layers, Clock, Server, Download, Trash2, Scale, AlertTriangle, Package, Network } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -294,7 +294,6 @@ export default function ReplicationControllerDetail() {
           </div>
         }
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: () => {} },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Scale', icon: Scale, variant: 'outline', onClick: () => setShowScaleDialog(true) },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

@@ -97,10 +97,4 @@ type TemporalStore interface {
 }
 
 // NewTemporalStore creates a new temporal store with ring buffer.
-func NewTemporalStore() TemporalStore {
-	// Initialize ring buffer with configured snapshot count
-	// Set up snapshot interval (default 1 hour)
-	// Start background snapshotter task
-	// Initialize change event tracking
-	return nil
-}
+// The concrete implementation is in store_impl.go.

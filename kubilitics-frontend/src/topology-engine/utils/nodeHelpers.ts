@@ -23,7 +23,7 @@ export function toCytoscapeNodeData(node: TopologyNode) {
   let borderColor = attrs.borderColor;
   let glowColor = attrs.glowColor;
   if (node.kind === 'Pod') {
-    const hc = getHealthColor(node.computed.health);
+    const hc = getHealthColor(node.computed?.health);
     bgColor = hc.bg;
     borderColor = hc.border;
     glowColor = hc.glow;
@@ -40,7 +40,7 @@ export function toCytoscapeNodeData(node: TopologyNode) {
       namespace: node.namespace,
       name: node.name,
       status: node.status,
-      health: node.computed.health,
+      health: node.computed?.health,
       bgColor,
       borderColor,
       glowColor,

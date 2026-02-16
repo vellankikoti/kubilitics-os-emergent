@@ -68,6 +68,16 @@ func podReferencesSecret(pod *corev1.Pod, secretName string) bool {
 	return false
 }
 
+// podReferencesPVC returns true if the pod uses the given PVC (by claim name) in the same namespace.
+func podReferencesPVC(pod *corev1.Pod, claimName string) bool {
+	for _, vol := range pod.Spec.Volumes {
+		if vol.PersistentVolumeClaim != nil && vol.PersistentVolumeClaim.ClaimName == claimName {
+			return true
+		}
+	}
+	return false
+}
+
 func buildConsumersFromPods(pods []corev1.Pod) ConsumersResponse {
 	seenPods := make(map[string]bool)
 	seenStatefulSets := make(map[string]bool)
@@ -210,6 +220,65 @@ func (h *Handler) GetSecretConsumers(w http.ResponseWriter, r *http.Request) {
 	var matching []corev1.Pod
 	for i := range podList.Items {
 		if podReferencesSecret(&podList.Items[i], name) {
+			matching = append(matching, podList.Items[i])
+		}
+	}
+	out := buildConsumersFromPods(matching)
+	seenDep := make(map[string]bool)
+	for _, pod := range matching {
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == "ReplicaSet" {
+				rs, err := client.Clientset.AppsV1().ReplicaSets(pod.Namespace).Get(r.Context(), ref.Name, metav1.GetOptions{})
+				if err != nil {
+					continue
+				}
+				for _, r := range rs.OwnerReferences {
+					if r.Kind == "Deployment" {
+						k := pod.Namespace + "/" + r.Name
+						if !seenDep[k] {
+							seenDep[k] = true
+							out.Deployments = append(out.Deployments, Ref{Namespace: pod.Namespace, Name: r.Name})
+						}
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+	respondJSON(w, http.StatusOK, out)
+}
+
+// GetPVCConsumers handles GET /clusters/{clusterId}/resources/persistentvolumeclaims/{namespace}/{name}/consumers
+// Returns pods (and their owning workloads) that reference this PVC via spec.volumes[].persistentVolumeClaim.claimName.
+func (h *Handler) GetPVCConsumers(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	clusterID := vars["clusterId"]
+	namespace := vars["namespace"]
+	name := vars["name"]
+	if !validate.ClusterID(clusterID) || !validate.Namespace(namespace) || !validate.Name(name) {
+		respondError(w, http.StatusBadRequest, "Invalid clusterId, namespace, or name")
+		return
+	}
+	resolvedID, err := h.resolveClusterID(r.Context(), clusterID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	client, err := h.clusterService.GetClient(resolvedID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	podList, err := client.Clientset.CoreV1().Pods(namespace).List(r.Context(), metav1.ListOptions{})
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var matching []corev1.Pod
+	for i := range podList.Items {
+		if podReferencesPVC(&podList.Items[i], name) {
 			matching = append(matching, podList.Items[i])
 		}
 	}

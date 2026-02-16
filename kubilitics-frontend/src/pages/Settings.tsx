@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  Settings as SettingsIcon, 
-  Monitor, 
-  Moon, 
-  Sun, 
-  Bell, 
+import {
+  Settings as SettingsIcon,
+  Monitor,
+  Moon,
+  Sun,
+  Bell,
   BellOff,
   ZoomIn,
   Palette,
@@ -14,6 +14,11 @@ import {
   CheckCircle2,
   Info,
   Server,
+  Bot,
+  Key,
+  Eye,
+  EyeOff,
+  AlertCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -27,6 +32,13 @@ import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import { useBackendConfigStore } from '@/stores/backendConfigStore';
 import { DEFAULT_BACKEND_BASE_URL } from '@/lib/backendConstants';
+import {
+  saveLLMProviderConfig,
+  loadLLMProviderConfig,
+  clearLLMProviderConfig,
+  getAIInfo,
+  type LLMProviderConfig,
+} from '@/services/aiService';
 
 interface UserPreferences {
   theme: 'light' | 'dark' | 'system';
@@ -52,6 +64,14 @@ const defaultPreferences: UserPreferences = {
   defaultNamespace: 'all',
 };
 
+const AI_PROVIDER_OPTIONS = [
+  { value: 'none', label: 'None (AI disabled)' },
+  { value: 'openai', label: 'OpenAI (GPT-4, GPT-3.5)' },
+  { value: 'anthropic', label: 'Anthropic (Claude)' },
+  { value: 'ollama', label: 'Ollama (Local)' },
+  { value: 'custom', label: 'Custom (OpenAI-compatible)' },
+] as const;
+
 export default function Settings() {
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
   const [hasChanges, setHasChanges] = useState(false);
@@ -59,6 +79,13 @@ export default function Settings() {
   const setBackendBaseUrl = useBackendConfigStore((s) => s.setBackendBaseUrl);
   const [backendUrlInput, setBackendUrlInput] = useState(backendBaseUrl);
   const [backendUrlDirty, setBackendUrlDirty] = useState(false);
+
+  // AI Provider Configuration
+  const [aiConfig, setAiConfig] = useState<LLMProviderConfig>({ provider: 'none' });
+  const [aiConfigDirty, setAiConfigDirty] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [aiConnected, setAiConnected] = useState<boolean | null>(null);
+  const [aiTestLoading, setAiTestLoading] = useState(false);
 
   useEffect(() => {
     setBackendUrlInput(backendBaseUrl);
@@ -82,6 +109,43 @@ export default function Settings() {
     const current = JSON.stringify(preferences);
     setHasChanges(saved !== current);
   }, [preferences]);
+
+  // Load saved AI provider config
+  useEffect(() => {
+    const saved = loadLLMProviderConfig();
+    if (saved) setAiConfig(saved);
+  }, []);
+
+  const handleAiConfigChange = (updates: Partial<LLMProviderConfig>) => {
+    setAiConfig((prev) => ({ ...prev, ...updates }));
+    setAiConfigDirty(true);
+    setAiConnected(null);
+  };
+
+  const handleSaveAiConfig = () => {
+    if (aiConfig.provider === 'none') {
+      clearLLMProviderConfig();
+    } else {
+      saveLLMProviderConfig(aiConfig);
+    }
+    setAiConfigDirty(false);
+    toast.success('AI provider settings saved');
+  };
+
+  const handleTestAiConnection = async () => {
+    setAiTestLoading(true);
+    setAiConnected(null);
+    try {
+      await getAIInfo();
+      setAiConnected(true);
+      toast.success('Connected to AI service');
+    } catch {
+      setAiConnected(false);
+      toast.error('Failed to connect to AI service');
+    } finally {
+      setAiTestLoading(false);
+    }
+  };
 
   const handleSave = () => {
     localStorage.setItem('kubilitics-preferences', JSON.stringify(preferences));
@@ -195,6 +259,160 @@ export default function Settings() {
             >
               Save backend URL
             </Button>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* AI Provider Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Bot className="h-5 w-5" />
+            AI Configuration
+          </CardTitle>
+          <CardDescription>
+            Configure your LLM provider for AI-powered insights, anomaly detection, and the AI assistant.
+            Bring your own API key — Kubilitics does not bundle any API keys.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {/* Provider selection */}
+          <div className="space-y-2">
+            <Label htmlFor="ai-provider">AI Provider</Label>
+            <Select
+              value={aiConfig.provider}
+              onValueChange={(v) => handleAiConfigChange({ provider: v as LLMProviderConfig['provider'] })}
+            >
+              <SelectTrigger id="ai-provider" className="w-full max-w-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {AI_PROVIDER_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Model */}
+          {aiConfig.provider !== 'none' && (
+            <div className="space-y-2">
+              <Label htmlFor="ai-model">Model</Label>
+              <Input
+                id="ai-model"
+                placeholder={
+                  aiConfig.provider === 'openai' ? 'gpt-4o' :
+                  aiConfig.provider === 'anthropic' ? 'claude-3-5-sonnet-20241022' :
+                  aiConfig.provider === 'ollama' ? 'llama3' : 'your-model-name'
+                }
+                value={aiConfig.model ?? ''}
+                onChange={(e) => handleAiConfigChange({ model: e.target.value })}
+                className="max-w-xs font-mono"
+              />
+            </div>
+          )}
+
+          {/* API Key (OpenAI / Anthropic) */}
+          {(aiConfig.provider === 'openai' || aiConfig.provider === 'anthropic') && (
+            <div className="space-y-2">
+              <Label htmlFor="ai-api-key">API Key</Label>
+              <div className="relative max-w-sm">
+                <Key className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="ai-api-key"
+                  type={showApiKey ? 'text' : 'password'}
+                  placeholder={aiConfig.provider === 'openai' ? 'sk-...' : 'sk-ant-...'}
+                  value={aiConfig.api_key ?? ''}
+                  onChange={(e) => handleAiConfigChange({ api_key: e.target.value })}
+                  className="pl-9 pr-9 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey((v) => !v)}
+                  className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
+                  aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
+                >
+                  {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Stored in browser local storage. Never sent to Kubilitics servers.
+              </p>
+            </div>
+          )}
+
+          {/* Base URL (Ollama / Custom) */}
+          {(aiConfig.provider === 'ollama' || aiConfig.provider === 'custom') && (
+            <div className="space-y-2">
+              <Label htmlFor="ai-base-url">Base URL</Label>
+              <Input
+                id="ai-base-url"
+                type="url"
+                placeholder={aiConfig.provider === 'ollama' ? 'http://localhost:11434' : 'http://localhost:8000/v1'}
+                value={aiConfig.base_url ?? ''}
+                onChange={(e) => handleAiConfigChange({ base_url: e.target.value })}
+                className="max-w-sm font-mono"
+              />
+            </div>
+          )}
+
+          {/* API Key for custom (optional) */}
+          {aiConfig.provider === 'custom' && (
+            <div className="space-y-2">
+              <Label htmlFor="ai-custom-key">API Key (optional)</Label>
+              <div className="relative max-w-sm">
+                <Key className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="ai-custom-key"
+                  type={showApiKey ? 'text' : 'password'}
+                  placeholder="Optional bearer token"
+                  value={aiConfig.api_key ?? ''}
+                  onChange={(e) => handleAiConfigChange({ api_key: e.target.value })}
+                  className="pl-9 pr-9 font-mono"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Actions */}
+          {aiConfig.provider !== 'none' && (
+            <div className="flex items-center gap-3 pt-1">
+              {aiConfigDirty && (
+                <Button size="sm" onClick={handleSaveAiConfig} className="gap-2">
+                  <Save className="h-4 w-4" />
+                  Save AI Config
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleTestAiConnection}
+                disabled={aiTestLoading}
+                className="gap-2"
+              >
+                {aiTestLoading ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                ) : aiConnected === true ? (
+                  <CheckCircle2 className="h-4 w-4 text-green-500" />
+                ) : aiConnected === false ? (
+                  <AlertCircle className="h-4 w-4 text-destructive" />
+                ) : (
+                  <Bot className="h-4 w-4" />
+                )}
+                Test Connection
+              </Button>
+              {aiConnected === true && (
+                <span className="text-sm text-green-600 dark:text-green-400">Connected</span>
+              )}
+              {aiConnected === false && (
+                <span className="text-sm text-destructive">Connection failed</span>
+              )}
+            </div>
+          )}
+          {aiConfig.provider === 'none' && (
+            <p className="text-sm text-muted-foreground">
+              Select a provider above to enable AI features. Analytics without LLM still works.
+            </p>
           )}
         </CardContent>
       </Card>

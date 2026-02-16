@@ -12,7 +12,7 @@ import { useCallback, useRef } from 'react';
 import type { Core, EventObject, NodeSingular } from 'cytoscape';
 
 export interface HighlightEngineOptions {
-  onNodeHover?: (nodeId: string | null) => void;
+  onNodeHover?: (nodeId: string | null, clientPosition?: { x: number; y: number } | null) => void;
   isPaused?: boolean;
 }
 
@@ -59,13 +59,16 @@ export function useHighlightEngine(options: HighlightEngineOptions = {}) {
       const nodeId = node.id();
       applyHighlight(cy, nodeId);
       container.style.cursor = 'pointer';
-      options.onNodeHover?.(nodeId);
+      const pos = node.renderedPosition();
+      const rect = container.getBoundingClientRect();
+      const clientPosition = { x: rect.left + pos.x, y: rect.top + pos.y };
+      options.onNodeHover?.(nodeId, clientPosition);
     });
 
     cy.on('mouseout', 'node', () => {
       clearHighlight(cy);
       container.style.cursor = 'default';
-      options.onNodeHover?.(null);
+      options.onNodeHover?.(null, null);
     });
   }, [applyHighlight, clearHighlight, options]);
 

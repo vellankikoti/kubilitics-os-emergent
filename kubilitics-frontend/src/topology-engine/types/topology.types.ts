@@ -63,7 +63,7 @@ export const ABSTRACTION_LEVELS: Record<AbstractionLevel, AbstractionLevelConfig
 
 export type RelationshipType =
   | 'exposes' | 'selects' | 'owns' | 'runs'
-  | 'mounts' | 'scheduled_on' | 'references' | 'backed_by'
+  | 'mounts' | 'scheduled_on' | 'schedules' | 'references' | 'backed_by'
   | 'routes' | 'configures' | 'contains' | 'stores'
   | 'permits' | 'limits' | 'manages';
 
@@ -201,6 +201,7 @@ export interface TopologyCanvasRef {
   resetView: () => void;
   exportAsSVG: () => string | undefined;
   exportAsPNG: () => string | undefined;
+  exportAsPDF?: (filename?: string) => void;
   relayout: () => void;
   getNodeCount: () => number;
   getEdgeCount: () => number;

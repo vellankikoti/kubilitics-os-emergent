@@ -79,17 +79,25 @@ import "context"
 type Config struct {
 	// Server configuration
 	Server struct {
-		Port          int
-		TLSEnabled    bool
-		TLSCertPath   string
-		TLSKeyPath    string
+		Port           int
+		TLSEnabled     bool
+		TLSCertPath    string
+		TLSKeyPath     string
+		// AllowedOrigins is a list of origins permitted to open WebSocket connections.
+		// Use ["*"] to allow any origin (development only).
+		// If empty, defaults to ["http://localhost:3000", "http://localhost:5173"].
+		AllowedOrigins []string
 	}
 
 	// Backend configuration
 	Backend struct {
-		Address    string
-		Timeout    int
-		TLSEnabled bool
+		Address     string // gRPC address (e.g. localhost:50051)
+		HTTPBaseURL string // REST API base URL (e.g. http://localhost:8080) for draw.io export, etc.
+		Timeout     int
+		TLSEnabled  bool
+		TLSCertPath string // client cert for mTLS
+		TLSKeyPath  string // client key for mTLS
+		TLSCAPath   string // custom CA certificate
 	}
 
 	// LLM provider configuration

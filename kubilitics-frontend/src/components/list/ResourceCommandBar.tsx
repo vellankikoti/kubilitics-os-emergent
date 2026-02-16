@@ -1,5 +1,14 @@
 import { cn } from '@/lib/utils';
 
+/** Standard scope indicator for cluster-scoped resources (Nodes, PVs, StorageClasses, etc.). Use in ResourceCommandBar scope prop. */
+export function ClusterScopedScope() {
+  return (
+    <span className="text-sm font-medium text-muted-foreground px-3 py-2 rounded-lg border border-border bg-muted/30 h-10 inline-flex items-center">
+      Cluster-scoped
+    </span>
+  );
+}
+
 export interface ResourceCommandBarProps {
   scope: React.ReactNode;
   search: React.ReactNode;
@@ -26,7 +35,7 @@ export function ResourceCommandBar({
     <div className={cn('w-full', className)}>
       <div
         className={cn(
-          'grid min-h-[52px] w-full items-center gap-0 rounded-xl border border-border bg-card py-3 shadow-sm ring-1 ring-black/[0.06]',
+          'grid min-h-[52px] w-full items-center gap-0 rounded-lg border border-border bg-muted/20 py-3',
           hasStructure ? 'grid-cols-[1fr_1fr_auto]' : 'grid-cols-2'
         )}
       >

@@ -2,318 +2,334 @@ package safety
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestNewEngine(t *testing.T) {
+func TestNewEngine_AllComponentsInitialized(t *testing.T) {
 	engine, err := NewEngine()
 	if err != nil {
 		t.Fatalf("NewEngine() error: %v", err)
 	}
-
-	if engine == nil {
-		t.Fatal("NewEngine() returned nil")
+	if engine.policyEngine == nil {
+		t.Error("policyEngine should be initialized")
 	}
-
-	// Note: Component constructors return nil since they're not yet implemented
-	// This is expected - we're testing the structure, not the full implementation
-	// When components are implemented, these will be non-nil
-	t.Logf("Policy engine initialized: %v", engine.policyEngine != nil)
-	t.Logf("Blast calculator initialized: %v", engine.blastCalculator != nil)
-	t.Logf("Autonomy controller initialized: %v", engine.autonomyController != nil)
-	t.Logf("Rollback manager initialized: %v", engine.rollbackManager != nil)
+	if engine.blastCalculator == nil {
+		t.Error("blastCalculator should be initialized")
+	}
+	if engine.autonomyController == nil {
+		t.Error("autonomyController should be initialized")
+	}
+	if engine.rollbackManager == nil {
+		t.Error("rollbackManager should be initialized")
+	}
 }
 
-func TestAction_Structure(t *testing.T) {
+func TestEvaluateAction_DenyKubeSystemDelete(t *testing.T) {
+	engine, _ := NewEngine()
 	action := &Action{
-		ID:            "test-001",
-		Operation:     "scale",
-		ResourceType:  "Deployment",
-		ResourceName:  "nginx",
-		Namespace:     "default",
-		TargetState:   map[string]interface{}{"replicas": 3},
-		Justification: "Handle increased traffic",
-		UserID:        "user-123",
-		Timestamp:     time.Now(),
+		ID:           "test-001",
+		Operation:    "delete",
+		ResourceType: "Pod",
+		ResourceName: "coredns",
+		Namespace:    "kube-system",
+		UserID:       "user-1",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{},
+		Metadata:     map[string]interface{}{},
 	}
-
-	if action.ID != "test-001" {
-		t.Errorf("Expected ID 'test-001', got '%s'", action.ID)
+	result, err := engine.EvaluateAction(context.Background(), action)
+	if err != nil {
+		t.Fatalf("EvaluateAction error: %v", err)
 	}
-
-	if action.Operation != "scale" {
-		t.Errorf("Expected Operation 'scale', got '%s'", action.Operation)
-	}
-
-	if action.ResourceType != "Deployment" {
-		t.Errorf("Expected ResourceType 'Deployment', got '%s'", action.ResourceType)
-	}
-
-	if action.TargetState["replicas"] != 3 {
-		t.Errorf("Expected replicas 3, got %v", action.TargetState["replicas"])
-	}
-}
-
-func TestSafetyResult_Structure(t *testing.T) {
-	result := &SafetyResult{
-		Approved:      false,
-		Result:        "request_approval",
-		Reason:        "High risk action requires approval",
-		RiskLevel:     "high",
-		RequiresHuman: true,
-		PolicyChecks: []PolicyCheck{
-			{
-				PolicyName: "namespace-restriction",
-				Passed:     false,
-				Reason:     "Production namespace requires approval",
-				Severity:   "high",
-			},
-		},
-		Metadata: map[string]interface{}{
-			"affected_count": 5,
-		},
-	}
-
 	if result.Approved {
-		t.Error("Expected Approved to be false")
+		t.Error("Expected Approved=false for kube-system delete")
 	}
+	if result.Result != "deny" {
+		t.Errorf("Expected result=deny, got %s", result.Result)
+	}
+}
 
+func TestEvaluateAction_DenyProductionScaleToZero(t *testing.T) {
+	engine, _ := NewEngine()
+	action := &Action{
+		ID:           "test-002",
+		Operation:    "scale",
+		ResourceType: "Deployment",
+		ResourceName: "payment-service",
+		Namespace:    "production",
+		UserID:       "user-1",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{"replicas": 0},
+		Metadata:     map[string]interface{}{},
+	}
+	result, err := engine.EvaluateAction(context.Background(), action)
+	if err != nil {
+		t.Fatalf("EvaluateAction error: %v", err)
+	}
+	if result.Approved {
+		t.Error("Expected Approved=false for scale-to-zero in production")
+	}
+	if result.Result != "deny" {
+		t.Errorf("Expected result=deny, got %s", result.Result)
+	}
+}
+
+func TestEvaluateAction_SafeRestartApproved(t *testing.T) {
+	engine, _ := NewEngine()
+	// Set high autonomy level so restart is auto-approved
+	_ = engine.SetAutonomyLevel(context.Background(), "user-1", 4) // LevelActWithGuard
+	action := &Action{
+		ID:           "test-003",
+		Operation:    "restart",
+		ResourceType: "Pod",
+		ResourceName: "app-pod",
+		Namespace:    "default",
+		UserID:       "user-1",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{},
+		Metadata:     map[string]interface{}{},
+	}
+	result, err := engine.EvaluateAction(context.Background(), action)
+	if err != nil {
+		t.Fatalf("EvaluateAction error: %v", err)
+	}
+	if !result.Approved {
+		t.Errorf("Expected Approved=true for safe restart: result=%s reason=%s", result.Result, result.Reason)
+	}
+}
+
+func TestEvaluateAction_RequiresApproval_LowAutonomy(t *testing.T) {
+	engine, _ := NewEngine()
+	// Level 0 (below LevelObserve=1) — requires approval for everything
+	_ = engine.SetAutonomyLevel(context.Background(), "user-2", 0)
+	action := &Action{
+		ID:           "test-004",
+		Operation:    "scale",
+		ResourceType: "Deployment",
+		ResourceName: "app",
+		Namespace:    "staging",
+		UserID:       "user-2",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{"replicas": 5},
+		Metadata:     map[string]interface{}{},
+	}
+	result, err := engine.EvaluateAction(context.Background(), action)
+	if err != nil {
+		t.Fatalf("EvaluateAction error: %v", err)
+	}
 	if result.Result != "request_approval" {
-		t.Errorf("Expected Result 'request_approval', got '%s'", result.Result)
+		t.Errorf("Expected request_approval for low autonomy scale, got: %s", result.Result)
 	}
-
-	if result.RiskLevel != "high" {
-		t.Errorf("Expected RiskLevel 'high', got '%s'", result.RiskLevel)
-	}
-
 	if !result.RequiresHuman {
-		t.Error("Expected RequiresHuman to be true")
-	}
-
-	if len(result.PolicyChecks) != 1 {
-		t.Errorf("Expected 1 policy check, got %d", len(result.PolicyChecks))
-	}
-
-	affectedCount, ok := result.Metadata["affected_count"].(int)
-	if !ok || affectedCount != 5 {
-		t.Errorf("Expected affected_count 5, got %v", result.Metadata["affected_count"])
+		t.Error("Expected RequiresHuman=true")
 	}
 }
 
-func TestPolicyCheck_Structure(t *testing.T) {
-	check := PolicyCheck{
-		PolicyName: "immutable-kube-system",
-		Passed:     false,
-		Reason:     "Cannot delete resources in kube-system",
-		Severity:   "critical",
-	}
-
-	if check.PolicyName != "immutable-kube-system" {
-		t.Errorf("Expected PolicyName 'immutable-kube-system', got '%s'", check.PolicyName)
-	}
-
-	if check.Passed {
-		t.Error("Expected Passed to be false")
-	}
-
-	if check.Severity != "critical" {
-		t.Errorf("Expected Severity 'critical', got '%s'", check.Severity)
-	}
-}
-
-func TestEvaluateAction_SafeAction(t *testing.T) {
-	// This test demonstrates the structure even though components aren't fully implemented
-	engine, err := NewEngine()
-	if err != nil {
-		t.Fatalf("NewEngine() error: %v", err)
-	}
-
+func TestEvaluateAction_PolicyChecksPopulated(t *testing.T) {
+	engine, _ := NewEngine()
 	action := &Action{
-		ID:            "test-safe-001",
-		Operation:     "scale",
-		ResourceType:  "Deployment",
-		ResourceName:  "test-app",
-		Namespace:     "sandbox",
-		TargetState:   map[string]interface{}{"replicas": 3},
-		Justification: "Test scaling",
-		UserID:        "test-user",
-		Timestamp:     time.Now(),
+		ID:           "test-005",
+		Operation:    "restart",
+		ResourceType: "Pod",
+		ResourceName: "app",
+		Namespace:    "default",
+		UserID:       "user-1",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{},
+		Metadata:     map[string]interface{}{},
 	}
-
-	// Note: This will fail since components aren't implemented (they return nil)
-	// We're just testing that the API structure exists
 	result, err := engine.EvaluateAction(context.Background(), action)
-
-	// Since components return nil, we expect a panic which will be caught
-	// This is expected for now - when components are implemented, this test will pass
 	if err != nil {
-		t.Logf("Expected error since components not implemented: %v", err)
+		t.Fatalf("EvaluateAction error: %v", err)
 	}
-	if result != nil {
-		t.Logf("Unexpected result when components not implemented: %+v", result)
+	if len(result.PolicyChecks) == 0 {
+		t.Error("Expected at least 1 PolicyCheck in result")
 	}
-
-	// When implemented, we would check:
-	// - result.Approved should be true for safe actions
-	// - result.RiskLevel should be "low" or "medium"
-	// - result.RequiresHuman should be false for safe actions
 }
 
-func TestEvaluateAction_DangerousAction(t *testing.T) {
-	engine, err := NewEngine()
-	if err != nil {
-		t.Fatalf("NewEngine() error: %v", err)
-	}
-
+func TestEvaluateAction_RiskLevelSet(t *testing.T) {
+	engine, _ := NewEngine()
 	action := &Action{
-		ID:            "test-dangerous-001",
-		Operation:     "delete",
-		ResourceType:  "Namespace",
-		ResourceName:  "kube-system",
-		Namespace:     "",
-		TargetState:   map[string]interface{}{},
-		Justification: "Testing dangerous operation",
-		UserID:        "test-user",
-		Timestamp:     time.Now(),
-	}
-
-	// This should be denied by immutable rules (when implemented)
-	result, err := engine.EvaluateAction(context.Background(), action)
-
-	// Since components return nil, we expect error
-	if err != nil {
-		t.Logf("Expected error since components not implemented: %v", err)
-	}
-	if result != nil {
-		t.Logf("Unexpected result when components not implemented: %+v", result)
-	}
-
-	// When implemented, we would check:
-	// - result.Approved should be false
-	// - result.Result should be "deny"
-	// - result.Reason should mention kube-system protection
-}
-
-func TestValidateAction(t *testing.T) {
-	engine, err := NewEngine()
-	if err != nil {
-		t.Fatalf("NewEngine() error: %v", err)
-	}
-
-	action := &Action{
-		ID:           "test-validate-001",
-		Operation:    "patch",
+		ID:           "test-006",
+		Operation:    "delete",
 		ResourceType: "Deployment",
 		ResourceName: "app",
 		Namespace:    "default",
+		UserID:       "user-1",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{},
+		Metadata:     map[string]interface{}{},
 	}
-
-	// Note: Will likely fail since policy engine not implemented
-	_, _, err = engine.ValidateAction(context.Background(), action)
-
-	// We expect an error or nil depending on implementation status
-	// This test mainly validates the API exists
+	result, err := engine.EvaluateAction(context.Background(), action)
+	if err != nil {
+		t.Fatalf("EvaluateAction error: %v", err)
+	}
+	if result.RiskLevel == "" {
+		t.Error("Expected RiskLevel to be set")
+	}
 }
 
-func TestCreateRollbackCheckpoint(t *testing.T) {
-	engine, err := NewEngine()
+func TestSetAndGetAutonomyLevel(t *testing.T) {
+	engine, _ := NewEngine()
+	ctx := context.Background()
+
+	tests := []struct {
+		userID string
+		level  int
+	}{
+		{"user-a", 0},
+		{"user-b", 2},
+		{"user-c", 4},
+	}
+	for _, tc := range tests {
+		if err := engine.SetAutonomyLevel(ctx, tc.userID, tc.level); err != nil {
+			t.Errorf("SetAutonomyLevel(%d) error: %v", tc.level, err)
+		}
+		got, err := engine.GetAutonomyLevel(ctx, tc.userID)
+		if err != nil {
+			t.Errorf("GetAutonomyLevel error: %v", err)
+		}
+		if got != tc.level {
+			t.Errorf("Expected level %d, got %d", tc.level, got)
+		}
+	}
+}
+
+func TestGetImmutableRules_NonEmpty(t *testing.T) {
+	engine, _ := NewEngine()
+	rules, err := engine.GetImmutableRules(context.Background())
 	if err != nil {
-		t.Fatalf("NewEngine() error: %v", err)
+		t.Fatalf("GetImmutableRules error: %v", err)
+	}
+	if len(rules) == 0 {
+		t.Error("Expected at least 1 immutable rule")
+	}
+	for _, r := range rules {
+		if r == "" {
+			t.Error("Rule name should not be empty")
+		}
+	}
+}
+
+func TestCreatePolicy_And_Evaluate(t *testing.T) {
+	engine, _ := NewEngine()
+	ctx := context.Background()
+
+	// Create a policy that denies actions in namespace "blocked"
+	err := engine.CreatePolicy(ctx, "block-namespace", map[string]interface{}{
+		"condition": "namespace=blocked",
+		"effect":    "deny",
+		"reason":    "Namespace 'blocked' is restricted",
+	})
+	if err != nil {
+		t.Fatalf("CreatePolicy error: %v", err)
 	}
 
 	action := &Action{
+		ID:           "test-policy-001",
+		Operation:    "scale",
 		ResourceType: "Deployment",
-		Namespace:    "default",
-		ResourceName: "test-app",
+		ResourceName: "app",
+		Namespace:    "blocked",
+		UserID:       "user-1",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{},
+		Metadata:     map[string]interface{}{},
 	}
-
-	// Note: Will likely fail since rollback manager not implemented
-	_, err = engine.CreateRollbackCheckpoint(context.Background(), action)
-
-	// We expect an error or checkpoint ID depending on implementation
-	// This test mainly validates the API exists
-}
-
-func TestGetImmutableRules(t *testing.T) {
-	engine, err := NewEngine()
+	result, err := engine.EvaluateAction(ctx, action)
 	if err != nil {
-		t.Fatalf("NewEngine() error: %v", err)
+		t.Fatalf("EvaluateAction error: %v", err)
 	}
-
-	// Note: Will likely fail since policy engine not implemented
-	_, err = engine.GetImmutableRules(context.Background())
-
-	// We expect an error or rules list depending on implementation
-	// This test mainly validates the API exists
-}
-
-func TestSetAutonomyLevel(t *testing.T) {
-	engine, err := NewEngine()
-	if err != nil {
-		t.Fatalf("NewEngine() error: %v", err)
+	if result.Approved {
+		t.Error("Expected Approved=false for blocked namespace")
 	}
-
-	tests := []struct {
-		name  string
-		level int
-	}{
-		{"Observatory", 0},
-		{"Assisted", 1},
-		{"Semi-Autonomous", 2},
-		{"Autonomous", 3},
+	if result.Result != "deny" {
+		t.Errorf("Expected deny for blocked namespace, got: %s reason: %s", result.Result, result.Reason)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Note: Will likely fail since autonomy controller not implemented
-			err := engine.SetAutonomyLevel(context.Background(), "test-user", tt.level)
-
-			// We expect an error or success depending on implementation
-			// This test mainly validates the API exists
-			_ = err
-		})
+	if !strings.Contains(result.Reason, "blocked") {
+		t.Errorf("Expected reason to mention 'blocked', got: %s", result.Reason)
 	}
 }
 
-func TestCompareAlternatives(t *testing.T) {
-	engine, err := NewEngine()
-	if err != nil {
-		t.Fatalf("NewEngine() error: %v", err)
+func TestDeletePolicy(t *testing.T) {
+	engine, _ := NewEngine()
+	ctx := context.Background()
+
+	_ = engine.CreatePolicy(ctx, "temp-policy", map[string]interface{}{
+		"condition": "namespace=temp",
+		"effect":    "deny",
+		"reason":    "Temporary restriction",
+	})
+
+	if err := engine.DeletePolicy(ctx, "temp-policy"); err != nil {
+		t.Fatalf("DeletePolicy error: %v", err)
 	}
 
-	primary := &Action{
-		ID:           "primary",
+	// After delete, actions in "temp" namespace should not be denied by this policy
+	action := &Action{
+		ID:           "test-delete-policy",
+		Operation:    "restart",
+		ResourceType: "Pod",
+		ResourceName: "app",
+		Namespace:    "temp",
+		UserID:       "user-1",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{},
+		Metadata:     map[string]interface{}{},
+	}
+	_ = engine.SetAutonomyLevel(ctx, "user-1", 4)
+	result, err := engine.EvaluateAction(ctx, action)
+	if err != nil {
+		t.Fatalf("EvaluateAction error: %v", err)
+	}
+	if result.Result == "deny" {
+		t.Error("Expected policy to be deleted and not deny anymore")
+	}
+}
+
+func TestCreateRollbackCheckpoint(t *testing.T) {
+	engine, _ := NewEngine()
+	action := &Action{
+		ID:           "test-rollback",
 		Operation:    "scale",
 		ResourceType: "Deployment",
 		ResourceName: "app",
 		Namespace:    "default",
-		TargetState:  map[string]interface{}{"replicas": 10},
+		UserID:       "user-1",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{},
+		Metadata:     map[string]interface{}{},
 	}
-
-	alternatives := []*Action{
-		{
-			ID:           "alt-1",
-			Operation:    "scale",
-			ResourceType: "Deployment",
-			ResourceName: "app",
-			Namespace:    "default",
-			TargetState:  map[string]interface{}{"replicas": 5},
-		},
-		{
-			ID:           "alt-2",
-			Operation:    "scale",
-			ResourceType: "Deployment",
-			ResourceName: "app",
-			Namespace:    "default",
-			TargetState:  map[string]interface{}{"replicas": 3},
-		},
+	checkpointID, err := engine.CreateRollbackCheckpoint(context.Background(), action)
+	if err != nil {
+		t.Fatalf("CreateRollbackCheckpoint error: %v", err)
 	}
+	if checkpointID == "" {
+		t.Error("Expected non-empty checkpoint ID")
+	}
+}
 
-	// Note: Will likely fail since blast calculator not implemented
-	_, err = engine.CompareAlternatives(context.Background(), primary, alternatives)
-
-	// We expect an error or comparison result depending on implementation
-	// This test mainly validates the API exists
-	_ = err
+func TestEstimateDowntime(t *testing.T) {
+	engine, _ := NewEngine()
+	action := &Action{
+		ID:           "test-downtime",
+		Operation:    "drain",
+		ResourceType: "Node",
+		ResourceName: "node-1",
+		Namespace:    "",
+		UserID:       "user-1",
+		Timestamp:    time.Now(),
+		TargetState:  map[string]interface{}{},
+		Metadata:     map[string]interface{}{},
+	}
+	minDown, maxDown, err := engine.EstimateDowntime(context.Background(), action)
+	if err != nil {
+		t.Fatalf("EstimateDowntime error: %v", err)
+	}
+	// drain is high-risk — should have some downtime estimate
+	_ = minDown
+	_ = maxDown
+	t.Logf("Estimated downtime: %d-%d seconds", minDown, maxDown)
 }

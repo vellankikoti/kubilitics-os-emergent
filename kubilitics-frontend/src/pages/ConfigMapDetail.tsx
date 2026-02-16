@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { FileJson, Clock, Download, Trash2, Copy, Edit, RefreshCw, Info, Network, Loader2, FileCode, GitCompare } from 'lucide-react';
+import { FileJson, Clock, Download, Trash2, Copy, Edit, Info, Network, Loader2, FileCode, GitCompare, Maximize2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -27,11 +27,32 @@ import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { getConfigMapConsumers, BackendApiError } from '@/services/backendApiClient';
 import { Breadcrumbs, useDetailBreadcrumbs } from '@/components/layout/Breadcrumbs';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 
 interface ConfigMapResource extends KubernetesResource {
   data?: Record<string, string>;
   binaryData?: Record<string, string>;
+}
+
+const PREVIEW_LEN = 200;
+const HEX_PREVIEW_BYTES = 32;
+
+function detectValueFormat(value: string): 'json' | 'yaml' | 'properties' | 'text' {
+  const t = value.trim();
+  if (!t) return 'text';
+  if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
+    try { JSON.parse(value); return 'json'; } catch { /* fallback */ }
+  }
+  if (t.includes('\n') && /^[\w-]+:/.test(t)) return 'yaml';
+  if (/^[\w.-]+=.*/m.test(t)) return 'properties';
+  return 'text';
+}
+
+function getFileExtension(key: string, format: string): string {
+  if (format === 'json') return key.endsWith('.json') ? '.json' : '.json';
+  if (format === 'yaml') return key.endsWith('.yaml') || key.endsWith('.yml') ? '' : '.yaml';
+  return '.txt';
 }
 
 export default function ConfigMapDetail() {
@@ -59,6 +80,8 @@ export default function ConfigMapDetail() {
   const deleteConfigMap = useDeleteK8sResource('configmaps');
   const updateConfigMap = useUpdateK8sResource('configmaps');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [expandKey, setExpandKey] = useState<string | null>(null);
+  const [expandValue, setExpandValue] = useState<string>('');
 
   const baseUrl = getEffectiveBackendBaseUrl();
   const consumersQuery = useQuery({
@@ -77,11 +100,6 @@ export default function ConfigMapDetail() {
     if (cm.binaryData) for (const v of Object.values(cm.binaryData)) n += (typeof v === 'string' ? v.length : 0);
     return n;
   }, [cm.data, cm.binaryData]);
-
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
 
   const status: ResourceStatus = 'Healthy';
   const labels = cm.metadata?.labels || {};
@@ -179,6 +197,21 @@ export default function ConfigMapDetail() {
   ];
 
 
+  const usedByRows = useMemo(() => {
+    if (!consumers) return [];
+    const rows: { type: string; namespace: string; name: string; path: string }[] = [];
+    const add = (type: string, pathPrefix: string, items: { namespace: string; name: string }[] | undefined) => {
+      (items ?? []).forEach((ref) => rows.push({ type, namespace: ref.namespace, name: ref.name, path: `${pathPrefix}/${ref.namespace}/${ref.name}` }));
+    };
+    add('Pod', '/pods', consumers.pods);
+    add('Deployment', '/deployments', consumers.deployments);
+    add('StatefulSet', '/statefulsets', consumers.statefulSets);
+    add('DaemonSet', '/daemonsets', consumers.daemonSets);
+    add('Job', '/jobs', consumers.jobs);
+    add('CronJob', '/cronjobs', consumers.cronJobs);
+    return rows;
+  }, [consumers]);
+
   const usedByContent = !namespace || !name ? (
     <p className="text-muted-foreground text-sm">No resource selected.</p>
   ) : !isBackendConfigured() || !clusterId ? (
@@ -187,30 +220,35 @@ export default function ConfigMapDetail() {
     <Skeleton className="h-32 w-full" />
   ) : consumers ? (
     <div className="space-y-4">
-      {[
-        { label: 'Pods', items: consumers.pods, path: (ns: string, n: string) => `/pods/${ns}/${n}` },
-        { label: 'Deployments', items: consumers.deployments, path: (ns: string, n: string) => `/deployments/${ns}/${n}` },
-        { label: 'StatefulSets', items: consumers.statefulSets, path: (ns: string, n: string) => `/statefulsets/${ns}/${n}` },
-        { label: 'DaemonSets', items: consumers.daemonSets, path: (ns: string, n: string) => `/daemonsets/${ns}/${n}` },
-        { label: 'Jobs', items: consumers.jobs, path: (ns: string, n: string) => `/jobs/${ns}/${n}` },
-        { label: 'CronJobs', items: consumers.cronJobs, path: (ns: string, n: string) => `/cronjobs/${ns}/${n}` },
-      ].filter((s) => (s.items?.length ?? 0) > 0).map((section) => (
-        <Card key={section.label}>
-          <CardHeader><CardTitle className="text-base">{section.label}</CardTitle></CardHeader>
-          <CardContent>
-            <ul className="space-y-1">
-              {(section.items ?? []).map((ref) => (
-                <li key={`${ref.namespace}/${ref.name}`}>
-                  <button type="button" className="text-primary hover:underline font-mono text-sm" onClick={() => navigate(section.path(ref.namespace, ref.name))}>
-                    {ref.namespace}/{ref.name}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
-      ))}
-      {!(consumers.pods?.length || consumers.deployments?.length || consumers.statefulSets?.length || consumers.daemonSets?.length || consumers.jobs?.length || consumers.cronJobs?.length) && (
+      {usedByRows.length > 0 && (
+        <>
+          <p className="text-muted-foreground text-sm">Resources that reference this ConfigMap (volume, env, or envFrom).</p>
+          <div className="rounded-md border overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="border-b bg-muted/50"><th className="text-left p-3 font-medium">Resource Type</th><th className="text-left p-3 font-medium">Resource Name</th><th className="text-left p-3 font-medium">How Used</th><th className="text-left p-3 font-medium">Mount Path / Prefix</th></tr></thead>
+              <tbody>
+                {usedByRows.map((row) => (
+                  <tr key={`${row.type}-${row.namespace}/${row.name}`} className="border-b">
+                    <td className="p-3">{row.type}</td>
+                    <td className="p-3">
+                      <button type="button" className="text-primary hover:underline font-mono text-sm" onClick={() => navigate(row.path)}>{row.name}</button>
+                      <span className="text-muted-foreground text-xs ml-1">({row.namespace})</span>
+                    </td>
+                    <td className="p-3 text-muted-foreground">—</td>
+                    <td className="p-3 text-muted-foreground">—</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {(consumers.pods?.length ?? 0) > 0 && (
+            <p className="text-sm text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+              Impact: Changing this ConfigMap will require restart of <strong>{consumers.pods?.length ?? 0} pod(s)</strong> to pick up changes (when mounted as volume or used in env).
+            </p>
+          )}
+        </>
+      )}
+      {usedByRows.length === 0 && (
         <p className="text-muted-foreground text-sm">No consumers found.</p>
       )}
     </div>
@@ -272,18 +310,79 @@ export default function ConfigMapDetail() {
       label: 'Data',
       icon: FileJson,
       content: (
-        <div className="space-y-4">
-          {Object.entries(data).map(([key, value]) => (
-            <Card key={key}>
-              <CardHeader className="flex flex-row items-center justify-between py-3">
-                <CardTitle className="text-sm font-mono">{key}</CardTitle>
-                <Copy className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground" />
-              </CardHeader>
-              <CardContent>
-                <pre className="p-3 rounded-lg bg-muted text-sm font-mono overflow-auto max-h-64">{value}</pre>
-              </CardContent>
-            </Card>
-          ))}
+        <div className="space-y-6">
+          {Object.entries(data).length > 0 && (
+            <SectionCard title="Data keys" icon={FileJson} tooltip={<p className="text-xs text-muted-foreground">Per-key value preview, copy, and download</p>}>
+              <div className="space-y-4">
+                {Object.entries(data).map(([key, value]) => {
+                  const size = (value ?? '').length;
+                  const preview = (value ?? '').length <= PREVIEW_LEN ? (value ?? '') : (value ?? '').slice(0, PREVIEW_LEN) + '…';
+                  const format = detectValueFormat(value ?? '');
+                  const ext = getFileExtension(key, format);
+                  return (
+                    <Card key={key}>
+                      <CardHeader className="flex flex-row items-center justify-between py-3 gap-2">
+                        <CardTitle className="text-sm font-mono truncate">{key}</CardTitle>
+                        <span className="text-xs text-muted-foreground shrink-0">{size} B</span>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <pre className="p-3 rounded-lg bg-muted/80 text-sm font-mono overflow-auto max-h-40 whitespace-pre-wrap break-words">{preview}</pre>
+                        <div className="flex flex-wrap gap-2">
+                          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { setExpandKey(key); setExpandValue(value ?? ''); }}>
+                            <Maximize2 className="h-3.5 w-3.5" /> Expand
+                          </Button>
+                          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { navigator.clipboard.writeText(value ?? ''); toast.success('Value copied'); }}>
+                            <Copy className="h-3.5 w-3.5" /> Copy Value
+                          </Button>
+                          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { const blob = new Blob([value ?? ''], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `${key}${ext}`; a.click(); URL.revokeObjectURL(url); toast.success('Downloaded'); }}>
+                            <Download className="h-3.5 w-3.5" /> Download as File
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            </SectionCard>
+          )}
+          {cm.binaryData && Object.keys(cm.binaryData).length > 0 && (
+            <SectionCard title="Binary data" icon={FileJson} tooltip={<p className="text-xs text-muted-foreground">Base64-encoded keys with hex preview</p>}>
+              <div className="space-y-3">
+                {Object.entries(cm.binaryData).map(([key, b64]) => {
+                  let decodedLength = 0;
+                  let hexPreview = '—';
+                  try {
+                    const bin = atob(b64 ?? '');
+                    decodedLength = bin.length;
+                    const bytes = new Uint8Array(bin.length);
+                    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                    hexPreview = Array.from(bytes.slice(0, HEX_PREVIEW_BYTES)).map((b) => b.toString(16).padStart(2, '0')).join(' ') + (bytes.length > HEX_PREVIEW_BYTES ? '…' : '');
+                  } catch { /* ignore */ }
+                  return (
+                    <div key={key} className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-lg border bg-muted/30">
+                      <span className="font-mono text-sm">{key}</span>
+                      <span className="text-xs text-muted-foreground">{decodedLength} B</span>
+                      <code className="text-xs font-mono text-muted-foreground break-all w-full">{hexPreview}</code>
+                      <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { try { const bin = atob(b64 ?? ''); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); const blob = new Blob([bytes]); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = key; a.click(); URL.revokeObjectURL(url); toast.success('Downloaded'); } catch { toast.error('Failed to decode'); } }}>
+                        <Download className="h-3.5 w-3.5" /> Download
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            </SectionCard>
+          )}
+          {Object.keys(data).length === 0 && !(cm.binaryData && Object.keys(cm.binaryData).length > 0) && (
+            <p className="text-muted-foreground text-sm">No data keys.</p>
+          )}
+          <Dialog open={!!expandKey} onOpenChange={(open) => { if (!open) setExpandKey(null); }}>
+            <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle className="font-mono text-sm">{expandKey ?? ''}</DialogTitle>
+              </DialogHeader>
+              <pre className="p-4 rounded-lg bg-muted text-sm font-mono overflow-auto flex-1 min-h-0 whitespace-pre-wrap break-words">{expandValue}</pre>
+            </DialogContent>
+          </Dialog>
         </div>
       ),
     },
@@ -332,7 +431,6 @@ export default function ConfigMapDetail() {
         backLabel="ConfigMaps"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}{isConnected && <Badge variant="outline" className="ml-2 text-xs">Live</Badge>}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Edit', icon: Edit, variant: 'outline', onClick: () => { setActiveTab('yaml'); setSearchParams((p) => { const n = new URLSearchParams(p); n.set('tab', 'yaml'); return n; }, { replace: true }); } },
           { label: 'Delete', icon: Trash2, variant: 'destructive', onClick: () => setShowDeleteDialog(true) },

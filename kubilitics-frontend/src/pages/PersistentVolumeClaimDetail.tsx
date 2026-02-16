@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Database, Clock, Download, Trash2, HardDrive, Server, Expand, RefreshCw, Info, Network, Loader2, Edit, FileCode, GitCompare } from 'lucide-react';
+import { Database, Clock, Download, Trash2, HardDrive, Server, Expand, Info, Network, Loader2, Edit, FileCode, GitCompare } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -67,11 +67,6 @@ export default function PersistentVolumeClaimDetail() {
   const { events, refetch: refetchEvents } = useResourceEvents('PersistentVolumeClaim', namespace, name ?? undefined);
   const deletePVC = useDeleteK8sResource('persistentvolumeclaims');
   const updatePVC = useUpdateK8sResource('persistentvolumeclaims');
-
-  const handleRefresh = () => {
-    refetch();
-    refetchEvents();
-  };
 
   const handleDownloadYaml = useCallback(() => {
     if (!yaml) return;
@@ -230,7 +225,6 @@ export default function PersistentVolumeClaimDetail() {
         backLabel="Persistent Volume Claims"
         headerMetadata={<span className="flex items-center gap-1.5 ml-2 text-sm text-muted-foreground"><Clock className="h-3.5 w-3.5" />Created {age}{isConnected && <Badge variant="outline" className="ml-2 text-xs">Live</Badge>}</span>}
         actions={[
-          { label: 'Refresh', icon: RefreshCw, variant: 'outline', onClick: handleRefresh },
           { label: 'Download YAML', icon: Download, variant: 'outline', onClick: handleDownloadYaml },
           { label: 'Edit', icon: Edit, variant: 'outline', onClick: () => { setActiveTab('yaml'); setSearchParams((p) => { const n = new URLSearchParams(p); n.set('tab', 'yaml'); return n; }, { replace: true }); } },
           { label: 'Expand', icon: Expand, variant: 'outline', onClick: () => toast.info('Expand requires backend support') },

@@ -27,6 +27,10 @@ const (
 
 	// Automation tools - Workflow and automation
 	CategoryAutomation ToolCategory = "automation"
+
+	// Execution tools - Safety-gated cluster mutations (A-CORE-004)
+	// Every tool in this category passes through the Safety Engine before executing.
+	CategoryExecution ToolCategory = "execution"
 )
 
 // ToolDefinition defines a complete MCP tool specification
@@ -101,6 +105,13 @@ var ToolTaxonomy = []ToolDefinition{
 		RequiresAI:  true,
 	},
 	{
+		Name:        "export_topology_to_drawio",
+		Category:    CategoryObservation,
+		Description: "Export cluster topology as an editable diagram. Returns a draw.io URL that opens the architecture diagram in a new tab. Use when user asks for 'architecture diagram', 'show me the topology', or 'export to draw.io'.",
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
 		Name:        "observe_resource_history",
 		Category:    CategoryObservation,
 		Description: "Get temporal history of resource changes, revisions, and state transitions.",
@@ -162,6 +173,189 @@ var ToolTaxonomy = []ToolDefinition{
 		Description: "Get CRDs and custom resources with validation schema analysis.",
 		Destructive: false,
 		RequiresAI:  true,
+	},
+
+	// === DEEP ANALYSIS TOOLS (12 tools) ===
+	// Tier-2 specialized analysis tools — compute real intelligence from K8s data
+	// These tools use the gRPC backend proxy and run deterministic algorithms.
+
+	{
+		Name:        "analyze_pod_health",
+		Category:    CategoryAnalysis,
+		Description: "Analyze pod health across a namespace: detect OOMKills, restart loops, eviction patterns, and stuck-pending pods. Returns per-pod severity findings with actionable messages.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace": map[string]interface{}{"type": "string", "description": "Kubernetes namespace to analyze (required)"},
+				"name":      map[string]interface{}{"type": "string", "description": "Optional specific pod name to focus on"},
+			},
+			"required": []string{"namespace"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "analyze_deployment_health",
+		Category:    CategoryAnalysis,
+		Description: "Analyze deployment health: rollout stall detection, replica unavailability, image pull failures, and readiness probe failures. Returns health status per deployment (Healthy/Degraded/Critical).",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace": map[string]interface{}{"type": "string", "description": "Kubernetes namespace to analyze (required)"},
+				"name":      map[string]interface{}{"type": "string", "description": "Optional specific deployment name to focus on"},
+			},
+			"required": []string{"namespace"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "analyze_node_pressure",
+		Category:    CategoryAnalysis,
+		Description: "Analyze node pressure conditions: MemoryPressure, DiskPressure, PIDPressure. Identifies nodes under stress with severity HIGH. Use to diagnose cluster-wide resource exhaustion.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{"type": "string", "description": "Optional specific node name to analyze"},
+			},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "detect_resource_contention",
+		Category:    CategoryAnalysis,
+		Description: "Detect CPU throttling risk and memory overcommit by finding containers without resource limits/requests. Returns contention risk level (LOW/MEDIUM/HIGH) and list of violating containers.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace": map[string]interface{}{"type": "string", "description": "Kubernetes namespace to scan for resource contention (required)"},
+			},
+			"required": []string{"namespace"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "analyze_network_connectivity",
+		Category:    CategoryAnalysis,
+		Description: "Analyze network connectivity: check service endpoint readiness, count active NetworkPolicies, and detect services with no ready endpoints. Use to diagnose connectivity failures.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace": map[string]interface{}{"type": "string", "description": "Kubernetes namespace to analyze (required)"},
+				"name":      map[string]interface{}{"type": "string", "description": "Optional specific service name to focus on"},
+			},
+			"required": []string{"namespace"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "analyze_rbac_permissions",
+		Category:    CategoryAnalysis,
+		Description: "Analyze RBAC permissions for over-privileged service accounts. Checks RoleBindings and ClusterRoleBindings for dangerous roles (cluster-admin, admin, edit). Returns risk level and per-binding findings.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":            map[string]interface{}{"type": "string", "description": "Kubernetes namespace to analyze (required)"},
+				"service_account_name": map[string]interface{}{"type": "string", "description": "Optional specific service account name to focus on"},
+			},
+			"required": []string{"namespace"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "analyze_storage_health",
+		Category:    CategoryAnalysis,
+		Description: "Analyze storage health: detect unbound PVCs, failed provisioning, and storage class issues. Returns storage health status (Healthy/Degraded) with list of problematic PVCs.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace": map[string]interface{}{"type": "string", "description": "Kubernetes namespace to analyze (required)"},
+			},
+			"required": []string{"namespace"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "check_resource_limits",
+		Category:    CategoryAnalysis,
+		Description: "Check for containers missing CPU/memory limits and requests. Returns compliance rate and list of violations with per-container recommendations. Critical for cluster stability.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace": map[string]interface{}{"type": "string", "description": "Kubernetes namespace to check (required)"},
+			},
+			"required": []string{"namespace"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "analyze_hpa_behavior",
+		Category:    CategoryAnalysis,
+		Description: "Analyze HorizontalPodAutoscaler behavior: detect flapping, scaling delays, inactive HPAs, and HPAs at max replicas. Returns per-HPA warnings with scaling context.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace": map[string]interface{}{"type": "string", "description": "Kubernetes namespace to analyze (required)"},
+				"name":      map[string]interface{}{"type": "string", "description": "Optional specific HPA name to focus on"},
+			},
+			"required": []string{"namespace"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "analyze_log_patterns",
+		Category:    CategoryAnalysis,
+		Description: "Extract and classify error/warning patterns from pod logs. Detects error keywords (panic, fatal, exception, OOM), counts patterns by type, and returns sample error lines with severity.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":      map[string]interface{}{"type": "string", "description": "Kubernetes namespace (required)"},
+				"pod_name":       map[string]interface{}{"type": "string", "description": "Pod name to analyze logs from (required)"},
+				"container_name": map[string]interface{}{"type": "string", "description": "Optional specific container name within the pod"},
+				"tail_lines":     map[string]interface{}{"type": "integer", "description": "Number of log lines to analyze (default: 100)"},
+			},
+			"required": []string{"namespace", "pod_name"},
+		},
+		Destructive: false,
+		RequiresAI:  true,
+	},
+	{
+		Name:        "assess_security_posture",
+		Category:    CategoryAnalysis,
+		Description: "Assess security posture with CIS Kubernetes Benchmark checks: hostNetwork, hostPID, privileged containers, runAsRoot, writable root filesystems. Returns security score (0-100) and per-finding CIS IDs.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace": map[string]interface{}{"type": "string", "description": "Kubernetes namespace to assess (required)"},
+			},
+			"required": []string{"namespace"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
+	},
+	{
+		Name:        "detect_configuration_drift",
+		Category:    CategoryAnalysis,
+		Description: "Detect configuration drift between a resource's live state and a provided desired state specification. Returns drift count, field-level differences, and drift summary for GitOps validation.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":     map[string]interface{}{"type": "string", "description": "Kubernetes namespace of the resource (required)"},
+				"kind":          map[string]interface{}{"type": "string", "description": "Resource kind (e.g., Deployment, ConfigMap) (required)"},
+				"name":          map[string]interface{}{"type": "string", "description": "Resource name (required)"},
+				"desired_state": map[string]interface{}{"type": "object", "description": "Desired state specification to compare against live state"},
+			},
+			"required": []string{"namespace", "kind", "name"},
+		},
+		Destructive: false,
+		RequiresAI:  false,
 	},
 
 	// === ANALYSIS TOOLS (12 tools) ===
@@ -505,6 +699,189 @@ var ToolTaxonomy = []ToolDefinition{
 		Description: "Generate runbooks for common operational scenarios.",
 		Destructive: false,
 		RequiresAI:  true,
+	},
+
+	// === EXECUTION TOOLS (9 tools) — A-CORE-004 ===
+	// Safety-gated cluster mutations. EVERY tool passes through the Safety Engine
+	// (autonomy level check + blast radius + policy) before any cluster change.
+	// All tools support dry_run=true for impact preview without execution.
+
+	{
+		Name:     "restart_pod",
+		Category: CategoryExecution,
+		Description: "Restart a pod by deleting it (its controller will recreate it). Safety Level 2 — semi-autonomous. " +
+			"Passes through policy + blast-radius check. Supports dry_run for impact preview. Requires namespace and pod name.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":     map[string]interface{}{"type": "string", "description": "Pod namespace (required)"},
+				"name":          map[string]interface{}{"type": "string", "description": "Pod name to restart (required)"},
+				"justification": map[string]interface{}{"type": "string", "description": "Reason for restart (recommended for audit log)"},
+				"dry_run":       map[string]interface{}{"type": "boolean", "description": "Preview changes without executing"},
+			},
+			"required": []string{"namespace", "name"},
+		},
+		Destructive: true,
+		RequiresAI:  false,
+	},
+	{
+		Name:     "scale_deployment",
+		Category: CategoryExecution,
+		Description: "Scale a Deployment to a target replica count. Safety Level 3 — requires explicit user confirmation unless autonomy level allows. " +
+			"Blast radius analysis is performed. Supports dry_run.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":     map[string]interface{}{"type": "string", "description": "Deployment namespace (required)"},
+				"name":          map[string]interface{}{"type": "string", "description": "Deployment name (required)"},
+				"replicas":      map[string]interface{}{"type": "integer", "description": "Target replica count (required)", "minimum": 0},
+				"justification": map[string]interface{}{"type": "string", "description": "Reason for scaling"},
+				"dry_run":       map[string]interface{}{"type": "boolean", "description": "Preview changes without executing"},
+			},
+			"required": []string{"namespace", "name", "replicas"},
+		},
+		Destructive: true,
+		RequiresAI:  false,
+	},
+	{
+		Name:     "cordon_node",
+		Category: CategoryExecution,
+		Description: "Mark a node as unschedulable (cordon) to prevent new pods from being scheduled. Safety Level 3. " +
+			"Existing pods are NOT evicted. Supports dry_run.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":          map[string]interface{}{"type": "string", "description": "Node name to cordon (required)"},
+				"justification": map[string]interface{}{"type": "string", "description": "Reason for cordoning"},
+				"dry_run":       map[string]interface{}{"type": "boolean", "description": "Preview changes without executing"},
+			},
+			"required": []string{"name"},
+		},
+		Destructive: true,
+		RequiresAI:  false,
+	},
+	{
+		Name:     "drain_node",
+		Category: CategoryExecution,
+		Description: "Evict all pods from a node (drain) to prepare for maintenance. Safety Level 4 — highest restriction, always reviewed by policy engine. " +
+			"Supports grace period, ignore-daemonsets, and delete-emptydir options. Supports dry_run.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":                 map[string]interface{}{"type": "string", "description": "Node name to drain (required)"},
+				"grace_period_seconds": map[string]interface{}{"type": "integer", "description": "Grace period for pod eviction in seconds (default: 30)"},
+				"ignore_daemon_sets":   map[string]interface{}{"type": "boolean", "description": "Ignore DaemonSet-managed pods (default: true)"},
+				"delete_emptydir_data": map[string]interface{}{"type": "boolean", "description": "Allow deleting pods with emptyDir volumes"},
+				"justification":        map[string]interface{}{"type": "string", "description": "Reason for draining"},
+				"dry_run":              map[string]interface{}{"type": "boolean", "description": "Preview changes without executing"},
+			},
+			"required": []string{"name"},
+		},
+		Destructive: true,
+		RequiresAI:  false,
+	},
+	{
+		Name:     "apply_resource_patch",
+		Category: CategoryExecution,
+		Description: "Apply a JSON merge or strategic merge patch to any Kubernetes resource. Safety Level 4. " +
+			"Use for targeted field updates (e.g., updating container image, annotations). Supports dry_run.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":     map[string]interface{}{"type": "string", "description": "Resource namespace"},
+				"kind":          map[string]interface{}{"type": "string", "description": "Resource kind (e.g., Deployment) (required)"},
+				"name":          map[string]interface{}{"type": "string", "description": "Resource name (required)"},
+				"patch":         map[string]interface{}{"type": "object", "description": "JSON patch object (required)"},
+				"patch_type":    map[string]interface{}{"type": "string", "enum": []string{"merge", "strategic"}, "description": "Patch type: merge or strategic"},
+				"justification": map[string]interface{}{"type": "string", "description": "Reason for patch"},
+				"dry_run":       map[string]interface{}{"type": "boolean", "description": "Preview changes without executing"},
+			},
+			"required": []string{"kind", "name", "patch"},
+		},
+		Destructive: true,
+		RequiresAI:  false,
+	},
+	{
+		Name:     "delete_resource",
+		Category: CategoryExecution,
+		Description: "Delete a Kubernetes resource. Safety Level 5 — most restrictive, always requires human approval regardless of autonomy level. " +
+			"Supports optional grace period. Supports dry_run (strongly recommended first).",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":            map[string]interface{}{"type": "string", "description": "Resource namespace"},
+				"kind":                 map[string]interface{}{"type": "string", "description": "Resource kind (required)"},
+				"name":                 map[string]interface{}{"type": "string", "description": "Resource name (required)"},
+				"grace_period_seconds": map[string]interface{}{"type": "integer", "description": "Grace period before deletion"},
+				"justification":        map[string]interface{}{"type": "string", "description": "Reason for deletion (required for audit)"},
+				"dry_run":              map[string]interface{}{"type": "boolean", "description": "Preview without deleting (strongly recommended)"},
+			},
+			"required": []string{"kind", "name"},
+		},
+		Destructive: true,
+		RequiresAI:  false,
+	},
+	{
+		Name:     "rollback_deployment",
+		Category: CategoryExecution,
+		Description: "Roll back a Deployment to a previous revision. Safety Level 3. " +
+			"Specify revision number (0 = previous revision). Returns rollback plan before execution. Supports dry_run.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":     map[string]interface{}{"type": "string", "description": "Deployment namespace (required)"},
+				"name":          map[string]interface{}{"type": "string", "description": "Deployment name (required)"},
+				"revision":      map[string]interface{}{"type": "integer", "description": "Revision to roll back to (0 = previous revision)"},
+				"justification": map[string]interface{}{"type": "string", "description": "Reason for rollback"},
+				"dry_run":       map[string]interface{}{"type": "boolean", "description": "Preview changes without executing"},
+			},
+			"required": []string{"namespace", "name"},
+		},
+		Destructive: true,
+		RequiresAI:  false,
+	},
+	{
+		Name:     "update_resource_limits",
+		Category: CategoryExecution,
+		Description: "Update CPU/memory requests and limits for a specific container in a workload. Safety Level 3. " +
+			"Builds a strategic merge patch and applies it. Requires container_name. Supports dry_run.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":      map[string]interface{}{"type": "string", "description": "Workload namespace (required)"},
+				"kind":           map[string]interface{}{"type": "string", "description": "Resource kind: Deployment, StatefulSet, DaemonSet (required)"},
+				"name":           map[string]interface{}{"type": "string", "description": "Workload name (required)"},
+				"container_name": map[string]interface{}{"type": "string", "description": "Container name to update (required)"},
+				"cpu_request":    map[string]interface{}{"type": "string", "description": "CPU request (e.g., '250m')"},
+				"cpu_limit":      map[string]interface{}{"type": "string", "description": "CPU limit (e.g., '500m')"},
+				"memory_request": map[string]interface{}{"type": "string", "description": "Memory request (e.g., '256Mi')"},
+				"memory_limit":   map[string]interface{}{"type": "string", "description": "Memory limit (e.g., '512Mi')"},
+				"justification":  map[string]interface{}{"type": "string", "description": "Reason for limit change"},
+				"dry_run":        map[string]interface{}{"type": "boolean", "description": "Preview changes without executing"},
+			},
+			"required": []string{"namespace", "kind", "name", "container_name"},
+		},
+		Destructive: true,
+		RequiresAI:  false,
+	},
+	{
+		Name:     "trigger_hpa_scale",
+		Category: CategoryExecution,
+		Description: "Manually override an HPA's current desired replica count by patching its status. Safety Level 4. " +
+			"Use when immediate scaling is needed before the HPA's metric-based decisions take effect. Supports dry_run.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":       map[string]interface{}{"type": "string", "description": "HPA namespace (required)"},
+				"name":            map[string]interface{}{"type": "string", "description": "HPA name (required)"},
+				"target_replicas": map[string]interface{}{"type": "integer", "description": "Target replica count (required)", "minimum": 0},
+				"justification":   map[string]interface{}{"type": "string", "description": "Reason for manual scale trigger"},
+				"dry_run":         map[string]interface{}{"type": "boolean", "description": "Preview changes without executing"},
+			},
+			"required": []string{"namespace", "name", "target_replicas"},
+		},
+		Destructive: true,
+		RequiresAI:  false,
 	},
 }
 

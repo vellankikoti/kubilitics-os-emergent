@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { 
-  Search, Filter, RefreshCw, MoreHorizontal, CheckCircle2, Clock, Loader2, WifiOff, Plus,
+  Search, Filter, RefreshCw, MoreHorizontal, CheckCircle2, XCircle, Clock, Loader2, WifiOff, Plus,
   ChevronDown, ChevronRight, CheckSquare, Trash2, FileText, Play, Pause, Timer, List, Layers, Box, Gauge, CalendarCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -13,14 +13,15 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { Link, useNavigate } from 'react-router-dom';
-import { useK8sResourceList, useDeleteK8sResource, usePatchK8sResource, useCreateK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
+import { useK8sResourceList, useDeleteK8sResource, usePatchK8sResource, useCreateK8sResource, calculateAge, useCronJobChildJobs, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useClusterStore } from '@/stores/clusterStore';
 import { postCronJobTrigger } from '@/services/backendApiClient';
 import { DeleteConfirmDialog } from '@/components/resources';
-import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, TableColumnHeaderWithFilterAndSort } from '@/components/list';
+import { ResourceExportDropdown, ListViewSegmentedControl, ListPagination, PAGE_SIZE_OPTIONS, ResourceCommandBar, resourceTableRowClassName, ROW_MOTION, StatusPill, ListPageStatCard, ListPageHeader, TableColumnHeaderWithFilterAndSort, TableFilterCell, AgeCell, TableEmptyState, TableSkeletonRows, CopyNameDropdownItem, NamespaceBadge, ResourceListTableToolbar } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 import type { StatusPillVariant } from '@/components/list';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
 import { toast } from 'sonner';
@@ -34,7 +35,13 @@ interface CronJobResource extends KubernetesResource {
     successfulJobsHistoryLimit?: number;
     failedJobsHistoryLimit?: number;
   };
-  status: { lastScheduleTime?: string; lastSuccessfulTime?: string; active?: Array<unknown> };
+  status: {
+    lastScheduleTime?: string;
+    lastSuccessfulTime?: string;
+    lastFailedTime?: string;
+    active?: Array<unknown>;
+    conditions?: Array<{ type: string; status: string }>;
+  };
 }
 
 interface CronJob {
@@ -52,6 +59,7 @@ interface CronJob {
   lastResult: string;
   successRate7d: string;
   age: string;
+  creationTimestamp?: string;
 }
 
 const statusConfig = {
@@ -60,6 +68,7 @@ const statusConfig = {
 };
 
 const CRONJOBS_TABLE_COLUMNS: ResizableColumnConfig[] = [
+  { id: 'expand', defaultWidth: 40, minWidth: 36 },
   { id: 'name', defaultWidth: 200, minWidth: 120 },
   { id: 'namespace', defaultWidth: 140, minWidth: 100 },
   { id: 'status', defaultWidth: 120, minWidth: 90 },
@@ -72,6 +81,20 @@ const CRONJOBS_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'historyLimit', defaultWidth: 140, minWidth: 115 },
   { id: 'lastResult', defaultWidth: 130, minWidth: 105 },
   { id: 'age', defaultWidth: 100, minWidth: 65 },
+];
+
+const CRONJOBS_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'status', label: 'Status' },
+  { id: 'schedule', label: 'Schedule' },
+  { id: 'lastSchedule', label: 'Last Schedule' },
+  { id: 'nextSchedule', label: 'Next Schedule' },
+  { id: 'active', label: 'Active' },
+  { id: 'concurrencyPolicy', label: 'Concurrency Policy' },
+  { id: 'suspend', label: 'Suspend' },
+  { id: 'historyLimit', label: 'History Limit' },
+  { id: 'lastResult', label: 'Last Result' },
+  { id: 'age', label: 'Age' },
 ];
 
 const cronJobStatusToVariant: Record<CronJob['status'], StatusPillVariant> = {
@@ -138,7 +161,8 @@ function transformResource(resource: CronJobResource): CronJob {
   const successfulLimit = spec.successfulJobsHistoryLimit ?? 3;
   const failedLimit = spec.failedJobsHistoryLimit ?? 1;
   const historyLimit = successfulLimit + failedLimit;
-  const lastResult = status.lastSuccessfulTime ? 'Success' : status.active?.length ? 'Running' : '-';
+  const hasFailedCondition = status.conditions?.some((c) => c.type === 'Failed' && c.status === 'True');
+  const lastResult = status.active?.length ? 'Running' : hasFailedCondition ? 'Failed' : status.lastSuccessfulTime ? 'Success' : '–';
   return {
     name: resource.metadata.name,
     namespace: resource.metadata.namespace || 'default',
@@ -146,7 +170,7 @@ function transformResource(resource: CronJobResource): CronJob {
     schedule,
     scheduleHuman: cronScheduleToHuman(schedule),
     lastSchedule,
-    nextSchedule: cronNextRun(schedule),
+    nextSchedule: spec.suspend ? '—' : cronNextRun(schedule),
     active: status.active?.length || 0,
     concurrencyPolicy: spec.concurrencyPolicy || 'Allow',
     suspend: !!spec.suspend,
@@ -154,6 +178,7 @@ function transformResource(resource: CronJobResource): CronJob {
     lastResult,
     successRate7d: '-',
     age: calculateAge(resource.metadata.creationTimestamp),
+    creationTimestamp: resource.metadata?.creationTimestamp,
   };
 }
 
@@ -168,17 +193,27 @@ export default function CronJobs() {
   const [listView, setListView] = useState<ListView>('flat');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [showTableFilters, setShowTableFilters] = useState(false);
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
   const { isConnected } = useConnectionStatus();
   const isBackendConfigured = useBackendConfigStore((s) => s.isBackendConfigured);
-  const { data, isLoading, refetch } = useK8sResourceList<CronJobResource>('cronjobs', undefined, { limit: 5000 });
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useK8sResourceList<CronJobResource>('cronjobs', undefined, { limit: 5000 });
   const deleteResource = useDeleteK8sResource('cronjobs');
   const patchCronJob = usePatchK8sResource('cronjobs');
   const createResource = useCreateK8sResource('cronjobs');
 
   const items: CronJob[] = isConnected && data ? (data.items ?? []).map(transformResource) : [];
+
+  const [expandedNs, expandedName] = expandedRow ? expandedRow.split('/') : [null, null];
+  const { data: childJobsData, isLoading: childJobsLoading } = useCronJobChildJobs(
+    expandedNs ?? '',
+    expandedName ?? '',
+    !!expandedRow && !!expandedNs && !!expandedName
+  );
+  const childJobs = childJobsData ?? [];
 
   const stats = useMemo(() => {
     const activeCount = items.filter((i) => i.active > 0).length;
@@ -206,14 +241,15 @@ export default function CronJobs() {
     defaultSortKey: 'name' as const,
     defaultSortOrder: 'asc' as const,
     columns: [
-      { columnId: 'name', getValue: (c: CronJob) => c.name, sortable: true, filterable: false },
+      { columnId: 'name', getValue: (c: CronJob) => c.name, sortable: true, filterable: true },
       { columnId: 'namespace', getValue: (c: CronJob) => c.namespace, sortable: true, filterable: true },
       { columnId: 'status', getValue: (c: CronJob) => c.status, sortable: true, filterable: true },
+      { columnId: 'hasActiveJobs', getValue: (c: CronJob) => c.active > 0 ? 'Yes' : 'No', sortable: true, filterable: true },
       { columnId: 'schedule', getValue: (c: CronJob) => c.schedule, sortable: true, filterable: false },
       { columnId: 'lastSchedule', getValue: (c: CronJob) => c.lastSchedule, sortable: true, filterable: false },
       { columnId: 'nextSchedule', getValue: (c: CronJob) => c.nextSchedule, sortable: true, filterable: false },
       { columnId: 'active', getValue: (c: CronJob) => c.active, sortable: true, filterable: false },
-      { columnId: 'concurrencyPolicy', getValue: (c: CronJob) => c.concurrencyPolicy, sortable: true, filterable: false },
+      { columnId: 'concurrencyPolicy', getValue: (c: CronJob) => c.concurrencyPolicy, sortable: true, filterable: true },
       { columnId: 'suspend', getValue: (c: CronJob) => c.suspend, sortable: true, filterable: false },
       { columnId: 'historyLimit', getValue: (c: CronJob) => c.historyLimit, sortable: true, filterable: false },
       { columnId: 'lastResult', getValue: (c: CronJob) => c.lastResult, sortable: true, filterable: false },
@@ -224,6 +260,7 @@ export default function CronJobs() {
   const {
     filteredAndSortedItems: filteredItems,
     distinctValuesByColumn,
+    valueCountsByColumn,
     columnFilters,
     setColumnFilter,
     sortKey,
@@ -232,6 +269,12 @@ export default function CronJobs() {
     clearAllFilters,
     hasActiveFilters,
   } = useTableFiltersAndSort(itemsAfterSearchAndNs, cronJobsTableConfig);
+
+  const columnVisibility = useColumnVisibility({
+    tableId: 'cronjobs',
+    columns: CRONJOBS_COLUMNS_FOR_VISIBILITY,
+    alwaysVisible: ['name'],
+  });
 
   const totalFiltered = filteredItems.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
@@ -376,49 +419,50 @@ spec:
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="p-2.5 rounded-xl bg-primary/10"><CronJobIcon className="h-6 w-6 text-primary" /></div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">CronJobs</h1>
-            <p className="text-sm text-muted-foreground">
-              {filteredItems.length} cronjobs across {namespaces.length - 1} namespaces
-              {!isConnected && <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]"><WifiOff className="h-3 w-3" /> Connect cluster</span>}
-            </p>
+      <ListPageHeader
+        icon={<CronJobIcon className="h-6 w-6 text-primary" />}
+        title="CronJobs"
+        resourceCount={filteredItems.length}
+        subtitle={namespaces.length > 1 ? `across ${namespaces.length - 1} namespaces` : undefined}
+        demoMode={!isConnected}
+        isLoading={isLoading}
+        onRefresh={() => refetch()}
+        createLabel="Create CronJob"
+        onCreate={() => setShowCreateWizard(true)}
+        actions={
+          <>
+            <ResourceExportDropdown
+              items={filteredItems}
+              selectedKeys={selectedItems}
+              getKey={(i) => `${i.namespace}/${i.name}`}
+              config={cronJobExportConfig}
+              selectionLabel={selectedItems.size > 0 ? 'Selected cronjobs' : 'All visible cronjobs'}
+              onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+            />
+            {selectedItems.size > 0 && (
+              <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}><Trash2 className="h-4 w-4" />Delete</Button>
+            )}
+          </>
+        }
+        leftExtra={selectedItems.size > 0 ? (
+          <div className="flex items-center gap-2 ml-2 pl-2 border-l border-border">
+            <span className="text-sm text-muted-foreground">{selectedItems.size} selected</span>
+            <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelectedItems(new Set())}>Clear</Button>
           </div>
-          {selectedItems.size > 0 && (
-            <div className="flex items-center gap-2 ml-2 pl-2 border-l border-border">
-              <span className="text-sm text-muted-foreground">{selectedItems.size} selected</span>
-              <Button variant="ghost" size="sm" className="h-8" onClick={() => setSelectedItems(new Set())}>Clear</Button>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <ResourceExportDropdown
-            items={filteredItems}
-            selectedKeys={selectedItems}
-            getKey={(i) => `${i.namespace}/${i.name}`}
-            config={cronJobExportConfig}
-            selectionLabel={selectedItems.size > 0 ? 'Selected cronjobs' : 'All visible cronjobs'}
-            onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
-          />
-          {selectedItems.size > 0 && (
-            <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}><Trash2 className="h-4 w-4" />Delete</Button>
-          )}
-          <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>{isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}</Button>
-          <Button className="gap-2" onClick={() => setShowCreateWizard(true)}><Plus className="h-4 w-4" />Create CronJob</Button>
-        </div>
-      </div>
+        ) : undefined}
+      />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <ListPageStatCard label="Total" value={stats.total} icon={CronJobIcon} iconColor="text-primary" selected={!columnFilters.status?.size} onClick={() => setColumnFilter('status', null)} className={cn(!columnFilters.status?.size && 'ring-2 ring-primary')} />
-        <ListPageStatCard label="Active" value={stats.active} icon={Clock} iconColor="text-cyan-500" valueClassName="text-cyan-600" />
+        <ListPageStatCard label="Active" value={stats.active} icon={Clock} iconColor="text-cyan-500" valueClassName="text-cyan-600" selected={columnFilters.hasActiveJobs?.size === 1 && columnFilters.hasActiveJobs.has('Yes')} onClick={() => setColumnFilter('hasActiveJobs', new Set(['Yes']))} className={cn(columnFilters.hasActiveJobs?.size === 1 && columnFilters.hasActiveJobs.has('Yes') && 'ring-2 ring-cyan-500')} />
         <ListPageStatCard label="Suspended" value={stats.suspended} icon={Pause} iconColor="text-[hsl(45,93%,47%)]" valueClassName="text-[hsl(45,93%,47%)]" selected={columnFilters.status?.size === 1 && columnFilters.status.has('Suspended')} onClick={() => setColumnFilter('status', new Set(['Suspended']))} className={cn(columnFilters.status?.size === 1 && columnFilters.status.has('Suspended') && 'ring-2 ring-[hsl(45,93%,47%)]')} />
         <ListPageStatCard label="On Schedule" value={stats.onSchedule} icon={CalendarCheck} iconColor="text-[hsl(142,76%,36%)]" valueClassName="text-[hsl(142,76%,36%)]" />
         <ListPageStatCard label="Overdue" value={stats.overdue} icon={Timer} iconColor="text-muted-foreground" />
         <ListPageStatCard label="Success Rate (7d)" value={stats.successRate7d} icon={Gauge} iconColor="text-muted-foreground" />
       </div>
 
+      <ResourceListTableToolbar
+        globalFilterBar={
       <ResourceCommandBar
         scope={
           <div className="w-full min-w-0">
@@ -447,22 +491,66 @@ spec:
           </div>
         }
         structure={<ListViewSegmentedControl value={listView} onChange={(v) => setListView(v as ListView)} options={[{ id: 'flat', label: 'Flat', icon: List }, { id: 'byNamespace', label: 'By Namespace', icon: Layers }]} label="" ariaLabel="List structure" />}
-        className="mb-2"
+        className="mb-0"
       />
-
-      <div className="border border-border rounded-xl overflow-x-auto bg-card">
+        }
+        hasActiveFilters={hasActiveFilters}
+        onClearAllFilters={clearAllFilters}
+        showTableFilters={showTableFilters}
+        onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+        columns={CRONJOBS_COLUMNS_FOR_VISIBILITY}
+        visibleColumns={columnVisibility.visibleColumns}
+        onColumnToggle={columnVisibility.setColumnVisible}
+        footer={
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-2">
+                  {pageSize} per page
+                  <ChevronDown className="h-4 w-4 opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>
+                    {size} per page
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <ListPagination
+            hasPrev={pagination.hasPrev}
+            hasNext={pagination.hasNext}
+            onPrev={pagination.onPrev}
+            onNext={pagination.onNext}
+            rangeLabel={undefined}
+            currentPage={pagination.currentPage}
+            totalPages={pagination.totalPages}
+            onPageChange={pagination.onPageChange}
+            dataUpdatedAt={dataUpdatedAt}
+            isFetching={isFetching}
+          />
+        </div>
+        }
+      >
         <ResizableTableProvider tableId="cronjobs" columnConfig={CRONJOBS_TABLE_COLUMNS}>
-        <Table className="table-fixed" style={{ minWidth: 1770 }}>
-          <TableHeader><TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+        <Table className="table-fixed" style={{ minWidth: 1810 }}>
+          <TableHeader><TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
             <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
+            <ResizableTableHead columnId="expand">
+              <span className="sr-only">Expand</span>
+            </ResizableTableHead>
             <ResizableTableHead columnId="name">
               <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
             </ResizableTableHead>
             <ResizableTableHead columnId="namespace">
-              <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} />
+              <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
             </ResizableTableHead>
             <ResizableTableHead columnId="status">
-              <TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} />
+              <TableColumnHeaderWithFilterAndSort columnId="status" label="Status" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
             </ResizableTableHead>
             <ResizableTableHead columnId="schedule">
               <TableColumnHeaderWithFilterAndSort columnId="schedule" label="Schedule" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
@@ -492,34 +580,102 @@ spec:
               <TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
             </ResizableTableHead>
             <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
-          </TableRow></TableHeader>
+          </TableRow>
+          {showTableFilters && (
+            <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+              <TableCell className="w-10 p-1.5" />
+              <ResizableTableCell columnId="expand" className="p-1.5" />
+              <ResizableTableCell columnId="name" className="p-1.5">
+                <TableFilterCell columnId="name" label="Name" distinctValues={distinctValuesByColumn.name ?? []} selectedFilterValues={columnFilters.name ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.name} />
+              </ResizableTableCell>
+              <ResizableTableCell columnId="namespace" className="p-1.5">
+                <TableFilterCell columnId="namespace" label="Namespace" distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.namespace} />
+              </ResizableTableCell>
+              <ResizableTableCell columnId="status" className="p-1.5">
+                <TableFilterCell columnId="status" label="Status" distinctValues={distinctValuesByColumn.status ?? []} selectedFilterValues={columnFilters.status ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.status} />
+              </ResizableTableCell>
+              <ResizableTableCell columnId="schedule" className="p-1.5" />
+              <ResizableTableCell columnId="lastSchedule" className="p-1.5" />
+              <ResizableTableCell columnId="nextSchedule" className="p-1.5" />
+              <ResizableTableCell columnId="active" className="p-1.5">
+                <TableFilterCell columnId="hasActiveJobs" label="Has Active Jobs" distinctValues={distinctValuesByColumn.hasActiveJobs ?? []} selectedFilterValues={columnFilters.hasActiveJobs ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.hasActiveJobs} />
+              </ResizableTableCell>
+              <ResizableTableCell columnId="concurrencyPolicy" className="p-1.5">
+                <TableFilterCell columnId="concurrencyPolicy" label="Concurrency Policy" distinctValues={distinctValuesByColumn.concurrencyPolicy ?? []} selectedFilterValues={columnFilters.concurrencyPolicy ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.concurrencyPolicy} />
+              </ResizableTableCell>
+              <ResizableTableCell columnId="suspend" className="p-1.5" />
+              <ResizableTableCell columnId="historyLimit" className="p-1.5" />
+              <ResizableTableCell columnId="lastResult" className="p-1.5" />
+              <ResizableTableCell columnId="age" className="p-1.5" />
+              <TableCell className="w-12 p-1.5" />
+            </TableRow>
+          )}
+          </TableHeader>
           <TableBody>
             {isLoading && isConnected ? (
-              <TableRow><TableCell colSpan={15} className="h-32 text-center"><div className="flex flex-col items-center gap-2"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><p className="text-sm text-muted-foreground">Loading...</p></div></TableCell></TableRow>
+              <TableSkeletonRows columnCount={15} />
             ) : itemsOnPage.length === 0 ? (
-              <TableRow><TableCell colSpan={15} className="h-32 text-center text-muted-foreground"><div className="flex flex-col items-center gap-2"><Timer className="h-8 w-8 opacity-50" /><p>No cronjobs found</p>{(searchQuery || hasActiveFilters) && <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>}</div></TableCell></TableRow>
-            ) : listView === 'flat' ? itemsOnPage.map((item, idx) => {
+              <TableRow>
+                <TableCell colSpan={16} className="h-40 text-center">
+                  <TableEmptyState
+                    icon={<Timer className="h-8 w-8" />}
+                    title="No CronJobs found"
+                    subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Get started by creating a CronJob for scheduled jobs.'}
+                    hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                    onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                    createLabel="Create CronJob"
+                    onCreate={() => setShowCreateWizard(true)}
+                  />
+                </TableCell>
+              </TableRow>
+            ) : listView === 'flat' ? itemsOnPage.flatMap((item, idx) => {
               const StatusIcon = statusConfig[item.status]?.icon || Clock;
               const key = `${item.namespace}/${item.name}`;
               const isSelected = selectedItems.has(key);
-              return (
+              const isExpanded = expandedRow === key;
+              return [
                 <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
                   <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
+                  <ResizableTableCell columnId="expand">
+                    <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => setExpandedRow(isExpanded ? null : key)} aria-label={isExpanded ? 'Collapse' : 'Expand'} aria-expanded={isExpanded}>
+                      {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                    </Button>
+                  </ResizableTableCell>
                   <ResizableTableCell columnId="name"><Link to={`/cronjobs/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><CronJobIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
-                  <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
+                  <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={item.namespace} className="font-normal truncate block w-fit max-w-full" /></ResizableTableCell>
                   <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={cronJobStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>
                   <ResizableTableCell columnId="schedule" className="min-w-0" title={item.schedule}><span className="text-xs truncate block">{item.scheduleHuman !== '-' ? item.scheduleHuman : item.schedule}</span></ResizableTableCell>
                   <ResizableTableCell columnId="lastSchedule" className="text-muted-foreground whitespace-nowrap text-sm">{item.lastSchedule}</ResizableTableCell>
                   <ResizableTableCell columnId="nextSchedule" className="text-muted-foreground whitespace-nowrap text-sm">{item.nextSchedule}</ResizableTableCell>
                   <ResizableTableCell columnId="active" className="font-mono text-sm">{item.active}</ResizableTableCell>
-                  <ResizableTableCell columnId="concurrencyPolicy"><Badge variant="secondary" className="font-mono text-xs">{item.concurrencyPolicy}</Badge></ResizableTableCell>
-                  <ResizableTableCell columnId="suspend" className="text-sm">{item.suspend ? 'Yes' : 'No'}</ResizableTableCell>
+                  <ResizableTableCell columnId="concurrencyPolicy">
+                    <Badge
+                      variant={item.concurrencyPolicy === 'Allow' ? 'default' : item.concurrencyPolicy === 'Forbid' ? 'secondary' : 'destructive'}
+                      className={cn('font-mono text-xs', item.concurrencyPolicy === 'Forbid' && 'bg-amber-500/90 text-white border-0')}
+                    >
+                      {item.concurrencyPolicy}
+                    </Badge>
+                  </ResizableTableCell>
+                  <ResizableTableCell columnId="suspend">
+                    <Badge variant={item.suspend ? 'secondary' : 'outline'} className="text-xs">{item.suspend ? 'Yes' : 'No'}</Badge>
+                  </ResizableTableCell>
                   <ResizableTableCell columnId="historyLimit" className="font-mono text-sm">{item.historyLimit}</ResizableTableCell>
-                  <ResizableTableCell columnId="lastResult" className="text-sm">{item.lastResult}</ResizableTableCell>
-                  <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
+                  <ResizableTableCell columnId="lastResult">
+                    {item.lastResult !== '–' ? (
+                      <StatusPill
+                        label={item.lastResult}
+                        variant={item.lastResult === 'Success' ? 'success' : item.lastResult === 'Failed' ? 'destructive' : 'warning'}
+                        icon={item.lastResult === 'Success' ? CheckCircle2 : item.lastResult === 'Failed' ? XCircle : Play}
+                      />
+                    ) : (
+                      <span className="text-muted-foreground text-sm">—</span>
+                    )}
+                  </ResizableTableCell>
+                  <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>
                   <TableCell>
                     <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="CronJob actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-52">
+                        <CopyNameDropdownItem name={item.name} namespace={item.namespace} />
                         <DropdownMenuItem onClick={() => navigate(`/cronjobs/${item.namespace}/${item.name}`)} className="gap-2">View Details</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => handleTriggerNow(item)} className="gap-2" disabled={!isConnected}><Play className="h-4 w-4" />Trigger Now</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => handleToggleSuspend(item)} className="gap-2" disabled={!isConnected}>{item.status === 'Active' ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}{item.status === 'Active' ? 'Suspend' : 'Resume'}</DropdownMenuItem>
@@ -530,13 +686,46 @@ spec:
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>
-                </motion.tr>
-              );
-            }) : groupedOnPage.flatMap((group) => {
+                </motion.tr>,
+                ...(isExpanded ? [
+                  <TableRow key={`${key}-jobs`} className="bg-muted/20 hover:bg-muted/20 border-b border-border/60">
+                    <TableCell colSpan={16} className="p-0 align-top">
+                      <div className="pl-14 pr-4 py-3">
+                        <div className="text-xs font-medium text-muted-foreground mb-2">Recent Jobs (last 5)</div>
+                        {childJobsLoading ? (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading jobs…</div>
+                        ) : childJobs.length === 0 ? (
+                          <div className="text-sm text-muted-foreground">No jobs yet</div>
+                        ) : (
+                          <Table>
+                            <TableHeader><TableRow className="border-0 hover:bg-transparent">
+                              <TableHead className="h-8 text-xs font-medium text-muted-foreground">Job Name</TableHead>
+                              <TableHead className="h-8 text-xs font-medium text-muted-foreground">Status</TableHead>
+                              <TableHead className="h-8 text-xs font-medium text-muted-foreground">Start Time</TableHead>
+                              <TableHead className="h-8 text-xs font-medium text-muted-foreground">Duration</TableHead>
+                            </TableRow></TableHeader>
+                            <TableBody>
+                              {childJobs.map((job) => (
+                                <TableRow key={job.name} className="border-0 hover:bg-muted/30" onClick={() => navigate(`/jobs/${job.namespace}/${job.name}`)}>
+                                  <TableCell className="py-1.5 text-sm"><Link to={`/jobs/${job.namespace}/${job.name}`} className="text-primary hover:underline font-medium" onClick={(e) => e.stopPropagation()}>{job.name}</Link></TableCell>
+                                  <TableCell className="py-1.5"><StatusPill label={job.status} variant={job.status === 'Complete' ? 'success' : job.status === 'Failed' ? 'destructive' : 'warning'} icon={job.status === 'Complete' ? CheckCircle2 : job.status === 'Failed' ? XCircle : Clock} /></TableCell>
+                                  <TableCell className="py-1.5 text-sm text-muted-foreground">{job.startTime !== '-' ? new Date(job.startTime).toLocaleString() : '-'}</TableCell>
+                                  <TableCell className="py-1.5 text-sm font-mono">{job.duration}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>,
+                ] : []),
+              ];
+            }            ) : groupedOnPage.flatMap((group) => {
               const isCollapsed = collapsedGroups.has(group.groupKey);
               return [
                 <TableRow key={group.groupKey} className="bg-muted/30 hover:bg-muted/40 cursor-pointer border-b border-border" onClick={() => toggleGroup(group.groupKey)}>
-                  <TableCell colSpan={15} className="py-2 font-medium">
+                  <TableCell colSpan={16} className="py-2 font-medium">
                     <div className="flex items-center gap-2">
                       {isCollapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />}
                       Namespace: {group.label}
@@ -544,28 +733,54 @@ spec:
                     </div>
                   </TableCell>
                 </TableRow>,
-                ...(isCollapsed ? [] : group.list.map((item, idx) => {
+                ...(isCollapsed ? [] : group.list.flatMap((item, idx) => {
                   const StatusIcon = statusConfig[item.status]?.icon || Clock;
                   const key = `${item.namespace}/${item.name}`;
                   const isSelected = selectedItems.has(key);
-                  return (
+                  const isExpanded = expandedRow === key;
+                  return [
                     <motion.tr key={key} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', isSelected && 'bg-primary/5')}>
                       <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(item)} /></TableCell>
+                      <ResizableTableCell columnId="expand">
+                        <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => setExpandedRow(isExpanded ? null : key)} aria-label={isExpanded ? 'Collapse' : 'Expand'} aria-expanded={isExpanded}>
+                          {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                        </Button>
+                      </ResizableTableCell>
                       <ResizableTableCell columnId="name"><Link to={`/cronjobs/${item.namespace}/${item.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate"><CronJobIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" /><span className="truncate">{item.name}</span></Link></ResizableTableCell>
-                      <ResizableTableCell columnId="namespace"><Badge variant="outline" className="font-normal truncate block w-fit max-w-full">{item.namespace}</Badge></ResizableTableCell>
+                      <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={item.namespace} className="font-normal truncate block w-fit max-w-full" /></ResizableTableCell>
                       <ResizableTableCell columnId="status"><StatusPill label={item.status} variant={cronJobStatusToVariant[item.status]} icon={StatusIcon} /></ResizableTableCell>
                       <ResizableTableCell columnId="schedule" className="min-w-0" title={item.schedule}><span className="text-xs truncate block">{item.scheduleHuman !== '-' ? item.scheduleHuman : item.schedule}</span></ResizableTableCell>
                       <ResizableTableCell columnId="lastSchedule" className="text-muted-foreground whitespace-nowrap text-sm">{item.lastSchedule}</ResizableTableCell>
                       <ResizableTableCell columnId="nextSchedule" className="text-muted-foreground whitespace-nowrap text-sm">{item.nextSchedule}</ResizableTableCell>
                       <ResizableTableCell columnId="active" className="font-mono text-sm">{item.active}</ResizableTableCell>
-                      <ResizableTableCell columnId="concurrencyPolicy"><Badge variant="secondary" className="font-mono text-xs">{item.concurrencyPolicy}</Badge></ResizableTableCell>
-                      <ResizableTableCell columnId="suspend" className="text-sm">{item.suspend ? 'Yes' : 'No'}</ResizableTableCell>
+                      <ResizableTableCell columnId="concurrencyPolicy">
+                        <Badge
+                          variant={item.concurrencyPolicy === 'Allow' ? 'default' : item.concurrencyPolicy === 'Forbid' ? 'secondary' : 'destructive'}
+                          className={cn('font-mono text-xs', item.concurrencyPolicy === 'Forbid' && 'bg-amber-500/90 text-white border-0')}
+                        >
+                          {item.concurrencyPolicy}
+                        </Badge>
+                      </ResizableTableCell>
+                      <ResizableTableCell columnId="suspend">
+                        <Badge variant={item.suspend ? 'secondary' : 'outline'} className="text-xs">{item.suspend ? 'Yes' : 'No'}</Badge>
+                      </ResizableTableCell>
                       <ResizableTableCell columnId="historyLimit" className="font-mono text-sm">{item.historyLimit}</ResizableTableCell>
-                      <ResizableTableCell columnId="lastResult" className="text-sm">{item.lastResult}</ResizableTableCell>
-                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{item.age}</ResizableTableCell>
+                      <ResizableTableCell columnId="lastResult">
+                        {item.lastResult !== '–' ? (
+                          <StatusPill
+                            label={item.lastResult}
+                            variant={item.lastResult === 'Success' ? 'success' : item.lastResult === 'Failed' ? 'destructive' : 'warning'}
+                            icon={item.lastResult === 'Success' ? CheckCircle2 : item.lastResult === 'Failed' ? XCircle : Play}
+                          />
+                        ) : (
+                          <span className="text-muted-foreground text-sm">—</span>
+                        )}
+                      </ResizableTableCell>
+                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={item.age} timestamp={item.creationTimestamp} /></ResizableTableCell>
                       <TableCell>
                         <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="CronJob actions"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-52">
+                            <CopyNameDropdownItem name={item.name} namespace={item.namespace} />
                             <DropdownMenuItem onClick={() => navigate(`/cronjobs/${item.namespace}/${item.name}`)} className="gap-2">View Details</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => handleTriggerNow(item)} className="gap-2" disabled={!isConnected}><Play className="h-4 w-4" />Trigger Now</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => handleToggleSuspend(item)} className="gap-2" disabled={!isConnected}>{item.status === 'Active' ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}{item.status === 'Active' ? 'Suspend' : 'Resume'}</DropdownMenuItem>
@@ -576,52 +791,48 @@ spec:
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </TableCell>
-                    </motion.tr>
-                  );
+                    </motion.tr>,
+                    ...(isExpanded ? [
+                      <TableRow key={`${key}-jobs`} className="bg-muted/20 hover:bg-muted/20 border-b border-border/60">
+                        <TableCell colSpan={16} className="p-0 align-top">
+                          <div className="pl-14 pr-4 py-3">
+                            <div className="text-xs font-medium text-muted-foreground mb-2">Recent Jobs (last 5)</div>
+                            {childJobsLoading ? (
+                              <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading jobs…</div>
+                            ) : childJobs.length === 0 ? (
+                              <div className="text-sm text-muted-foreground">No jobs yet</div>
+                            ) : (
+                              <Table>
+                                <TableHeader><TableRow className="border-0 hover:bg-transparent">
+                                  <TableHead className="h-8 text-xs font-medium text-muted-foreground">Job Name</TableHead>
+                                  <TableHead className="h-8 text-xs font-medium text-muted-foreground">Status</TableHead>
+                                  <TableHead className="h-8 text-xs font-medium text-muted-foreground">Start Time</TableHead>
+                                  <TableHead className="h-8 text-xs font-medium text-muted-foreground">Duration</TableHead>
+                                </TableRow></TableHeader>
+                                <TableBody>
+                                  {childJobs.map((job) => (
+                                    <TableRow key={job.name} className="border-0 hover:bg-muted/30" onClick={() => navigate(`/jobs/${job.namespace}/${job.name}`)}>
+                                      <TableCell className="py-1.5 text-sm"><Link to={`/jobs/${job.namespace}/${job.name}`} className="text-primary hover:underline font-medium" onClick={(e) => e.stopPropagation()}>{job.name}</Link></TableCell>
+                                      <TableCell className="py-1.5"><StatusPill label={job.status} variant={job.status === 'Complete' ? 'success' : job.status === 'Failed' ? 'destructive' : 'warning'} icon={job.status === 'Complete' ? CheckCircle2 : job.status === 'Failed' ? XCircle : Clock} /></TableCell>
+                                      <TableCell className="py-1.5 text-sm text-muted-foreground">{job.startTime !== '-' ? new Date(job.startTime).toLocaleString() : '-'}</TableCell>
+                                      <TableCell className="py-1.5 text-sm font-mono">{job.duration}</TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>,
+                    ] : []),
+                  ];
                 })),
               ];
             })}
           </TableBody>
         </Table>
         </ResizableTableProvider>
-      </div>
-
-      <div className="pt-4 pb-2 border-t border-border mt-2">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-2">
-                  {pageSize} per page
-                  <ChevronDown className="h-4 w-4 opacity-50" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <DropdownMenuItem
-                    key={size}
-                    onClick={() => handlePageSizeChange(size)}
-                    className={cn(pageSize === size && 'bg-accent')}
-                  >
-                    {size} per page
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          <ListPagination
-            hasPrev={pagination.hasPrev}
-            hasNext={pagination.hasNext}
-            onPrev={pagination.onPrev}
-            onNext={pagination.onNext}
-            rangeLabel={undefined}
-            currentPage={pagination.currentPage}
-            totalPages={pagination.totalPages}
-            onPageChange={pagination.onPageChange}
-          />
-        </div>
-      </div>
+      </ResourceListTableToolbar>
 
       {showCreateWizard && (
         <ResourceCreator

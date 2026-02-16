@@ -90,7 +90,7 @@ export function convertToHierarchicalTree(
     type: mapKindToResourceType(node.kind),
     name: node.name,
     namespace: node.namespace || undefined,
-    status: mapHealthToStatus(node.computed.health),
+    status: mapHealthToStatus(node.computed?.health),
     isCurrent: currentNodeId ? node.id === currentNodeId : false,
     traffic: node.traffic,
   }));
@@ -133,7 +133,8 @@ export function convertToHierarchicalTree(
     const existing = childToParent.get(edge.to);
     const priority = relationshipPriority[edge.label?.toLowerCase() || ''] || 100;
     
-    if (!existing || priority < relationshipPriority[existing.edge.label?.toLowerCase() || ''] || 100) {
+    const existingPriority = existing ? (relationshipPriority[existing.edge.label?.toLowerCase() || ''] || 100) : 100;
+    if (!existing || priority < existingPriority) {
       childToParent.set(edge.to, { parentId: edge.from, edge });
     }
   });

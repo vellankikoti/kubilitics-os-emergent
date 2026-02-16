@@ -8,7 +8,23 @@ import (
 	"time"
 
 	"github.com/kubilitics/kubilitics-ai/internal/analytics"
+	"github.com/kubilitics/kubilitics-ai/internal/audit"
+	"github.com/kubilitics/kubilitics-ai/internal/cost"
+	"github.com/kubilitics/kubilitics-ai/internal/db"
+	"github.com/kubilitics/kubilitics-ai/internal/llm/budget"
+	"github.com/kubilitics/kubilitics-ai/internal/security"
+	appconfig "github.com/kubilitics/kubilitics-ai/internal/config"
+	"github.com/kubilitics/kubilitics-ai/internal/integration/backend"
+	"github.com/kubilitics/kubilitics-ai/internal/integration/events"
 	"github.com/kubilitics/kubilitics-ai/internal/llm/adapter"
+	"github.com/kubilitics/kubilitics-ai/internal/llm/types"
+	mcpserver "github.com/kubilitics/kubilitics-ai/internal/mcp/server"
+	reasoningcontext "github.com/kubilitics/kubilitics-ai/internal/reasoning/context"
+	reasoningengine "github.com/kubilitics/kubilitics-ai/internal/reasoning/engine"
+	reasoningprompt "github.com/kubilitics/kubilitics-ai/internal/reasoning/prompt"
+	"github.com/kubilitics/kubilitics-ai/internal/memory/temporal"
+	"github.com/kubilitics/kubilitics-ai/internal/memory/vector"
+	"github.com/kubilitics/kubilitics-ai/internal/memory/worldmodel"
 	"github.com/kubilitics/kubilitics-ai/internal/safety"
 )
 
@@ -17,9 +33,38 @@ type Server struct {
 	config *Config
 
 	// Core components
-	llmAdapter      adapter.LLMAdapter
-	safetyEngine    *safety.Engine
-	analyticsEngine *analytics.Engine
+	llmAdapter        adapter.LLMAdapter
+	mcpServer         mcpserver.MCPServer
+	toolExecutor      *mcpToolExecutor
+	safetyEngine      *safety.Engine
+	analyticsEngine   *analytics.Engine
+	conversationStore *ConversationStore
+	reasoningEngine   reasoningengine.ReasoningEngine
+
+	// Backend integration (A-CORE-008)
+	backendProxy *backend.Proxy
+	eventHandler events.EventHandler
+
+	// Memory layer (A-CORE-009)
+	worldModel    *worldmodel.WorldModel
+	queryAPI      *worldmodel.QueryAPI
+	temporalStore temporal.TemporalStore
+	vectorStore   vector.VectorStore
+
+	// Analytics pipeline (A-CORE-010)
+	analyticsPipeline *analytics.Pipeline
+
+	// Cost intelligence pipeline (A-CORE-011)
+	costPipeline *cost.CostPipeline
+
+	// Security analysis engine (A-CORE-012)
+	securityEngine *security.SecurityEngine
+
+	// Persistence store (A-CORE-013)
+	store db.Store
+
+	// Token budget tracker (A-CORE-014)
+	budgetTracker budget.BudgetTracker
 
 	// HTTP server
 	httpServer *http.Server
@@ -86,6 +131,107 @@ func (s *Server) initializeComponents() error {
 	// 3. Initialize Analytics Engine (if enabled)
 	if s.config.AnalyticsEnabled {
 		s.analyticsEngine = analytics.NewEngine()
+	}
+
+	// 4. Initialize Conversation Store (always on)
+	s.conversationStore = NewConversationStore()
+
+	// 5. Initialize MCP server (if enabled)
+	if s.config.MCPEnabled {
+		// Build minimal appconfig.Config from our server Config.
+		mcpCfg := &appconfig.Config{}
+		mcpCfg.Backend.HTTPBaseURL = s.config.LLMBaseURL // best-effort; proxy uses its own env
+
+		// Audit logger — use default (logs to stderr / files).
+		auditLogger, err := audit.NewLogger(nil)
+		if err != nil {
+			// Non-fatal: log and proceed without MCP tooling.
+			fmt.Printf("warning: failed to create audit logger: %v\n", err)
+		} else {
+			// Backend proxy — connects to kubilitics-backend over HTTP.
+			backendProxy, err := backend.NewProxy(mcpCfg, auditLogger)
+			if err != nil {
+				fmt.Printf("warning: failed to create backend proxy: %v\n", err)
+			} else {
+				mcp, err := mcpserver.NewMCPServer(mcpCfg, backendProxy, auditLogger)
+				if err != nil {
+					fmt.Printf("warning: failed to initialize MCP server: %v\n", err)
+				} else {
+					s.mcpServer = mcp
+					s.toolExecutor = newMCPToolExecutor(mcp)
+				}
+			}
+		}
+	}
+
+	// 6. Initialize Reasoning Engine
+	{
+		auditLogger, _ := audit.NewLogger(nil)
+		mcpCfg := &appconfig.Config{}
+		bProxy, _ := backend.NewProxy(mcpCfg, auditLogger)
+
+		// Wire backend proxy and event handler for A-CORE-008.
+		s.backendProxy = bProxy
+		s.eventHandler = events.NewEventHandler()
+
+		// 7. Initialize Memory layer (A-CORE-009)
+		s.worldModel = worldmodel.NewWorldModel()
+		s.queryAPI = worldmodel.NewQueryAPI(s.worldModel)
+		s.temporalStore = temporal.NewTemporalStore()
+		s.vectorStore = vector.NewVectorStore()
+
+		// 8. Initialize Analytics Pipeline (A-CORE-010)
+		// The pipeline uses bProxy as MetricsFetcher; it starts background scraping lazily.
+		s.analyticsPipeline = analytics.NewPipeline(bProxy)
+
+		// 9. Initialize Cost Intelligence Pipeline (A-CORE-011)
+		// Uses bProxy as ResourceFetcher for live cluster resource scraping.
+		s.costPipeline = cost.NewCostPipeline(bProxy, cost.ProviderGeneric)
+
+		// 10. Initialize Security Analysis Engine (A-CORE-012)
+		// Uses bProxy as ResourceFetcher for live RBAC, pod security, network policy, and secret analysis.
+		s.securityEngine = security.NewSecurityEngine(bProxy)
+
+		// 11. Initialize Persistence Store (A-CORE-013)
+		// SQLite-backed store for audit logs, conversations, anomaly history, and cost snapshots.
+		dbPath := s.config.DatabasePath
+		if dbPath == "" {
+			dbPath = ":memory:"
+		}
+		if store, err := db.NewSQLiteStore(dbPath); err == nil {
+			s.store = store
+		}
+
+		// 12. Initialize Token Budget Tracker (A-CORE-014)
+		// In-memory tracker with configurable per-user and global limits.
+		s.budgetTracker = budget.NewBudgetTracker()
+
+		ctxBuilder := reasoningcontext.NewContextBuilderWithProxy(bProxy)
+		promptMgr := reasoningprompt.NewPromptManager()
+
+		// Build tool schemas from MCP server if available
+		var toolSchemas []types.Tool
+		if s.mcpServer != nil {
+			mcpTools, err := s.mcpServer.ListTools(context.Background())
+			if err == nil {
+				for _, t := range mcpTools {
+					toolSchemas = append(toolSchemas, types.Tool{
+						Name:        t.Name,
+						Description: t.Description,
+						Parameters:  toMap(t.InputSchema),
+					})
+				}
+			}
+		}
+
+		s.reasoningEngine = reasoningengine.NewReasoningEngine(
+			ctxBuilder,
+			promptMgr,
+			s.llmAdapter,
+			s.toolExecutor,
+			toolSchemas,
+			auditLogger,
+		)
 	}
 
 	return nil
@@ -181,6 +327,16 @@ func (s *Server) GetLLMAdapter() adapter.LLMAdapter {
 	return s.llmAdapter
 }
 
+// GetMCPServer returns the MCP server (may be nil if not enabled or init failed).
+func (s *Server) GetMCPServer() mcpserver.MCPServer {
+	return s.mcpServer
+}
+
+// GetToolExecutor returns the tool executor (may be nil).
+func (s *Server) GetToolExecutor() *mcpToolExecutor {
+	return s.toolExecutor
+}
+
 // GetSafetyEngine returns the safety engine
 func (s *Server) GetSafetyEngine() *safety.Engine {
 	return s.safetyEngine
@@ -189,6 +345,11 @@ func (s *Server) GetSafetyEngine() *safety.Engine {
 // GetAnalyticsEngine returns the analytics engine
 func (s *Server) GetAnalyticsEngine() *analytics.Engine {
 	return s.analyticsEngine
+}
+
+// GetReasoningEngine returns the reasoning engine.
+func (s *Server) GetReasoningEngine() reasoningengine.ReasoningEngine {
+	return s.reasoningEngine
 }
 
 // registerHandlers registers HTTP handlers
@@ -211,6 +372,9 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 		mux.HandleFunc("/api/v1/safety/evaluate", s.handleSafetyEvaluate)
 		mux.HandleFunc("/api/v1/safety/rules", s.handleSafetyRules)
 		mux.HandleFunc("/api/v1/safety/policies", s.handleSafetyPolicies)
+		mux.HandleFunc("/api/v1/safety/policies/", s.handleSafetyPolicyByName)
+		mux.HandleFunc("/api/v1/safety/autonomy/", s.handleSafetyAutonomy)
+		mux.HandleFunc("/api/v1/safety/approvals", s.handleSafetyApprovals)
 	}
 
 	// Analytics endpoints
@@ -226,6 +390,39 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	// Conversation endpoints
 	mux.HandleFunc("/api/v1/conversations", s.handleConversationsList)
 	mux.HandleFunc("/api/v1/conversations/", s.handleConversationGet)
+
+	// Investigation endpoints (A-CORE-005)
+	mux.HandleFunc("/api/v1/investigations", s.handleInvestigations)
+	mux.HandleFunc("/api/v1/investigations/", s.handleInvestigationByID)
+	mux.HandleFunc("/ws/investigations/", s.handleInvestigationStream)
+
+	// Backend status and events endpoints (A-CORE-008)
+	mux.HandleFunc("/api/v1/backend/status", s.handleBackendStatus)
+	mux.HandleFunc("/api/v1/backend/events", s.handleBackendEvents)
+
+	// Memory endpoints (A-CORE-009)
+	mux.HandleFunc("/api/v1/memory/", s.handleMemory)
+	mux.HandleFunc("/api/v1/memory", s.handleMemory)
+
+	// Analytics pipeline endpoints (A-CORE-010)
+	mux.HandleFunc("/api/v1/analytics/pipeline/", s.handleAnalyticsPipeline)
+	mux.HandleFunc("/api/v1/analytics/pipeline", s.handleAnalyticsPipeline)
+
+	// Cost intelligence endpoints (A-CORE-011)
+	mux.HandleFunc("/api/v1/cost/", s.handleCostDispatch)
+	mux.HandleFunc("/api/v1/cost", s.handleCostDispatch)
+
+	// Security analysis endpoints (A-CORE-012)
+	mux.HandleFunc("/api/v1/security/", s.handleSecurityDispatch)
+	mux.HandleFunc("/api/v1/security", s.handleSecurityDispatch)
+
+	// Persistence layer endpoints (A-CORE-013)
+	mux.HandleFunc("/api/v1/persistence/", s.handlePersistenceDispatch)
+	mux.HandleFunc("/api/v1/persistence", s.handlePersistenceDispatch)
+
+	// Token budget endpoints (A-CORE-014)
+	mux.HandleFunc("/api/v1/budget/", s.handleBudgetDispatch)
+	mux.HandleFunc("/api/v1/budget", s.handleBudgetDispatch)
 }
 
 // handleHealth handles health check requests
@@ -289,6 +486,17 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(info))
+}
+
+// toMap safely converts an interface{} to map[string]interface{}.
+func toMap(v interface{}) map[string]interface{} {
+	if v == nil {
+		return nil
+	}
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	return nil
 }
 
 // API endpoint handlers are implemented in handlers.go and websocket.go

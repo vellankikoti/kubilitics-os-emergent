@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Scale, Search, RefreshCw, MoreHorizontal, Loader2, WifiOff, Plus, ChevronDown } from 'lucide-react';
+import { Scale, Search, RefreshCw, MoreHorizontal, Loader2, WifiOff, Plus, ChevronDown, Filter, List, Layers, CheckSquare, Trash2 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -26,6 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Checkbox } from '@/components/ui/checkbox';
 import { usePaginatedResourceList, useDeleteK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
@@ -35,14 +36,23 @@ import { cn } from '@/lib/utils';
 import {
   ResourceCommandBar,
   ResourceExportDropdown,
+  ListViewSegmentedControl,
   ListPagination,
   ListPageStatCard,
+  ListPageHeader,
   TableColumnHeaderWithFilterAndSort,
   resourceTableRowClassName,
   ROW_MOTION,
   PAGE_SIZE_OPTIONS,
+  AgeCell,
+  TableEmptyState,
+  NamespaceBadge,
+  ResourceListTableToolbar,
+  TableFilterCell,
 } from '@/components/list';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
+import { getDetailPath } from '@/utils/resourceKindMapper';
 
 interface VPAResource extends KubernetesResource {
   spec?: {
@@ -62,10 +72,13 @@ interface VPARow {
   updateMode: string;
   cpuRecommendation: string;
   memoryRecommendation: string;
+  cpuTarget: string;
+  memoryTarget: string;
   age: string;
+  creationTimestamp?: string;
   updateModeOff: boolean;
   updateModeAuto: boolean;
-  updateModeInitial: boolean;
+  hasRecommendation: boolean;
 }
 
 function transformVPA(v: VPAResource): VPARow {
@@ -74,6 +87,8 @@ function transformVPA(v: VPAResource): VPARow {
   const mode = v.spec?.updatePolicy?.updateMode ?? 'Auto';
   const cpuRec = rec ? `${rec.lowerBound?.cpu ?? '–'}-${rec.target?.cpu ?? '–'}-${rec.upperBound?.cpu ?? '–'}`.replace(/^–-|–$/g, '–') : '–';
   const memRec = rec ? `${rec.lowerBound?.memory ?? '–'}-${rec.target?.memory ?? '–'}-${rec.upperBound?.memory ?? '–'}`.replace(/^–-|–$/g, '–') : '–';
+  const cpuTarget = rec?.target?.cpu ?? '–';
+  const memoryTarget = rec?.target?.memory ?? '–';
   return {
     name: v.metadata.name,
     namespace: v.metadata.namespace || 'default',
@@ -82,10 +97,13 @@ function transformVPA(v: VPAResource): VPARow {
     updateMode: mode,
     cpuRecommendation: cpuRec,
     memoryRecommendation: memRec,
+    cpuTarget,
+    memoryTarget,
     age: calculateAge(v.metadata.creationTimestamp),
+    creationTimestamp: v.metadata?.creationTimestamp,
     updateModeOff: mode === 'Off',
     updateModeAuto: mode === 'Auto',
-    updateModeInitial: mode === 'Initial' || mode === 'Recreate',
+    hasRecommendation: !!rec,
   };
 }
 
@@ -99,28 +117,49 @@ const VPA_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'age', defaultWidth: 90, minWidth: 56 },
 ];
 
+const VPA_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'target', label: 'Target' },
+  { id: 'updateMode', label: 'Mode' },
+  { id: 'cpuRec', label: 'CPU Recommendation' },
+  { id: 'memoryRec', label: 'Memory Recommendation' },
+  { id: 'age', label: 'Age' },
+];
+
 export default function VerticalPodAutoscalers() {
   const navigate = useNavigate();
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = usePaginatedResourceList<VPAResource>('verticalpodautoscalers');
+  const { data, isLoading, refetch, pagination: hookPagination } = usePaginatedResourceList<VPAResource>('verticalpodautoscalers');
   const deleteResource = useDeleteK8sResource('verticalpodautoscalers');
 
-  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: VPARow | null }>({ open: false, item: null });
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: VPARow | null; bulk?: boolean }>({ open: false, item: null });
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [showCreator, setShowCreator] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
+  const [listView, setListView] = useState<'flat' | 'byNamespace'>('flat');
+  const [showTableFilters, setShowTableFilters] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
 
   const allItems = (data?.allItems ?? []) as VPAResource[];
   const items: VPARow[] = useMemo(() => (isConnected ? allItems.map(transformVPA) : []), [isConnected, allItems]);
 
+  const namespaces = useMemo(() => ['all', ...Array.from(new Set(items.map((i) => i.namespace)))], [items]);
+  const itemsAfterNs = useMemo(() => (selectedNamespace === 'all' ? items : items.filter((i) => i.namespace === selectedNamespace)), [items, selectedNamespace]);
+
   const tableConfig: ColumnConfig<VPARow>[] = useMemo(() => [
     { columnId: 'name', getValue: (i) => i.name, sortable: true, filterable: false },
     { columnId: 'namespace', getValue: (i) => i.namespace, sortable: true, filterable: true },
+    { columnId: 'target', getValue: (i) => `${i.targetKind}/${i.targetName}`, sortable: true, filterable: false },
+    { columnId: 'updateMode', getValue: (i) => i.updateMode, sortable: true, filterable: true },
+    { columnId: 'cpuRec', getValue: (i) => i.cpuTarget, sortable: true, filterable: false },
+    { columnId: 'memoryRec', getValue: (i) => i.memoryTarget, sortable: true, filterable: false },
     { columnId: 'age', getValue: (i) => i.age, sortable: true, filterable: false },
   ], []);
 
-  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(items, { columns: tableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const { filteredAndSortedItems: filteredItems, distinctValuesByColumn, valueCountsByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterNs, { columns: tableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const columnVisibility = useColumnVisibility({ tableId: 'verticalpodautoscalers', columns: VPA_COLUMNS_FOR_VISIBILITY, alwaysVisible: ['name'] });
 
   const searchFiltered = useMemo(() => {
     if (!searchQuery.trim()) return filteredItems;
@@ -130,10 +169,10 @@ export default function VerticalPodAutoscalers() {
 
   const stats = useMemo(() => {
     const total = items.length;
-    const updateModeOff = items.filter((i) => i.updateModeOff).length;
-    const updateModeAuto = items.filter((i) => i.updateModeAuto).length;
-    const updateModeInitial = items.filter((i) => i.updateModeInitial).length;
-    return { total, updateModeOff, updateModeAuto, updateModeInitial };
+    const autoMode = items.filter((i) => i.updateModeAuto).length;
+    const offMode = items.filter((i) => i.updateModeOff).length;
+    const withRecommendations = items.filter((i) => i.hasRecommendation).length;
+    return { total, autoMode, offMode, withRecommendations };
   }, [items]);
 
   const totalFiltered = searchFiltered.length;
@@ -160,23 +199,48 @@ export default function VerticalPodAutoscalers() {
     currentPage: safePageIndex + 1,
     totalPages: Math.max(1, totalPages),
     onPageChange: (p: number) => setPageIndex(Math.max(0, Math.min(p - 1, totalPages - 1))),
+    dataUpdatedAt: hookPagination?.dataUpdatedAt,
+    isFetching: hookPagination?.isFetching,
   };
 
   const handleDelete = async () => {
-    if (!deleteDialog.item) return;
-    if (isConnected) {
-      await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
-      setDeleteDialog({ open: false, item: null });
-      refetch();
-    } else {
+    if (!isConnected) {
       toast.info('Connect cluster to delete resources');
+      return;
     }
+    if (deleteDialog.bulk && selectedItems.size > 0) {
+      for (const key of selectedItems) {
+        const [ns, n] = key.split('/');
+        if (n && ns) await deleteResource.mutateAsync({ name: n, namespace: ns });
+      }
+      toast.success(`Deleted ${selectedItems.size} VPA(s)`);
+      setSelectedItems(new Set());
+    } else if (deleteDialog.item) {
+      await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
+      toast.success(`VPA ${deleteDialog.item.name} deleted`);
+    }
+    setDeleteDialog({ open: false, item: null });
+    refetch();
   };
+
+  const toggleSelection = (r: VPARow) => {
+    const key = `${r.namespace}/${r.name}`;
+    const next = new Set(selectedItems);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setSelectedItems(next);
+  };
+  const toggleAll = () => {
+    if (selectedItems.size === itemsOnPage.length) setSelectedItems(new Set());
+    else setSelectedItems(new Set(itemsOnPage.map((r) => `${r.namespace}/${r.name}`)));
+  };
+  const isAllSelected = itemsOnPage.length > 0 && selectedItems.size === itemsOnPage.length;
+  const isSomeSelected = selectedItems.size > 0 && selectedItems.size < itemsOnPage.length;
 
   const exportConfig = {
     filenamePrefix: 'vpa',
     resourceLabel: 'Vertical Pod Autoscalers',
-    getExportData: (r: VPARow) => ({ name: r.name, namespace: r.namespace, target: `${r.targetKind}/${r.targetName}`, updateMode: r.updateMode, age: r.age }),
+    getExportData: (r: VPARow) => ({ name: r.name, namespace: r.namespace, target: `${r.targetKind}/${r.targetName}`, updateMode: r.updateMode, cpuRecommendation: r.cpuTarget, memoryRecommendation: r.memoryTarget, age: r.age }),
     csvColumns: [
       { label: 'Name', getValue: (r: VPARow) => r.name },
       { label: 'Namespace', getValue: (r: VPARow) => r.namespace },
@@ -185,12 +249,7 @@ export default function VerticalPodAutoscalers() {
     ],
   };
 
-  const targetLink = (r: VPARow) => {
-    const kind = (r.targetKind || '').toLowerCase();
-    if (kind === 'deployment') return `/deployments/${r.namespace}/${r.targetName}`;
-    if (kind === 'statefulset') return `/statefulsets/${r.namespace}/${r.targetName}`;
-    return '#';
-  };
+  const targetLink = (r: VPARow): string => getDetailPath(r.targetKind, r.targetName, r.namespace) ?? '#';
 
   if (showCreator) {
     return (
@@ -206,69 +265,157 @@ export default function VerticalPodAutoscalers() {
   return (
     <>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="p-2.5 rounded-xl bg-primary/10">
-              <Scale className="h-6 w-6 text-primary" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Vertical Pod Autoscalers</h1>
-              <p className="text-sm text-muted-foreground">
-                {searchFiltered.length} VPAs
-                {!isConnected && (
-                  <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]">
-                    <WifiOff className="h-3 w-3" /> Connect cluster
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <ResourceExportDropdown items={searchFiltered} selectedKeys={new Set()} getKey={(r) => `${r.namespace}/${r.name}`} config={exportConfig} selectionLabel="All visible" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
-            <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>
-              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            </Button>
-            <Button className="gap-2" onClick={() => setShowCreator(true)}><Plus className="h-4 w-4" /> Create</Button>
-          </div>
-        </div>
+        <ListPageHeader
+          icon={<Scale className="h-6 w-6 text-primary" />}
+          title="Vertical Pod Autoscalers"
+          resourceCount={searchFiltered.length}
+          subtitle={namespaces.length > 1 ? `across ${namespaces.length - 1} namespaces` : undefined}
+          demoMode={!isConnected}
+          isLoading={isLoading}
+          onRefresh={() => refetch()}
+          createLabel="Create"
+          onCreate={() => setShowCreator(true)}
+          actions={
+            <>
+              <ResourceExportDropdown items={searchFiltered} selectedKeys={selectedItems} getKey={(r) => `${r.namespace}/${r.name}`} config={exportConfig} selectionLabel={selectedItems.size > 0 ? 'Selected VPAs' : 'All visible'} onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} />
+              {selectedItems.size > 0 && (
+                <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete {selectedItems.size} selected
+                </Button>
+              )}
+            </>
+          }
+        />
 
         <div className={cn('grid grid-cols-2 sm:grid-cols-4 gap-4', !isConnected && 'opacity-60')}>
-          <ListPageStatCard label="Total VPAs" value={stats.total} icon={Scale} iconColor="text-primary" />
-          <ListPageStatCard label="Update Mode Off" value={stats.updateModeOff} icon={Scale} iconColor="text-muted-foreground" />
-          <ListPageStatCard label="Update Mode Auto" value={stats.updateModeAuto} icon={Scale} iconColor="text-muted-foreground" />
-          <ListPageStatCard label="Initial/Recreate" value={stats.updateModeInitial} icon={Scale} iconColor="text-muted-foreground" />
+          <ListPageStatCard label="Total" value={stats.total} icon={Scale} iconColor="text-primary" selected={!hasActiveFilters} onClick={clearAllFilters} className={cn(!hasActiveFilters && 'ring-2 ring-primary')} />
+          <ListPageStatCard label="Auto Mode" value={stats.autoMode} icon={Scale} iconColor="text-[hsl(142,76%,36%)]" valueClassName="text-[hsl(142,76%,36%)]" selected={columnFilters.updateMode?.size === 1 && columnFilters.updateMode.has('Auto')} onClick={() => setColumnFilter('updateMode', new Set(['Auto']))} className={cn(columnFilters.updateMode?.size === 1 && columnFilters.updateMode.has('Auto') && 'ring-2 ring-[hsl(142,76%,36%)]')} />
+          <ListPageStatCard label="Off Mode" value={stats.offMode} icon={Scale} iconColor="text-muted-foreground" selected={columnFilters.updateMode?.size === 1 && columnFilters.updateMode.has('Off')} onClick={() => setColumnFilter('updateMode', new Set(['Off']))} className={cn(columnFilters.updateMode?.size === 1 && columnFilters.updateMode.has('Off') && 'ring-2 ring-muted-foreground')} />
+          <ListPageStatCard label="With Recommendations" value={stats.withRecommendations} icon={Scale} iconColor="text-[hsl(217,91%,60%)]" valueClassName="text-[hsl(217,91%,60%)]" />
         </div>
 
+        {/* Bulk Actions Bar */}
+        {selectedItems.size > 0 && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between p-3 bg-primary/5 border border-primary/20 rounded-lg">
+            <Badge variant="secondary" className="gap-1.5">
+              <CheckSquare className="h-3.5 w-3.5" />
+              {selectedItems.size} selected
+            </Badge>
+            <div className="flex items-center gap-2">
+              <ResourceExportDropdown items={searchFiltered} selectedKeys={selectedItems} getKey={(r) => `${r.namespace}/${r.name}`} config={exportConfig} selectionLabel="Selected VPAs" onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))} triggerLabel={`Export (${selectedItems.size})`} />
+              <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete selected
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedItems(new Set())}>
+                Clear
+              </Button>
+            </div>
+          </motion.div>
+        )}
+
+        <ResourceListTableToolbar
+          hasActiveFilters={hasActiveFilters}
+          onClearAllFilters={clearAllFilters}
+          globalFilterBar={
         <ResourceCommandBar
-          scope={<span className="text-sm font-medium text-muted-foreground">All</span>}
+          scope={
+            <div className="w-full min-w-0">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full min-w-0 justify-between h-10 gap-2 rounded-lg border border-border bg-background font-medium shadow-sm hover:bg-muted/50 hover:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/20">
+                    <Filter className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{selectedNamespace === 'all' ? 'All Namespaces' : selectedNamespace}</span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-48">
+                  {namespaces.map((ns) => (
+                    <DropdownMenuItem key={ns} onClick={() => setSelectedNamespace(ns)} className={cn(selectedNamespace === ns && 'bg-accent')}>
+                      {ns === 'all' ? 'All Namespaces' : ns}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          }
           search={
             <div className="relative w-full min-w-0">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input placeholder="Search VPAs..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full h-10 pl-9 rounded-lg border border-border bg-background text-sm font-medium shadow-sm placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20" aria-label="Search VPAs" />
             </div>
           }
-          className="mb-2"
+          structure={
+            <ListViewSegmentedControl
+              value={listView}
+              onChange={(v) => setListView(v as 'flat' | 'byNamespace')}
+              options={[
+                { id: 'flat', label: 'Flat', icon: List },
+                { id: 'byNamespace', label: 'By Namespace', icon: Layers },
+              ]}
+              label=""
+              ariaLabel="List structure"
+            />
+          }
         />
-
-        <div className="border border-border rounded-xl overflow-x-auto bg-card">
+          }
+          showTableFilters={showTableFilters}
+          onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+          columns={VPA_COLUMNS_FOR_VISIBILITY}
+          visibleColumns={columnVisibility.visibleColumns}
+          onColumnToggle={columnVisibility.setColumnVisible}
+          footer={
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} dataUpdatedAt={pagination.dataUpdatedAt} isFetching={pagination.isFetching} />
+          </div>
+          }
+        >
           <ResizableTableProvider tableId="verticalpodautoscalers" columnConfig={VPA_TABLE_COLUMNS}>
             <Table className="table-fixed" style={{ minWidth: 850 }}>
               <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+                <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
+                  <TableHead className="w-10"><Checkbox checked={isAllSelected} onCheckedChange={toggleAll} aria-label="Select all" className={cn(isSomeSelected && 'data-[state=checked]:bg-primary/50')} /></TableHead>
                   <ResizableTableHead columnId="name"><TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
-                  <ResizableTableHead columnId="namespace"><TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} /></ResizableTableHead>
-                  <ResizableTableHead columnId="target"><span className="text-sm font-medium">Target</span></ResizableTableHead>
-                  <ResizableTableHead columnId="updateMode"><span className="text-sm font-medium">Update Mode</span></ResizableTableHead>
-                  <ResizableTableHead columnId="cpuRec"><span className="text-sm font-medium">CPU Rec.</span></ResizableTableHead>
-                  <ResizableTableHead columnId="memoryRec"><span className="text-sm font-medium">Memory Rec.</span></ResizableTableHead>
+                  <ResizableTableHead columnId="namespace"><TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="target"><TableColumnHeaderWithFilterAndSort columnId="target" label="Target" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="updateMode"><TableColumnHeaderWithFilterAndSort columnId="updateMode" label="Mode" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="cpuRec"><TableColumnHeaderWithFilterAndSort columnId="cpuRec" label="CPU Recommendation" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
+                  <ResizableTableHead columnId="memoryRec"><TableColumnHeaderWithFilterAndSort columnId="memoryRec" label="Memory Recommendation" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <ResizableTableHead columnId="age"><TableColumnHeaderWithFilterAndSort columnId="age" label="Age" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} /></ResizableTableHead>
                   <TableHead className="w-12 text-center"><span className="sr-only">Actions</span><MoreHorizontal className="h-4 w-4 inline-block text-muted-foreground" aria-hidden /></TableHead>
                 </TableRow>
+                {showTableFilters && (
+                  <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                    <TableCell className="w-10" />
+                    <ResizableTableCell columnId="name" className="p-1.5" />
+                    <ResizableTableCell columnId="namespace" className="p-1.5"><TableFilterCell columnId="namespace" label="Namespace" distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.namespace} /></ResizableTableCell>
+                    <ResizableTableCell columnId="target" className="p-1.5" />
+                    <ResizableTableCell columnId="updateMode" className="p-1.5"><TableFilterCell columnId="updateMode" label="Update Mode" distinctValues={distinctValuesByColumn.updateMode ?? []} selectedFilterValues={columnFilters.updateMode ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.updateMode} /></ResizableTableCell>
+                    <ResizableTableCell columnId="cpuRec" className="p-1.5" />
+                    <ResizableTableCell columnId="memoryRec" className="p-1.5" />
+                    <ResizableTableCell columnId="age" className="p-1.5" />
+                    <TableCell className="w-12" />
+                  </TableRow>
+                )}
               </TableHeader>
               <TableBody>
                 {isLoading && isConnected ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="h-32 text-center">
+                    <TableCell colSpan={9} className="h-32 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                         <p className="text-sm text-muted-foreground">Loading...</p>
@@ -277,26 +424,29 @@ export default function VerticalPodAutoscalers() {
                   </TableRow>
                 ) : searchFiltered.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
-                      <div className="flex flex-col items-center gap-2">
-                        <Scale className="h-8 w-8 opacity-50" />
-                        <p>No VPAs found</p>
-                        {(searchQuery || hasActiveFilters) && (
-                          <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
-                        )}
-                      </div>
+                    <TableCell colSpan={9} className="h-40 text-center">
+                      <TableEmptyState
+                        icon={<Scale className="h-8 w-8" />}
+                        title="No VPAs found"
+                        subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'Create a VPA to automatically adjust pod CPU/memory requests.'}
+                        hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                        onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                        createLabel="Create VPA"
+                        onCreate={() => setShowCreator(true)}
+                      />
                     </TableCell>
                   </TableRow>
                 ) : (
                   itemsOnPage.map((r, idx) => (
-                    <motion.tr key={`${r.namespace}/${r.name}`} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5')}>
+                    <motion.tr key={`${r.namespace}/${r.name}`} initial={ROW_MOTION.initial} animate={ROW_MOTION.animate} transition={ROW_MOTION.transition(idx)} className={cn(resourceTableRowClassName, idx % 2 === 1 && 'bg-muted/5', selectedItems.has(`${r.namespace}/${r.name}`) && 'bg-primary/5')}>
+                      <TableCell><Checkbox checked={selectedItems.has(`${r.namespace}/${r.name}`)} onCheckedChange={() => toggleSelection(r)} aria-label={`Select ${r.name}`} /></TableCell>
                       <ResizableTableCell columnId="name">
                         <Link to={`/verticalpodautoscalers/${r.namespace}/${r.name}`} className="font-medium text-primary hover:underline flex items-center gap-2 truncate">
                           <Scale className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                           <span className="truncate">{r.name}</span>
                         </Link>
                       </ResizableTableCell>
-                      <ResizableTableCell columnId="namespace"><Badge variant="outline">{r.namespace}</Badge></ResizableTableCell>
+                      <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={r.namespace} /></ResizableTableCell>
                       <ResizableTableCell columnId="target">
                         {r.targetName !== '–' ? (
                           <Link to={targetLink(r)} className="font-mono text-sm text-primary hover:underline truncate block">{r.targetKind}/{r.targetName}</Link>
@@ -305,11 +455,11 @@ export default function VerticalPodAutoscalers() {
                         )}
                       </ResizableTableCell>
                       <ResizableTableCell columnId="updateMode">
-                        <Badge variant={r.updateMode === 'Auto' ? 'default' : 'secondary'}>{r.updateMode}</Badge>
+                        <Badge variant={r.updateMode === 'Auto' ? 'default' : r.updateMode === 'Off' ? 'secondary' : 'outline'}>{r.updateMode}</Badge>
                       </ResizableTableCell>
-                      <ResizableTableCell columnId="cpuRec" className="font-mono text-xs truncate" title={r.cpuRecommendation}>{r.cpuRecommendation}</ResizableTableCell>
-                      <ResizableTableCell columnId="memoryRec" className="font-mono text-xs truncate" title={r.memoryRecommendation}>{r.memoryRecommendation}</ResizableTableCell>
-                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap">{r.age}</ResizableTableCell>
+                      <ResizableTableCell columnId="cpuRec" className="font-mono text-sm" title={r.cpuRecommendation !== r.cpuTarget ? r.cpuRecommendation : undefined}>{r.cpuTarget}</ResizableTableCell>
+                      <ResizableTableCell columnId="memoryRec" className="font-mono text-sm" title={r.memoryRecommendation !== r.memoryTarget ? r.memoryRecommendation : undefined}>{r.memoryTarget}</ResizableTableCell>
+                      <ResizableTableCell columnId="age" className="text-muted-foreground whitespace-nowrap"><AgeCell age={r.age} timestamp={r.creationTimestamp} /></ResizableTableCell>
                       <TableCell>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -322,6 +472,7 @@ export default function VerticalPodAutoscalers() {
                             {r.targetName !== '–' && <DropdownMenuItem onClick={() => navigate(targetLink(r))} className="gap-2">View Target</DropdownMenuItem>}
                             <DropdownMenuSeparator />
                             <DropdownMenuItem onClick={() => navigate(`/verticalpodautoscalers/${r.namespace}/${r.name}?tab=yaml`)} className="gap-2">Download YAML</DropdownMenuItem>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem className="gap-2 text-destructive" onClick={() => setDeleteDialog({ open: true, item: r })} disabled={!isConnected}>Delete</DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -332,41 +483,17 @@ export default function VerticalPodAutoscalers() {
               </TableBody>
             </Table>
           </ResizableTableProvider>
-        </div>
-
-        <div className="pt-4 pb-2 border-t border-border mt-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">{pagination.rangeLabel}</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="gap-2">
-                    {pageSize} per page
-                    <ChevronDown className="h-4 w-4 opacity-50" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {PAGE_SIZE_OPTIONS.map((size) => (
-                    <DropdownMenuItem key={size} onClick={() => handlePageSizeChange(size)} className={cn(pageSize === size && 'bg-accent')}>
-                      {size} per page
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <ListPagination hasPrev={pagination.hasPrev} hasNext={pagination.hasNext} onPrev={pagination.onPrev} onNext={pagination.onNext} rangeLabel={undefined} currentPage={pagination.currentPage} totalPages={pagination.totalPages} onPageChange={pagination.onPageChange} />
-          </div>
-        </div>
+        </ResourceListTableToolbar>
       </motion.div>
 
       <DeleteConfirmDialog
         open={deleteDialog.open}
-        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null })}
+        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null, bulk: open ? deleteDialog.bulk : false })}
         resourceType="VerticalPodAutoscaler"
-        resourceName={deleteDialog.item?.name || ''}
-        namespace={deleteDialog.item?.namespace}
+        resourceName={deleteDialog.bulk ? `${selectedItems.size} selected` : (deleteDialog.item?.name || '')}
+        namespace={deleteDialog.bulk ? undefined : deleteDialog.item?.namespace}
         onConfirm={handleDelete}
-        requireNameConfirmation
+        requireNameConfirmation={!deleteDialog.bulk}
       />
     </>
   );

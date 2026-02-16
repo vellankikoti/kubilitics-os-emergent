@@ -79,8 +79,10 @@ type CustomClientImpl struct {
 
 // Custom API structures (OpenAI-compatible)
 type customMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content,omitempty"`
+	ToolCalls  []customToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 type customTool struct {

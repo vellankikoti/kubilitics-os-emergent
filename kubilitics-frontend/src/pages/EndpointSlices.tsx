@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Link2,
   Plus,
+  Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,14 +37,15 @@ import {
 import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { Link, useNavigate } from 'react-router-dom';
-import { useK8sResourceList, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
+import { useK8sResourceList, useDeleteK8sResource, calculateAge, type KubernetesResource } from '@/hooks/useKubernetes';
 import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { toast } from 'sonner';
-import { Card, CardContent } from '@/components/ui/card';
 import { ResourceCreator, DEFAULT_YAMLS } from '@/components/editor';
-import { ResourceExportDropdown, ResourceCommandBar, ListPageStatCard, TableColumnHeaderWithFilterAndSort, ListPagination, PAGE_SIZE_OPTIONS, resourceTableRowClassName, ROW_MOTION } from '@/components/list';
+import { ResourceExportDropdown, ResourceCommandBar, ListPageStatCard, ListPageHeader, TableColumnHeaderWithFilterAndSort, TableFilterCell, ListPagination, PAGE_SIZE_OPTIONS, resourceTableRowClassName, ROW_MOTION, AgeCell, TableEmptyState, NamespaceBadge, ResourceListTableToolbar } from '@/components/list';
+import { DeleteConfirmDialog } from '@/components/resources';
 import { ResizableTableProvider, ResizableTableHead, ResizableTableCell, type ResizableColumnConfig } from '@/components/ui/resizable-table';
 import { useTableFiltersAndSort, type ColumnConfig } from '@/hooks/useTableFiltersAndSort';
+import { useColumnVisibility } from '@/hooks/useColumnVisibility';
 
 interface K8sEndpointSlice extends KubernetesResource {
   addressType?: string;
@@ -63,6 +65,7 @@ interface EndpointSlice {
   ports: string;
   serviceName: string;
   age: string;
+  creationTimestamp?: string;
 }
 
 const ENDPOINTSLICES_TABLE_COLUMNS: ResizableColumnConfig[] = [
@@ -74,23 +77,34 @@ const ENDPOINTSLICES_TABLE_COLUMNS: ResizableColumnConfig[] = [
   { id: 'age', defaultWidth: 90, minWidth: 60 },
 ];
 
+const ENDPOINTSLICES_COLUMNS_FOR_VISIBILITY = [
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'addressType', label: 'Address Type' },
+  { id: 'endpoints', label: 'Endpoints' },
+  { id: 'serviceName', label: 'Service' },
+  { id: 'age', label: 'Age' },
+];
+
 export default function EndpointSlices() {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNamespace, setSelectedNamespace] = useState<string>('all');
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; item: EndpointSlice | null; bulk?: boolean }>({ open: false, item: null });
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [pageSize, setPageSize] = useState(10);
   const [pageIndex, setPageIndex] = useState(0);
+  const [showTableFilters, setShowTableFilters] = useState(false);
 
   const { isConnected } = useConnectionStatus();
-  const { data, isLoading, refetch } = useK8sResourceList<K8sEndpointSlice>('endpointslices', undefined, { limit: 5000 });
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useK8sResourceList<K8sEndpointSlice>('endpointslices', undefined, { limit: 5000 });
+  const deleteResource = useDeleteK8sResource('endpointslices');
 
   const endpointslices: EndpointSlice[] = isConnected && data?.items
     ? (data.items as K8sEndpointSlice[]).map((es) => {
         const endpoints = es.endpoints ?? [];
-        const ready = endpoints.filter((e) => e.conditions?.ready !== false).length;
-        const serving = endpoints.filter((e) => e.conditions?.serving !== false).length;
+        const ready = endpoints.filter((e) => e.conditions?.ready === true).length;
+        const serving = endpoints.filter((e) => e.conditions?.serving === true).length;
         const terminating = endpoints.filter((e) => e.conditions?.terminating === true).length;
         const portsStr = (es.ports ?? []).map((p) => `${p.port}/${p.protocol ?? 'TCP'}`).join(', ') || '-';
         return {
@@ -104,6 +118,7 @@ export default function EndpointSlices() {
           ports: portsStr,
           serviceName: es.metadata?.labels?.['kubernetes.io/service-name'] ?? '-',
           age: calculateAge(es.metadata.creationTimestamp),
+          creationTimestamp: es.metadata?.creationTimestamp,
         };
       })
     : [];
@@ -136,7 +151,8 @@ export default function EndpointSlices() {
     { columnId: 'age', getValue: (es) => es.age, sortable: true, filterable: false },
   ], []);
 
-  const { filteredAndSortedItems: filteredSlices, distinctValuesByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: endpointSlicesTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const { filteredAndSortedItems: filteredSlices, distinctValuesByColumn, valueCountsByColumn, columnFilters, setColumnFilter, sortKey, sortOrder, setSort, clearAllFilters, hasActiveFilters } = useTableFiltersAndSort(itemsAfterSearchAndNs, { columns: endpointSlicesTableConfig, defaultSortKey: 'name', defaultSortOrder: 'asc' });
+  const columnVisibility = useColumnVisibility({ tableId: 'endpointslices', columns: ENDPOINTSLICES_COLUMNS_FOR_VISIBILITY, alwaysVisible: ['name'] });
 
   const totalFiltered = filteredSlices.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
@@ -198,45 +214,58 @@ ports: []
   const isAllSelected = filteredSlices.length > 0 && selectedItems.size === filteredSlices.length;
   const isSomeSelected = selectedItems.size > 0 && selectedItems.size < filteredSlices.length;
 
+  const handleDelete = async () => {
+    try {
+      if (deleteDialog.bulk && selectedItems.size > 0) {
+        for (const key of selectedItems) {
+          const [ns, n] = key.split('/');
+          if (n && ns) await deleteResource.mutateAsync({ name: n, namespace: ns });
+        }
+        toast.success(`Deleted ${selectedItems.size} endpoint slice(s)`);
+        setSelectedItems(new Set());
+      } else if (deleteDialog.item) {
+        await deleteResource.mutateAsync({ name: deleteDialog.item.name, namespace: deleteDialog.item.namespace });
+        toast.success('EndpointSlice deleted');
+      }
+      setDeleteDialog({ open: false, item: null });
+      refetch();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Delete failed');
+    }
+  };
+
   return (
     <>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-        {/* Page Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-primary/10">
-              <Network className="h-6 w-6 text-primary" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Endpoint Slices</h1>
-              <p className="text-sm text-muted-foreground">
-                {filteredSlices.length} slices across {namespaces.length - 1} namespaces
-                {!isConnected && (
-                  <span className="ml-2 inline-flex items-center gap-1 text-[hsl(45,93%,47%)]">
-                    <WifiOff className="h-3 w-3" /> Demo mode
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <ResourceExportDropdown
-              items={filteredSlices}
-              selectedKeys={selectedItems}
-              getKey={(es) => `${es.namespace}/${es.name}`}
-              config={endpointSliceExportConfig}
-              selectionLabel={selectedItems.size > 0 ? 'Selected slices' : 'All visible slices'}
-              onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
-            />
-            <Button variant="outline" size="icon" className="h-9 w-9" onClick={() => refetch()} disabled={isLoading}>
-              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            </Button>
-            <Button className="gap-2" onClick={() => setShowCreateWizard(true)}>
-              <Plus className="h-4 w-4" />
-              Create Slice
-            </Button>
-          </div>
-        </div>
+        <ListPageHeader
+          icon={<Network className="h-6 w-6 text-primary" />}
+          title="Endpoint Slices"
+          resourceCount={filteredSlices.length}
+          subtitle={namespaces.length > 1 ? `across ${namespaces.length - 1} namespaces` : undefined}
+          demoMode={!isConnected}
+          isLoading={isLoading}
+          onRefresh={() => refetch()}
+          createLabel="Create Slice"
+          onCreate={() => setShowCreateWizard(true)}
+          actions={
+            <>
+              <ResourceExportDropdown
+                items={filteredSlices}
+                selectedKeys={selectedItems}
+                getKey={(es) => `${es.namespace}/${es.name}`}
+                config={endpointSliceExportConfig}
+                selectionLabel={selectedItems.size > 0 ? 'Selected slices' : 'All visible slices'}
+                onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
+              />
+              {selectedItems.size > 0 && (
+                <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete {selectedItems.size} selected
+                </Button>
+              )}
+            </>
+          }
+        />
 
         {/* Bulk Actions Bar */}
         {selectedItems.size > 0 && (
@@ -259,6 +288,10 @@ ports: []
                 onToast={(msg, type) => (type === 'info' ? toast.info(msg) : toast.success(msg))}
                 triggerLabel={selectedItems.size > 0 ? `Export (${selectedItems.size})` : 'Export'}
               />
+              <Button variant="destructive" size="sm" className="gap-2" onClick={() => setDeleteDialog({ open: true, item: null, bulk: true })}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete selected
+              </Button>
               <Button variant="ghost" size="sm" onClick={() => setSelectedItems(new Set())}>
                 Clear
               </Button>
@@ -274,6 +307,8 @@ ports: []
           <ListPageStatCard size="sm" label="FQDN Slices" value={stats.fqdn} valueClassName="text-cyan-600" selected={columnFilters.addressType?.size === 1 && columnFilters.addressType?.has('FQDN')} onClick={() => setColumnFilter('addressType', new Set(['FQDN']))} className={cn(columnFilters.addressType?.size === 1 && columnFilters.addressType?.has('FQDN') && 'ring-2 ring-primary')} />
         </div>
 
+        <ResourceListTableToolbar
+          globalFilterBar={
         <ResourceCommandBar
           scope={
             <div className="w-full min-w-0">
@@ -311,14 +346,36 @@ ports: []
             <Button variant="link" size="sm" className="text-muted-foreground h-auto p-0" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
           ) : undefined}
         />
-
-        {/* Table */}
-        <Card>
+          }
+          hasActiveFilters={hasActiveFilters}
+          onClearAllFilters={clearAllFilters}
+          showTableFilters={showTableFilters}
+          onToggleTableFilters={() => setShowTableFilters((v) => !v)}
+          columns={ENDPOINTSLICES_COLUMNS_FOR_VISIBILITY}
+          visibleColumns={columnVisibility.visibleColumns}
+          onColumnToggle={columnVisibility.setColumnVisible}
+          footer={
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{totalFiltered > 0 ? `Showing ${start + 1}–${Math.min(start + pageSize, totalFiltered)} of ${totalFiltered}` : 'No endpoint slices'}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button></DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <DropdownMenuItem key={size} onClick={() => { setPageSize(size); setPageIndex(0); }} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <ListPagination hasPrev={safePageIndex > 0} hasNext={start + pageSize < totalFiltered} onPrev={() => setPageIndex((i) => Math.max(0, i - 1))} onNext={() => setPageIndex((i) => Math.min(totalPages - 1, i + 1))} currentPage={safePageIndex + 1} totalPages={Math.max(1, totalPages)} onPageChange={(p) => setPageIndex(Math.max(0, p - 1))} dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+          </div>
+          }
+        >
           <ResizableTableProvider tableId="kubilitics-resizable-table-endpointslices" columnConfig={ENDPOINTSLICES_TABLE_COLUMNS}>
             <div className="border border-border rounded-xl overflow-x-auto bg-card">
               <Table className="table-fixed" style={{ minWidth: 1100 }}>
                 <TableHeader>
-                  <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border/80">
+                  <TableRow className="bg-muted/50 hover:bg-muted/50 border-b-2 border-border">
                     <TableHead className="w-12">
                       <Checkbox checked={isAllSelected} onCheckedChange={toggleAllSelection} aria-label="Select all" className={isSomeSelected ? 'opacity-50' : ''} />
                     </TableHead>
@@ -326,10 +383,10 @@ ports: []
                       <TableColumnHeaderWithFilterAndSort columnId="name" label="Name" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
                     </ResizableTableHead>
                     <ResizableTableHead columnId="namespace">
-                      <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} />
+                      <TableColumnHeaderWithFilterAndSort columnId="namespace" label="Namespace" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
                     </ResizableTableHead>
                     <ResizableTableHead columnId="addressType">
-                      <TableColumnHeaderWithFilterAndSort columnId="addressType" label="Address Type" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable distinctValues={distinctValuesByColumn.addressType ?? []} selectedFilterValues={columnFilters.addressType ?? new Set()} onFilterChange={setColumnFilter} />
+                      <TableColumnHeaderWithFilterAndSort columnId="addressType" label="Address Type" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
                     </ResizableTableHead>
                     <ResizableTableHead columnId="endpoints">
                       <TableColumnHeaderWithFilterAndSort columnId="endpoints" label="Endpoints" sortKey={sortKey} sortOrder={sortOrder} onSort={setSort} filterable={false} distinctValues={[]} selectedFilterValues={new Set()} onFilterChange={() => {}} />
@@ -344,18 +401,40 @@ ports: []
                     </ResizableTableHead>
                     <TableHead className="w-12"></TableHead>
                   </TableRow>
+                  {showTableFilters && (
+                    <TableRow className="bg-muted/30 hover:bg-muted/30 border-b-2 border-border">
+                      <TableCell className="w-12 p-1.5" />
+                      <ResizableTableCell columnId="name" className="p-1.5" />
+                      <ResizableTableCell columnId="namespace" className="p-1.5">
+                        <TableFilterCell columnId="namespace" label="Namespace" distinctValues={distinctValuesByColumn.namespace ?? []} selectedFilterValues={columnFilters.namespace ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.namespace} />
+                      </ResizableTableCell>
+                      <ResizableTableCell columnId="addressType" className="p-1.5">
+                        <TableFilterCell columnId="addressType" label="Address Type" distinctValues={distinctValuesByColumn.addressType ?? []} selectedFilterValues={columnFilters.addressType ?? new Set()} onFilterChange={setColumnFilter} valueCounts={valueCountsByColumn.addressType} />
+                      </ResizableTableCell>
+                      <ResizableTableCell columnId="endpoints" className="p-1.5" />
+                      <TableCell className="p-1.5" />
+                      <TableCell className="p-1.5" />
+                      <TableCell className="p-1.5" />
+                      <TableCell className="p-1.5" />
+                      <ResizableTableCell columnId="serviceName" className="p-1.5" />
+                      <ResizableTableCell columnId="age" className="p-1.5" />
+                      <TableCell className="w-12 p-1.5" />
+                    </TableRow>
+                  )}
                 </TableHeader>
                 <TableBody>
                   {itemsOnPage.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={13} className="h-32 text-center text-muted-foreground">
-                        <div className="flex flex-col items-center gap-2">
-                          <Network className="h-8 w-8 opacity-50" />
-                          <p>No endpoint slices found</p>
-                          {(searchQuery || hasActiveFilters) && (
-                            <Button variant="link" size="sm" onClick={() => { setSearchQuery(''); clearAllFilters(); }}>Clear filters</Button>
-                          )}
-                        </div>
+                      <TableCell colSpan={13} className="h-40 text-center">
+                        <TableEmptyState
+                          icon={<Network className="h-8 w-8" />}
+                          title="No EndpointSlices found"
+                          subtitle={searchQuery || hasActiveFilters ? 'Clear filters to see resources.' : 'EndpointSlices are usually created by Services.'}
+                          hasActiveFilters={!!(searchQuery || hasActiveFilters)}
+                          onClearFilters={() => { setSearchQuery(''); clearAllFilters(); }}
+                          createLabel="Create EndpointSlice"
+                          onCreate={() => setShowCreateWizard(true)}
+                        />
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -371,7 +450,7 @@ ports: []
                         >
                           <TableCell><Checkbox checked={isSelected} onCheckedChange={() => toggleSelection(es)} aria-label={`Select ${es.name}`} /></TableCell>
                           <ResizableTableCell columnId="name"><Link to={`/endpointslices/${es.namespace}/${es.name}`} className="font-medium text-primary hover:underline truncate block">{es.name}</Link></ResizableTableCell>
-                          <ResizableTableCell columnId="namespace"><Badge variant="outline">{es.namespace}</Badge></ResizableTableCell>
+                          <ResizableTableCell columnId="namespace"><NamespaceBadge namespace={es.namespace} /></ResizableTableCell>
                           <ResizableTableCell columnId="addressType"><Badge variant="secondary">{es.addressType}</Badge></ResizableTableCell>
                           <ResizableTableCell columnId="endpoints"><span className="font-mono">{es.endpoints}</span></ResizableTableCell>
                           <TableCell><span className={cn('font-mono', es.ready > 0 ? 'text-[hsl(142,76%,36%)]' : 'text-muted-foreground')}>{es.ready}</span></TableCell>
@@ -381,14 +460,17 @@ ports: []
                           <ResizableTableCell columnId="serviceName">
                             {es.serviceName !== '-' ? <Link to={`/services/${es.namespace}/${es.serviceName}`} className="text-primary hover:underline text-sm truncate block">{es.serviceName}</Link> : <span className="text-muted-foreground">—</span>}
                           </ResizableTableCell>
-                          <ResizableTableCell columnId="age"><span className="text-muted-foreground">{es.age}</span></ResizableTableCell>
+                          <ResizableTableCell columnId="age"><AgeCell age={es.age} timestamp={es.creationTimestamp} /></ResizableTableCell>
                           <TableCell>
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                               <DropdownMenuContent align="end" className="w-48">
                                 <DropdownMenuItem onClick={() => navigate(`/endpointslices/${es.namespace}/${es.name}`)}><ExternalLink className="h-4 w-4 mr-2" />View Details</DropdownMenuItem>
                                 {es.serviceName !== '-' && <DropdownMenuItem onClick={() => navigate(`/services/${es.namespace}/${es.serviceName}`)}><Link2 className="h-4 w-4 mr-2" />View Service</DropdownMenuItem>}
+                                <DropdownMenuSeparator />
                                 <DropdownMenuItem onClick={() => navigate(`/endpointslices/${es.namespace}/${es.name}?tab=yaml`)}><Download className="h-4 w-4 mr-2" />Download YAML</DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleteDialog({ open: true, item: es })}><Trash2 className="h-4 w-4 mr-2" />Delete</DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
                           </TableCell>
@@ -400,25 +482,18 @@ ports: []
               </Table>
             </div>
           </ResizableTableProvider>
-        </Card>
-
-        <div className="pt-4 pb-2 border-t border-border mt-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">{totalFiltered > 0 ? `Showing ${start + 1}–${Math.min(start + pageSize, totalFiltered)} of ${totalFiltered}` : 'No endpoint slices'}</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="gap-2">{pageSize} per page<ChevronDown className="h-4 w-4 opacity-50" /></Button></DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {PAGE_SIZE_OPTIONS.map((size) => (
-                    <DropdownMenuItem key={size} onClick={() => { setPageSize(size); setPageIndex(0); }} className={cn(pageSize === size && 'bg-accent')}>{size} per page</DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <ListPagination hasPrev={safePageIndex > 0} hasNext={start + pageSize < totalFiltered} onPrev={() => setPageIndex((i) => Math.max(0, i - 1))} onNext={() => setPageIndex((i) => Math.min(totalPages - 1, i + 1))} currentPage={safePageIndex + 1} totalPages={Math.max(1, totalPages)} onPageChange={(p) => setPageIndex(Math.max(0, p - 1))} />
-          </div>
-        </div>
+        </ResourceListTableToolbar>
       </motion.div>
+
+      <DeleteConfirmDialog
+        open={deleteDialog.open}
+        onOpenChange={(open) => setDeleteDialog({ open, item: open ? deleteDialog.item : null })}
+        resourceType="EndpointSlice"
+        resourceName={deleteDialog.bulk ? `${selectedItems.size} endpoint slices` : (deleteDialog.item?.name || '')}
+        namespace={deleteDialog.bulk ? undefined : deleteDialog.item?.namespace}
+        onConfirm={handleDelete}
+        requireNameConfirmation={!deleteDialog.bulk}
+      />
 
       {showCreateWizard && (
         <ResourceCreator
