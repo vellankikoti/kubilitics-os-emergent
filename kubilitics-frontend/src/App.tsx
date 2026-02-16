@@ -144,6 +144,7 @@ const MutatingWebhookDetail = lazy(() => import("./pages/MutatingWebhookDetail")
 const ValidatingWebhooks = lazy(() => import("./pages/ValidatingWebhooks"));
 const ValidatingWebhookDetail = lazy(() => import("./pages/ValidatingWebhookDetail"));
 const Settings = lazy(() => import("./pages/Settings"));
+const AuditLog = lazy(() => import("./pages/AuditLog"));
 const Topology = lazy(() => import("./pages/Topology"));
 
 // Analytics Dashboards
@@ -226,6 +227,7 @@ const App = () => (
               <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/audit-log" element={<AuditLog />} />
 
               {/* Analytics Dashboards */}
               <Route path="/analytics" element={<AnalyticsOverview />} />

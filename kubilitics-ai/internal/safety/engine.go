@@ -416,3 +416,80 @@ func (e *Engine) CheckCompliance(ctx context.Context, resourceID string) (bool, 
 	}
 	return e.policyEngine.CheckCompliance(ctx, resourceID)
 }
+
+// ─── Namespace autonomy overrides ────────────────────────────────────────────
+
+// SetNamespaceAutonomyLevel sets a per-namespace autonomy override for a user.
+func (e *Engine) SetNamespaceAutonomyLevel(ctx context.Context, userID, namespace string, level int) error {
+	if e.autonomyController == nil {
+		return fmt.Errorf("autonomy controller not initialized")
+	}
+	type nsLevelSetter interface {
+		SetNamespaceAutonomyLevel(ctx context.Context, userID, namespace string, level autonomy.AutonomyLevel) error
+	}
+	if setter, ok := e.autonomyController.(nsLevelSetter); ok {
+		return setter.SetNamespaceAutonomyLevel(ctx, userID, namespace, autonomy.AutonomyLevel(level))
+	}
+	return fmt.Errorf("autonomy controller does not support namespace overrides")
+}
+
+// ListNamespaceOverrides returns all namespace-level autonomy overrides for a user.
+func (e *Engine) ListNamespaceOverrides(ctx context.Context, userID string) (interface{}, error) {
+	if e.autonomyController == nil {
+		return nil, fmt.Errorf("autonomy controller not initialized")
+	}
+	type nsLister interface {
+		ListNamespaceOverrides(ctx context.Context, userID string) ([]autonomy.NamespaceOverride, error)
+	}
+	if lister, ok := e.autonomyController.(nsLister); ok {
+		return lister.ListNamespaceOverrides(ctx, userID)
+	}
+	return nil, fmt.Errorf("autonomy controller does not support namespace overrides")
+}
+
+// DeleteNamespaceOverride removes a namespace-level autonomy override for a user.
+func (e *Engine) DeleteNamespaceOverride(ctx context.Context, userID, namespace string) error {
+	if e.autonomyController == nil {
+		return fmt.Errorf("autonomy controller not initialized")
+	}
+	type nsDeleter interface {
+		DeleteNamespaceOverride(ctx context.Context, userID, namespace string) error
+	}
+	if deleter, ok := e.autonomyController.(nsDeleter); ok {
+		return deleter.DeleteNamespaceOverride(ctx, userID, namespace)
+	}
+	return fmt.Errorf("autonomy controller does not support namespace overrides")
+}
+
+// ─── Approval management ─────────────────────────────────────────────────────
+
+// ApproveAction marks a pending action as approved by the given user.
+func (e *Engine) ApproveAction(ctx context.Context, userID, actionID string) error {
+	if e.autonomyController == nil {
+		return fmt.Errorf("autonomy controller not initialized")
+	}
+	return e.autonomyController.ApproveAction(ctx, userID, actionID)
+}
+
+// RejectAction marks a pending action as rejected by the given user.
+func (e *Engine) RejectAction(ctx context.Context, userID, actionID string) error {
+	if e.autonomyController == nil {
+		return fmt.Errorf("autonomy controller not initialized")
+	}
+	return e.autonomyController.RejectAction(ctx, userID, actionID)
+}
+
+// ListPendingApprovals returns pending approval requests (optionally filtered by userID).
+func (e *Engine) ListPendingApprovals(ctx context.Context, userID string) (interface{}, error) {
+	if e.autonomyController == nil {
+		return nil, fmt.Errorf("autonomy controller not initialized")
+	}
+	type approvalLister interface {
+		ListPendingApprovals(ctx context.Context, userID string) ([]*autonomy.PendingApproval, error)
+	}
+	if lister, ok := e.autonomyController.(approvalLister); ok {
+		return lister.ListPendingApprovals(ctx, userID)
+	}
+	// Fall back to legacy interface
+	return e.autonomyController.GetApprovalPending(ctx, userID)
+}

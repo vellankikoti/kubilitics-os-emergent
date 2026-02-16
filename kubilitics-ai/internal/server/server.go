@@ -375,6 +375,7 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 		mux.HandleFunc("/api/v1/safety/policies/", s.handleSafetyPolicyByName)
 		mux.HandleFunc("/api/v1/safety/autonomy/", s.handleSafetyAutonomy)
 		mux.HandleFunc("/api/v1/safety/approvals", s.handleSafetyApprovals)
+		mux.HandleFunc("/api/v1/safety/approvals/", s.handleSafetyApprovals)
 	}
 
 	// Analytics endpoints

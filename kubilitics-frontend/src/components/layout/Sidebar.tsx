@@ -32,6 +32,7 @@ import {
   Lock,
   Zap,
   Camera,
+  ClipboardList,
   HardDrive as StorageIcon
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
@@ -576,8 +577,27 @@ export function Sidebar() {
         <SidebarContent counts={counts} isLoading={isLoading} metallbInstalled={metallbInstalled} />
       </div>
 
-      {/* Fixed footer: Settings + Collapse — always visible at bottom */}
+      {/* Fixed footer: Audit Log + Settings + Collapse — always visible at bottom */}
       <div className="shrink-0 px-5 pb-4 pt-2 border-t border-border/60 space-y-1.5">
+        {/* Audit Log — E-PLAT-003 */}
+        <NavLink
+          to="/audit-log"
+          className={({ isActive }) =>
+            cn(
+              "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group border shadow-sm",
+              isActive
+                ? "bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-500/20 border-transparent"
+                : "bg-card text-foreground hover:bg-muted/50 border-transparent hover:border-border/50"
+            )
+          }
+        >
+          {({ isActive }) => (
+            <>
+              <ClipboardList className={cn("h-5 w-5 transition-colors shrink-0", isActive ? "text-white" : "text-muted-foreground group-hover:text-foreground")} />
+              <span className="font-normal text-sm">Audit Log</span>
+            </>
+          )}
+        </NavLink>
         <NavLink
           to="/settings"
           className={cn(
@@ -628,6 +648,7 @@ export function Sidebar() {
 
           <div className="flex-1" />
 
+          <NavItemIconOnly to="/audit-log" icon={ClipboardList} label="Audit Log" iconColor="text-indigo-600 group-hover:text-indigo-700" />
           <NavItemIconOnly to="/settings" icon={Settings} label="Settings" iconColor="text-slate-600 group-hover:text-slate-700" />
           <button
             type="button"

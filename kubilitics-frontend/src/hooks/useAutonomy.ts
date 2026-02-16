@@ -2,13 +2,19 @@
  * useAutonomy — hook for safety engine: autonomy levels, policies, rules.
  *
  * Covers:
- *   GET  /api/v1/safety/rules              - immutable rules
- *   GET  /api/v1/safety/policies           - list policies
- *   POST /api/v1/safety/policies           - create policy
- *   DELETE /api/v1/safety/policies/{name}  - delete policy
- *   GET  /api/v1/safety/autonomy/{user_id} - get autonomy level
- *   POST /api/v1/safety/autonomy/{user_id} - set autonomy level
- *   POST /api/v1/safety/evaluate           - evaluate an action
+ *   GET  /api/v1/safety/rules                                 - immutable rules
+ *   GET  /api/v1/safety/policies                              - list policies
+ *   POST /api/v1/safety/policies                              - create policy
+ *   DELETE /api/v1/safety/policies/{name}                     - delete policy
+ *   GET  /api/v1/safety/autonomy/{user_id}                    - get autonomy level
+ *   POST /api/v1/safety/autonomy/{user_id}                    - set autonomy level
+ *   GET  /api/v1/safety/autonomy/{user_id}/namespaces         - list ns overrides
+ *   POST /api/v1/safety/autonomy/{user_id}/namespaces         - upsert ns override
+ *   DELETE /api/v1/safety/autonomy/{user_id}/namespaces/{ns}  - delete ns override
+ *   GET  /api/v1/safety/approvals                             - list approvals
+ *   POST /api/v1/safety/approvals/{id}/approve                - approve action
+ *   POST /api/v1/safety/approvals/{id}/reject                 - reject action
+ *   POST /api/v1/safety/evaluate                              - evaluate an action
  */
 
 import { useState, useCallback, useEffect } from 'react';
@@ -281,4 +287,155 @@ export function useSafetyEvaluate() {
   }, []);
 
   return { result, evaluating, error, evaluate };
+}
+
+// ─── Namespace overrides ──────────────────────────────────────────────────────
+
+export interface NamespaceOverride {
+  user_id: string;
+  namespace: string;
+  level: number;
+  updated_at: string;
+}
+
+export function useNamespaceOverrides(userID = 'default') {
+  const [overrides, setOverrides] = useState<NamespaceOverride[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await safetyGet<{ overrides: NamespaceOverride[] }>(
+        `/api/v1/safety/autonomy/${encodeURIComponent(userID)}/namespaces`,
+      );
+      setOverrides(Array.isArray(data.overrides) ? data.overrides : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [userID]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const upsert = useCallback(async (namespace: string, level: number) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await safetyPost(`/api/v1/safety/autonomy/${encodeURIComponent(userID)}/namespaces`, {
+        namespace,
+        level,
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }, [userID, load]);
+
+  const remove = useCallback(async (namespace: string) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await fetch(`${AI_BASE_URL}/api/v1/safety/autonomy/${encodeURIComponent(userID)}/namespaces/${encodeURIComponent(namespace)}`, {
+        method: 'DELETE',
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }, [userID, load]);
+
+  return { overrides, loading, error, saving, upsert, remove, reload: load };
+}
+
+// ─── Approvals ────────────────────────────────────────────────────────────────
+
+export interface PendingApproval {
+  id: string;
+  user_id: string;
+  operation: string;
+  namespace?: string;
+  resource_id?: string;
+  description: string;
+  risk_level: string;
+  status: 'pending' | 'approved' | 'rejected';
+  created_at: string;
+  resolved_at?: string;
+  resolved_by?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export function useApprovals(userID = 'default', autoRefreshMs = 15_000) {
+  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [acting, setActing] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const url = userID
+        ? `/api/v1/safety/approvals?user_id=${encodeURIComponent(userID)}`
+        : '/api/v1/safety/approvals';
+      const data = await safetyGet<{ approvals: PendingApproval[] }>(url);
+      const list = Array.isArray(data.approvals) ? data.approvals : [];
+      setApprovals(list);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [userID]);
+
+  useEffect(() => {
+    load();
+    if (autoRefreshMs > 0) {
+      const id = setInterval(load, autoRefreshMs);
+      return () => clearInterval(id);
+    }
+  }, [load, autoRefreshMs]);
+
+  const approve = useCallback(async (actionID: string) => {
+    setActing(true);
+    setError(null);
+    try {
+      await safetyPost(
+        `/api/v1/safety/approvals/${encodeURIComponent(actionID)}/approve?user_id=${encodeURIComponent(userID)}`,
+        {},
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActing(false);
+    }
+  }, [userID, load]);
+
+  const reject = useCallback(async (actionID: string) => {
+    setActing(true);
+    setError(null);
+    try {
+      await safetyPost(
+        `/api/v1/safety/approvals/${encodeURIComponent(actionID)}/reject?user_id=${encodeURIComponent(userID)}`,
+        {},
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActing(false);
+    }
+  }, [userID, load]);
+
+  const pendingCount = approvals.filter(a => a.status === 'pending').length;
+
+  return { approvals, pendingCount, loading, error, acting, approve, reject, reload: load };
 }

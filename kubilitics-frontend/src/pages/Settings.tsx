@@ -19,6 +19,14 @@ import {
   Eye,
   EyeOff,
   AlertCircle,
+  ShieldCheck,
+  Zap,
+  Plus,
+  Trash2,
+  CheckCircle,
+  XCircle,
+  Clock,
+  RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -39,6 +47,7 @@ import {
   getAIInfo,
   type LLMProviderConfig,
 } from '@/services/aiService';
+import { useAutonomyLevel, useNamespaceOverrides, useApprovals, type PendingApproval } from '@/hooks/useAutonomy';
 
 interface UserPreferences {
   theme: 'light' | 'dark' | 'system';
@@ -71,6 +80,410 @@ const AI_PROVIDER_OPTIONS = [
   { value: 'ollama', label: 'Ollama (Local)' },
   { value: 'custom', label: 'Custom (OpenAI-compatible)' },
 ] as const;
+
+// ─── Autonomy level config ────────────────────────────────────────────────────
+
+const AUTONOMY_LEVELS = [
+  {
+    value: 1,
+    name: 'Observe',
+    label: 'Read-only',
+    description: 'AI can read cluster state only. No actions, no recommendations executed.',
+    color: 'text-slate-600',
+    bg: 'bg-slate-100',
+    border: 'border-slate-200',
+    dot: 'bg-slate-400',
+  },
+  {
+    value: 2,
+    name: 'Recommend',
+    label: 'Suggest only',
+    description: 'AI suggests actions. All executions require manual operator approval.',
+    color: 'text-blue-600',
+    bg: 'bg-blue-50',
+    border: 'border-blue-200',
+    dot: 'bg-blue-500',
+  },
+  {
+    value: 3,
+    name: 'Propose',
+    label: 'Approve before act',
+    description: 'AI proposes actions queued for human approval. Approved actions auto-execute.',
+    color: 'text-indigo-600',
+    bg: 'bg-indigo-50',
+    border: 'border-indigo-200',
+    dot: 'bg-indigo-500',
+  },
+  {
+    value: 4,
+    name: 'Act with Guard',
+    label: 'Auto-act on low risk',
+    description: 'Low-risk actions (restart, scale) run automatically. High-risk require approval.',
+    color: 'text-amber-600',
+    bg: 'bg-amber-50',
+    border: 'border-amber-200',
+    dot: 'bg-amber-500',
+  },
+  {
+    value: 5,
+    name: 'Full Autonomous',
+    label: 'All actions auto',
+    description: 'AI executes all permitted actions automatically. Safety policies still enforced.',
+    color: 'text-rose-600',
+    bg: 'bg-rose-50',
+    border: 'border-rose-200',
+    dot: 'bg-rose-500',
+  },
+] as const;
+
+const RISK_BADGE: Record<string, string> = {
+  low: 'bg-emerald-100 text-emerald-700',
+  medium: 'bg-amber-100 text-amber-700',
+  high: 'bg-red-100 text-red-700',
+};
+
+function ApprovalRow({ approval, onApprove, onReject, acting }: {
+  approval: PendingApproval;
+  onApprove: (id: string) => void;
+  onReject: (id: string) => void;
+  acting: boolean;
+}) {
+  const isPending = approval.status === 'pending';
+  return (
+    <div className={`rounded-xl border p-4 flex flex-col gap-3 sm:flex-row sm:items-start ${
+      isPending ? 'border-amber-200 bg-amber-50/40' : 'border-slate-200 bg-slate-50/40 opacity-70'
+    }`}>
+      <div className="flex-1 min-w-0 space-y-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-semibold text-slate-800">{approval.operation}</span>
+          {approval.namespace && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-mono">{approval.namespace}</span>
+          )}
+          {approval.risk_level && (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${RISK_BADGE[approval.risk_level] ?? 'bg-slate-100 text-slate-600'}`}>
+              {approval.risk_level}
+            </span>
+          )}
+          {!isPending && (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+              approval.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+            }`}>
+              {approval.status}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">{approval.description}</p>
+        {approval.resource_id && (
+          <p className="text-xs text-slate-500 font-mono">{approval.resource_id}</p>
+        )}
+        <p className="text-[10px] text-slate-400 flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          {new Date(approval.created_at).toLocaleString()}
+          {approval.resolved_by && ` · resolved by ${approval.resolved_by}`}
+        </p>
+      </div>
+      {isPending && (
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5 h-8 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+            onClick={() => onApprove(approval.id)}
+            disabled={acting}
+          >
+            <CheckCircle className="h-3.5 w-3.5" />
+            Approve
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5 h-8 border-red-300 text-red-700 hover:bg-red-50"
+            onClick={() => onReject(approval.id)}
+            disabled={acting}
+          >
+            <XCircle className="h-3.5 w-3.5" />
+            Reject
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AutonomySettingsSection() {
+  const {
+    level: globalLevel,
+    loading: levelLoading,
+    saving: levelSaving,
+    setLevel,
+  } = useAutonomyLevel('default');
+
+  const {
+    overrides,
+    loading: overridesLoading,
+    saving: overridesSaving,
+    upsert: upsertOverride,
+    remove: removeOverride,
+  } = useNamespaceOverrides('default');
+
+  const {
+    approvals,
+    pendingCount,
+    loading: approvalsLoading,
+    acting,
+    approve,
+    reject,
+    reload: reloadApprovals,
+  } = useApprovals('default', 15_000);
+
+  // Namespace override form
+  const [nsForm, setNsForm] = useState({ namespace: '', level: 2 });
+  const [showNsForm, setShowNsForm] = useState(false);
+
+  const handleSetLevel = async (v: number) => {
+    await setLevel(v);
+    toast.success(`Autonomy level set to ${AUTONOMY_LEVELS[v - 1]?.name ?? v}`);
+  };
+
+  const handleUpsertNs = async () => {
+    if (!nsForm.namespace.trim()) return;
+    await upsertOverride(nsForm.namespace.trim(), nsForm.level);
+    setNsForm({ namespace: '', level: 2 });
+    setShowNsForm(false);
+    toast.success(`Override set for namespace "${nsForm.namespace.trim()}"`);
+  };
+
+  const handleRemoveNs = async (ns: string) => {
+    await removeOverride(ns);
+    toast.success(`Override removed for "${ns}"`);
+  };
+
+  const handleApprove = async (id: string) => {
+    await approve(id);
+    toast.success('Action approved');
+  };
+
+  const handleReject = async (id: string) => {
+    await reject(id);
+    toast.success('Action rejected');
+  };
+
+  const currentLevel = AUTONOMY_LEVELS.find(l => l.value === globalLevel) ?? AUTONOMY_LEVELS[1];
+
+  return (
+    <Card id="autonomy">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ShieldCheck className="h-5 w-5 text-indigo-600" />
+          AI Autonomy Control
+          {pendingCount > 0 && (
+            <span className="ml-auto inline-flex items-center gap-1 text-xs font-semibold bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">
+              <Clock className="h-3 w-3" />
+              {pendingCount} pending
+            </span>
+          )}
+        </CardTitle>
+        <CardDescription>
+          Control how autonomously the AI can act on your cluster. Lower levels require more human approval.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+
+        {/* Global level selector */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm font-semibold">Global Autonomy Level</Label>
+            {levelLoading && <span className="text-xs text-muted-foreground">Loading…</span>}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+            {AUTONOMY_LEVELS.map((l) => (
+              <button
+                key={l.value}
+                onClick={() => handleSetLevel(l.value)}
+                disabled={levelSaving}
+                className={`relative flex flex-col items-start gap-1 rounded-xl border-2 p-3 text-left transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:opacity-60 ${
+                  globalLevel === l.value
+                    ? `${l.border} ${l.bg} ring-2 ring-offset-1 ring-indigo-300/60 shadow-sm`
+                    : 'border-slate-100 bg-white hover:bg-slate-50 hover:border-slate-200'
+                }`}
+              >
+                <span className={`flex items-center gap-1.5 text-xs font-bold ${globalLevel === l.value ? l.color : 'text-slate-600'}`}>
+                  <span className={`w-2 h-2 rounded-full ${l.dot}`} />
+                  {l.name}
+                </span>
+                <span className="text-[10px] text-muted-foreground leading-tight">{l.label}</span>
+                {globalLevel === l.value && (
+                  <span className="absolute top-1.5 right-1.5">
+                    <CheckCircle className="h-3 w-3 text-indigo-500" />
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <div className={`rounded-xl border p-3 text-sm flex gap-2 items-start ${currentLevel.bg} ${currentLevel.border}`}>
+            <Zap className={`h-4 w-4 mt-0.5 shrink-0 ${currentLevel.color}`} />
+            <div>
+              <span className={`font-semibold ${currentLevel.color}`}>{currentLevel.name}:</span>{' '}
+              <span className="text-muted-foreground">{currentLevel.description}</span>
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* Namespace overrides */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-sm font-semibold">Namespace Overrides</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Set a different autonomy level for specific namespaces (overrides the global setting)
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5 h-8"
+              onClick={() => setShowNsForm(v => !v)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add Override
+            </Button>
+          </div>
+
+          {showNsForm && (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 flex flex-col gap-3">
+              <div className="flex gap-3 items-end flex-wrap">
+                <div className="flex-1 min-w-[160px] space-y-1">
+                  <Label className="text-xs font-semibold">Namespace</Label>
+                  <Input
+                    placeholder="e.g. production"
+                    value={nsForm.namespace}
+                    onChange={(e) => setNsForm(f => ({ ...f, namespace: e.target.value }))}
+                    className="h-8 text-sm font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold">Level</Label>
+                  <Select
+                    value={String(nsForm.level)}
+                    onValueChange={(v) => setNsForm(f => ({ ...f, level: Number(v) }))}
+                  >
+                    <SelectTrigger className="w-[180px] h-8 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {AUTONOMY_LEVELS.map(l => (
+                        <SelectItem key={l.value} value={String(l.value)}>
+                          {l.value} — {l.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  size="sm"
+                  className="h-8 gap-1.5"
+                  onClick={handleUpsertNs}
+                  disabled={overridesSaving || !nsForm.namespace.trim()}
+                >
+                  <CheckCircle className="h-3.5 w-3.5" />
+                  Save
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {overridesLoading ? (
+            <p className="text-xs text-muted-foreground">Loading overrides…</p>
+          ) : overrides.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">No namespace overrides configured. All namespaces use the global level.</p>
+          ) : (
+            <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 overflow-hidden">
+              {overrides.map((ovr) => {
+                const lvl = AUTONOMY_LEVELS.find(l => l.value === ovr.level);
+                return (
+                  <div key={ovr.namespace} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
+                    <span className="font-mono text-sm font-semibold text-slate-800 flex-1">{ovr.namespace}</span>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${lvl?.bg ?? 'bg-slate-100'} ${lvl?.color ?? 'text-slate-600'} border ${lvl?.border ?? 'border-slate-200'}`}>
+                      {lvl?.name ?? ovr.level}
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      {new Date(ovr.updated_at).toLocaleDateString()}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 text-slate-400 hover:text-red-500"
+                      onClick={() => handleRemoveNs(ovr.namespace)}
+                      disabled={overridesSaving}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <Separator />
+
+        {/* Pending approvals */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-sm font-semibold flex items-center gap-2">
+                Pending AI Actions
+                {pendingCount > 0 && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] font-black bg-amber-500 text-white px-1.5 py-0.5 rounded-full">
+                    {pendingCount}
+                  </span>
+                )}
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Actions proposed by the AI that require your approval to execute
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="gap-1.5 h-8 text-slate-500"
+              onClick={reloadApprovals}
+              disabled={approvalsLoading}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${approvalsLoading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
+
+          {approvalsLoading && approvals.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Loading…</p>
+          ) : approvals.length === 0 ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-6 flex flex-col items-center gap-2 text-center">
+              <CheckCircle2 className="h-8 w-8 text-emerald-500 opacity-60" />
+              <p className="text-sm font-medium text-slate-600">No pending actions</p>
+              <p className="text-xs text-muted-foreground">All AI actions have been resolved</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {approvals.map(approval => (
+                <ApprovalRow
+                  key={approval.id}
+                  approval={approval}
+                  onApprove={handleApprove}
+                  onReject={handleReject}
+                  acting={acting}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Settings() {
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
@@ -612,6 +1025,9 @@ export default function Settings() {
           </div>
         </CardContent>
       </Card>
+
+      {/* AI Autonomy — E-PLAT-003 */}
+      <AutonomySettingsSection />
 
       {/* Save Reminder */}
       {hasChanges && (

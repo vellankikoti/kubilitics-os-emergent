@@ -42,6 +42,7 @@ import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useAIStatus } from '@/hooks/useAIStatus';
 import { useAINotifications } from '@/hooks/useAINotifications';
+import { useApprovals } from '@/hooks/useAutonomy';
 
 const statusColors: Record<string, string> = {
   healthy: 'bg-emerald-500',
@@ -101,6 +102,8 @@ export function Header() {
   const aiStatus = useAIStatus();
   // E-PLAT-005: Proactive AI anomaly notifications
   useAINotifications();
+  // E-PLAT-003: Real pending AI action approval count
+  const { pendingCount } = useApprovals('default', 30_000);
 
   const handleWizardSubmit = (yaml: string) => {
     console.log('Created resource:', yaml);
@@ -349,18 +352,34 @@ export function Header() {
                   </TooltipContent>
                 </Tooltip>
 
-                {/* Notifications — labelled, same height as other actions */}
+                {/* Notifications — pending AI actions badge (E-PLAT-003) */}
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button className={cn(ICON_BTN, 'px-4')} aria-label="Notifications">
+                    <button
+                      className={cn(ICON_BTN, 'px-4')}
+                      aria-label={pendingCount > 0 ? `${pendingCount} pending AI actions` : 'Notifications'}
+                      onClick={() => navigate('/settings?tab=autonomy')}
+                    >
                       <div className="relative shrink-0 flex items-center justify-center h-9 w-9 rounded-xl bg-slate-100 group-hover:bg-white transition-colors">
                         <Bell className="h-4 w-4" />
-                        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500 border-2 border-white shadow-sm" />
+                        {pendingCount > 0 ? (
+                          <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full bg-amber-500 border-2 border-white shadow-sm flex items-center justify-center text-[9px] font-black text-white px-0.5">
+                            {pendingCount > 9 ? '9+' : pendingCount}
+                          </span>
+                        ) : (
+                          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500 border-2 border-white shadow-sm" />
+                        )}
                       </div>
-                      <span className="hidden xl:inline text-sm font-bold tracking-tight">Updates</span>
+                      <span className="hidden xl:inline text-sm font-bold tracking-tight">
+                        {pendingCount > 0 ? `${pendingCount} Pending` : 'Updates'}
+                      </span>
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent side="bottom" sideOffset={8}>System Notifications</TooltipContent>
+                  <TooltipContent side="bottom" sideOffset={8}>
+                    {pendingCount > 0
+                      ? `${pendingCount} AI action${pendingCount > 1 ? 's' : ''} awaiting approval`
+                      : 'System Notifications'}
+                  </TooltipContent>
                 </Tooltip>
 
                 {/* Profile — avatar + label + chevron, real account control */}
