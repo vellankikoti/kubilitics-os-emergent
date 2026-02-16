@@ -160,11 +160,11 @@ export function Header() {
             >
               <div className="relative group/logo">
                 <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-                <div className="relative flex items-center justify-center w-[52px] h-[52px] rounded-2xl bg-slate-900 shadow-2xl shadow-slate-900/20 group-hover:scale-105 group-hover:shadow-primary/25 transition-all duration-500">
+                <div className="relative flex items-center justify-center w-[52px] h-[52px] rounded-2xl bg-primary shadow-2xl shadow-primary/20 group-hover:scale-105 transition-all duration-500">
                   <KubernetesLogo size={32} className="text-white group-hover:rotate-12 transition-transform duration-500" />
                 </div>
               </div>
-              <span className="text-2xl font-black tracking-[-0.03em] text-slate-900 select-none group-hover:text-primary transition-colors">
+              <span className="text-2xl font-black tracking-[-0.03em] text-primary select-none transition-colors">
                 Kubilitics
               </span>
             </button>
@@ -258,6 +258,7 @@ export function Header() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
+                      data-testid="shell-trigger"
                       onClick={() => setShellOpen(true)}
                       disabled={!activeCluster}
                       className={FEATURE_BTN}
@@ -311,8 +312,8 @@ export function Header() {
                         aiStatus.status === 'active'
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800'
                           : aiStatus.status === 'unconfigured'
-                          ? 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200 dark:bg-slate-800/40 dark:text-slate-400 dark:border-slate-700'
-                          : 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800'
+                            ? 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200 dark:bg-slate-800/40 dark:text-slate-400 dark:border-slate-700'
+                            : 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800'
                       )}
                       aria-label={`AI status: ${aiStatus.status}`}
                       onClick={() => navigate('/settings')}
@@ -323,10 +324,10 @@ export function Header() {
                           aiStatus.checking
                             ? 'bg-slate-300 animate-pulse'
                             : aiStatus.status === 'active'
-                            ? 'bg-emerald-500'
-                            : aiStatus.status === 'unconfigured'
-                            ? 'bg-slate-400'
-                            : 'bg-red-500'
+                              ? 'bg-emerald-500'
+                              : aiStatus.status === 'unconfigured'
+                                ? 'bg-slate-400'
+                                : 'bg-red-500'
                         )}
                       />
                       <Zap className="h-3 w-3 shrink-0" />
@@ -334,8 +335,8 @@ export function Header() {
                         {aiStatus.status === 'active'
                           ? 'AI Active'
                           : aiStatus.status === 'unconfigured'
-                          ? 'AI Setup'
-                          : 'AI Off'}
+                            ? 'AI Setup'
+                            : 'AI Off'}
                       </span>
                     </button>
                   </TooltipTrigger>
@@ -343,8 +344,8 @@ export function Header() {
                     {aiStatus.status === 'active'
                       ? `AI Active — ${aiStatus.provider ?? 'LLM'} ${aiStatus.model ? `(${aiStatus.model})` : ''}`
                       : aiStatus.status === 'unconfigured'
-                      ? 'AI not configured — click to set up in Settings'
-                      : `AI unavailable${aiStatus.errorMessage ? `: ${aiStatus.errorMessage}` : ''}`}
+                        ? 'AI not configured — click to set up in Settings'
+                        : `AI unavailable${aiStatus.errorMessage ? `: ${aiStatus.errorMessage}` : ''}`}
                   </TooltipContent>
                 </Tooltip>
 
@@ -368,22 +369,22 @@ export function Header() {
                     <button
                       className={cn(
                         'h-12 pl-2 pr-4 rounded-2xl',
-                        'inline-flex items-center gap-3',
-                        'bg-slate-900 text-white shadow-xl shadow-slate-900/10 hover:shadow-slate-900/20',
+                        'inline-flex items-center gap-3 group',
+                        'bg-white border border-slate-200 shadow-sm hover:shadow-md hover:border-primary/20',
                         'hover:translate-y-[-1px] transition-all duration-300 ease-out',
                         'active:scale-[0.98]',
                         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20'
                       )}
                       aria-label="User menu"
                     >
-                      <Avatar className="h-8 w-8 shrink-0 rounded-xl border border-white/20">
+                      <Avatar className="h-9 w-9 shrink-0 rounded-[0.9rem] border border-slate-100 shadow-sm">
                         <AvatarImage src="" />
-                        <AvatarFallback className="bg-white/10 text-[10px] font-black text-white uppercase">
+                        <AvatarFallback className="bg-primary/5 text-[10px] font-black text-primary uppercase">
                           AD
                         </AvatarFallback>
                       </Avatar>
-                      <span className="text-xs font-black tracking-widest hidden sm:inline uppercase">Admin</span>
-                      <ChevronDown className="h-4 w-4 text-white/40 shrink-0" />
+                      <span className="text-xs font-black tracking-widest hidden sm:inline uppercase text-slate-700 group-hover:text-primary transition-colors">Admin</span>
+                      <ChevronDown className="h-4 w-4 text-slate-400 shrink-0 group-hover:text-primary transition-colors" />
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-56">

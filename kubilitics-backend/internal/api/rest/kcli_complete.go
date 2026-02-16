@@ -44,6 +44,10 @@ func (h *Handler) GetKCLIComplete(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Cluster has no kubeconfig path")
 		return
 	}
+	if !h.allowKCLIRate(resolvedID, "complete") {
+		respondError(w, http.StatusTooManyRequests, "kcli completion rate limit exceeded")
+		return
+	}
 
 	line := r.URL.Query().Get("line")
 	if strings.TrimSpace(line) == "" {

@@ -17,6 +17,8 @@ import (
 	"github.com/creack/pty"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/kubilitics/kubilitics-backend/internal/pkg/audit"
+	"github.com/kubilitics/kubilitics-backend/internal/pkg/logger"
 	"github.com/kubilitics/kubilitics-backend/internal/pkg/validate"
 )
 
@@ -24,6 +26,8 @@ import (
 // mode=query can be: ui (default) or shell.
 // Protocol is identical to pod exec/shell stream: stdin, resize, stdout/stderr(base64), exit, error.
 func (h *Handler) GetKCLIStream(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	requestID := logger.FromContext(r.Context())
 	vars := mux.Vars(r)
 	clusterID := vars["clusterId"]
 	if !validate.ClusterID(clusterID) {
@@ -44,6 +48,24 @@ func (h *Handler) GetKCLIStream(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Cluster has no kubeconfig path")
 		return
 	}
+	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+	if mode == "" {
+		mode = "ui"
+	}
+	if mode == "shell" && !h.isKCLIShellModeAllowed() {
+		respondError(w, http.StatusForbidden, "kcli shell mode is disabled by server policy")
+		return
+	}
+	if !h.allowKCLIRate(resolvedID, "stream") {
+		respondError(w, http.StatusTooManyRequests, "kcli stream rate limit exceeded")
+		return
+	}
+	releaseStreamSlot, ok := h.acquireKCLIStreamSlot(resolvedID)
+	if !ok {
+		respondError(w, http.StatusTooManyRequests, "too many concurrent kcli streams for this cluster")
+		return
+	}
+	defer releaseStreamSlot()
 
 	conn, err := shellStreamUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -51,10 +73,6 @@ func (h *Handler) GetKCLIStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
-	if mode == "" {
-		mode = "ui"
-	}
 	log.Printf(
 		"kcli stream: connected requestedCluster=%s resolvedCluster=%s context=%s mode=%s",
 		clusterID,
@@ -62,15 +80,18 @@ func (h *Handler) GetKCLIStream(w http.ResponseWriter, r *http.Request) {
 		cluster.Context,
 		mode,
 	)
+	audit.LogCommand(requestID, resolvedID, "kcli_stream", "mode="+mode, "success", "connected", 0, time.Since(start))
 
 	cmd, err := h.makeKCLIStreamCommand(r.Context(), cluster.Context, cluster.KubeconfigPath, mode)
 	if err != nil {
+		audit.LogCommand(requestID, resolvedID, "kcli_stream", "mode="+mode, "failure", err.Error(), -1, time.Since(start))
 		_ = conn.WriteJSON(wsOutMessage{T: wsMsgError, D: err.Error()})
 		return
 	}
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
+		audit.LogCommand(requestID, resolvedID, "kcli_stream", "mode="+mode, "failure", err.Error(), -1, time.Since(start))
 		_ = conn.WriteJSON(wsOutMessage{T: wsMsgError, D: "failed to start kcli stream: " + err.Error()})
 		return
 	}
@@ -145,10 +166,13 @@ func (h *Handler) GetKCLIStream(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		err := cmd.Wait()
 		if err != nil && ctx.Err() == nil {
+			audit.LogCommand(requestID, resolvedID, "kcli_stream", "mode="+mode, "failure", err.Error(), -1, time.Since(start))
 			select {
 			case outChan <- wsOutMessage{T: wsMsgError, D: "kcli stream exited: " + err.Error()}:
 			default:
 			}
+		} else {
+			audit.LogCommand(requestID, resolvedID, "kcli_stream", "mode="+mode, "success", "exited", 0, time.Since(start))
 		}
 		closeExecDone()
 		select {

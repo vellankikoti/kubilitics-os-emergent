@@ -1189,8 +1189,13 @@ export async function postKCLIExec(
   args: string[],
   force = false
 ): Promise<KCLIExecResult> {
+  const headers: Record<string, string> = {};
+  if (force) {
+    headers['X-Confirm-Destructive'] = 'true';
+  }
   return backendRequest<KCLIExecResult>(baseUrl, `clusters/${encodeURIComponent(clusterId)}/kcli/exec`, {
     method: 'POST',
+    headers,
     body: JSON.stringify({ args, force }),
   });
 }
@@ -1207,8 +1212,12 @@ export interface ShellStatusResult {
   context: string;
   namespace: string;
   kcliAvailable: boolean;
+  kcliShellModeAllowed: boolean;
   aiEnabled: boolean;
 }
+
+/** Response from GET /api/v1/clusters/{clusterId}/kcli/tui/state */
+export interface KCLITUIStateResult extends ShellStatusResult {}
 
 /**
  * GET /api/v1/clusters/{clusterId}/shell/complete?line=... — IDE-style kubectl completions (optional for dropdown).
@@ -1232,6 +1241,17 @@ export async function getShellStatus(
 ): Promise<ShellStatusResult> {
   const path = `clusters/${encodeURIComponent(clusterId)}/shell/status`;
   return backendRequest<ShellStatusResult>(baseUrl, path);
+}
+
+/**
+ * GET /api/v1/clusters/{clusterId}/kcli/tui/state — context + namespace + capability metadata for kcli shell panel.
+ */
+export async function getKCLITUIState(
+  baseUrl: string,
+  clusterId: string
+): Promise<KCLITUIStateResult> {
+  const path = `clusters/${encodeURIComponent(clusterId)}/kcli/tui/state`;
+  return backendRequest<KCLITUIStateResult>(baseUrl, path);
 }
 
 /**
@@ -1317,6 +1337,8 @@ export function createBackendApiClient(baseUrl: string) {
       postShellCommand(baseUrl, clusterId, command),
     getShellStatus: (clusterId: string) =>
       getShellStatus(baseUrl, clusterId),
+    getKCLITUIState: (clusterId: string) =>
+      getKCLITUIState(baseUrl, clusterId),
     getShellComplete: (clusterId: string, line: string) =>
       getShellComplete(baseUrl, clusterId, line),
     getKCLIComplete: (clusterId: string, line: string) =>

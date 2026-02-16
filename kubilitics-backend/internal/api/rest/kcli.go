@@ -14,14 +14,19 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/kubilitics/kubilitics-backend/internal/pkg/audit"
+	"github.com/kubilitics/kubilitics-backend/internal/pkg/logger"
 	"github.com/kubilitics/kubilitics-backend/internal/pkg/validate"
 )
 
 const kcliExecTimeout = 90 * time.Second
+const confirmDestructiveHeader = "X-Confirm-Destructive"
 
 // PostKCLIExec handles POST /clusters/{clusterId}/kcli/exec
 // Body: {"args":["get","pods","-A"],"force":false}
 func (h *Handler) PostKCLIExec(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	requestID := logger.FromContext(r.Context())
 	vars := mux.Vars(r)
 	clusterID := vars["clusterId"]
 	if !validate.ClusterID(clusterID) {
@@ -42,6 +47,10 @@ func (h *Handler) PostKCLIExec(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Cluster has no kubeconfig path")
 		return
 	}
+	if !h.allowKCLIRate(resolvedID, "exec") {
+		respondError(w, http.StatusTooManyRequests, "kcli exec rate limit exceeded")
+		return
+	}
 
 	var req struct {
 		Args  []string `json:"args"`
@@ -55,11 +64,14 @@ func (h *Handler) PostKCLIExec(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "args are required")
 		return
 	}
-	for _, a := range req.Args {
-		if strings.TrimSpace(a) == "" {
-			respondError(w, http.StatusBadRequest, "args cannot contain empty values")
-			return
-		}
+	args, mutating, err := validateKCLIArgs(req.Args, req.Force)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if mutating && strings.TrimSpace(r.Header.Get(confirmDestructiveHeader)) == "" {
+		respondError(w, http.StatusBadRequest, "mutating kcli commands require X-Confirm-Destructive header")
+		return
 	}
 
 	kcliBin, err := resolveKCLIBinary()
@@ -68,7 +80,7 @@ func (h *Handler) PostKCLIExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args := append([]string{}, req.Args...)
+	args = append([]string{}, args...)
 	if cluster.Context != "" && !hasFlag(args, "--context") {
 		args = append([]string{"--context", cluster.Context}, args...)
 	}
@@ -87,8 +99,10 @@ func (h *Handler) PostKCLIExec(w http.ResponseWriter, r *http.Request) {
 
 	err = cmd.Run()
 	exitCode := 0
+	auditCommand := renderAuditCommand(args)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
+			audit.LogCommand(requestID, resolvedID, "kcli_exec", auditCommand, "failure", "timeout", 124, time.Since(start))
 			respondError(w, http.StatusGatewayTimeout, "kcli command timed out")
 			return
 		}
@@ -96,10 +110,18 @@ func (h *Handler) PostKCLIExec(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else {
+			audit.LogCommand(requestID, resolvedID, "kcli_exec", auditCommand, "failure", err.Error(), -1, time.Since(start))
 			respondError(w, http.StatusInternalServerError, "Failed to run kcli: "+err.Error())
 			return
 		}
 	}
+	outcome := "success"
+	msg := ""
+	if exitCode != 0 {
+		outcome = "failure"
+		msg = "non-zero exit"
+	}
+	audit.LogCommand(requestID, resolvedID, "kcli_exec", auditCommand, outcome, msg, exitCode, time.Since(start))
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"stdout":   stdout.String(),

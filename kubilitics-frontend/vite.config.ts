@@ -48,11 +48,14 @@ export default defineConfig(({ mode }) => ({
     sourcemap: mode !== "production",
     rollupOptions: {
       output: {
-        manualChunks: {
-          "vendor-react": ["react", "react-dom", "react-router-dom"],
-          "vendor-query": ["@tanstack/react-query"],
-          "vendor-graph": ["cytoscape", "cytoscape-dagre", "cytoscape-cola", "cytoscape-elk", "elkjs"],
-          "vendor-ui": ["@radix-ui/react-dialog", "@radix-ui/react-tabs"],
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('lucide-react')) return 'vendor-icons';
+            if (id.includes('framer-motion')) return 'vendor-animation';
+            if (id.includes('@radix-ui')) return 'vendor-ui';
+            if (id.includes('cytoscape') || id.includes('elkjs')) return 'vendor-graph';
+            return 'vendor';
+          }
         },
       },
     },

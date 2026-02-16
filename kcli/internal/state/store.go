@@ -11,12 +11,14 @@ import (
 const (
 	stateDirName  = ".kcli"
 	stateFileName = "state.json"
-	maxRecent     = 12
+	maxRecent     = 10
 )
 
 type Store struct {
 	LastContext        string              `json:"lastContext,omitempty"`
 	RecentContexts     []string            `json:"recentContexts,omitempty"`
+	LastNamespace      string              `json:"lastNamespace,omitempty"`
+	RecentNamespaces   []string            `json:"recentNamespaces,omitempty"`
 	Favorites          []string            `json:"favorites,omitempty"`
 	ContextGroups      map[string][]string `json:"contextGroups,omitempty"`
 	ActiveContextGroup string              `json:"activeContextGroup,omitempty"`
@@ -73,6 +75,13 @@ func (s *Store) MarkContextSwitched(previous, current string) {
 		s.LastContext = previous
 	}
 	s.RecentContexts = addUniqueFront(s.RecentContexts, current, maxRecent)
+}
+
+func (s *Store) MarkNamespaceSwitched(previous, current string) {
+	if previous != "" && previous != current {
+		s.LastNamespace = previous
+	}
+	s.RecentNamespaces = addUniqueFront(s.RecentNamespaces, current, maxRecent)
 }
 
 func (s *Store) AddFavorite(name string) {

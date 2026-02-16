@@ -232,7 +232,7 @@ func main() {
 	c := cors.New(cors.Options{
 		AllowedOrigins:   cfg.AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Request-ID", "X-Confirm-Destructive"},
 		AllowCredentials: true,
 	})
 	handlerWithCORS := c.Handler(routerWrapped)

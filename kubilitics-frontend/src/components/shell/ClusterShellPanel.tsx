@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Terminal as TerminalIcon, X, GripHorizontal, Maximize2, Minimize2, Trash2, Copy, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getKCLIComplete, getKCLIShellStreamUrl, getKubectlShellStreamUrl, getShellComplete, getShellStatus, type ShellStatusResult } from '@/services/backendApiClient';
+import { getKCLIComplete, getKCLIShellStreamUrl, getKCLITUIState, getKubectlShellStreamUrl, getShellComplete, type ShellStatusResult } from '@/services/backendApiClient';
 import { useNavigate } from 'react-router-dom';
 import { applyCompletionToLine, updateLineBuffer } from './completionEngine';
+import { useClusterStore } from '@/stores/clusterStore';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -14,6 +15,7 @@ const MAX_HEIGHT_PERCENT = 85;
 const INITIAL_HEIGHT_PX = 320;
 const MODE_STORAGE_KEY = 'kubilitics-shell-engine-mode';
 const KCLI_STREAM_MODE_STORAGE_KEY = 'kubilitics-shell-kcli-stream-mode';
+const SHELL_STATE_SYNC_INTERVAL_MS = 2000;
 
 export interface ClusterShellPanelProps {
   open: boolean;
@@ -50,6 +52,10 @@ export function ClusterShellPanel({
   backendBaseUrl,
 }: ClusterShellPanelProps) {
   const navigate = useNavigate();
+  const activeNamespace = useClusterStore((s) => s.activeNamespace);
+  const setActiveNamespace = useClusterStore((s) => s.setActiveNamespace);
+  const setActiveCluster = useClusterStore((s) => s.setActiveCluster);
+  const setClusters = useClusterStore((s) => s.setClusters);
   const [heightPx, setHeightPx] = useState(INITIAL_HEIGHT_PX);
   const [dragging, setDragging] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -78,6 +84,7 @@ export function ClusterShellPanel({
   const requestServerCompletionRef = useRef<() => Promise<boolean>>(async () => false);
   const trackLocalLineBufferRef = useRef<(data: string) => void>(() => undefined);
   const sendStdinRef = useRef<(data: string) => void>(() => undefined);
+  const syncTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -111,6 +118,49 @@ export function ClusterShellPanel({
     if (wsRef.current?.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ t: 'stdin', d: base64Encode(data) }));
   }, []);
+
+  const applyShellState = useCallback((next: ShellStatusResult) => {
+    setShellStatus(next);
+    if (next.namespace && next.namespace !== 'all') {
+      setActiveNamespace(next.namespace);
+    }
+
+    const state = useClusterStore.getState();
+    const current = state.activeCluster;
+    if (!current || current.id !== next.clusterId || current.context === next.context) {
+      return;
+    }
+
+    const updatedCluster = { ...current, context: next.context };
+    setActiveCluster(updatedCluster);
+    const updatedClusters = state.clusters.map((c) =>
+      c.id === updatedCluster.id ? updatedCluster : c
+    );
+    setClusters(updatedClusters);
+  }, [setActiveCluster, setActiveNamespace, setClusters]);
+
+  const syncShellState = useCallback(async () => {
+    if (!open || !clusterId) return;
+    try {
+      const status = await getKCLITUIState(backendBaseUrl, clusterId);
+      applyShellState(status);
+      if (!status.kcliShellModeAllowed && kcliStreamMode === 'shell') {
+        setKcliStreamMode('ui');
+      }
+    } catch {
+      // no-op: streaming session can continue even if status fetch is temporarily unavailable
+    }
+  }, [applyShellState, backendBaseUrl, clusterId, kcliStreamMode, open]);
+
+  const scheduleStateSync = useCallback((delayMs = 120) => {
+    if (syncTimerRef.current != null) {
+      window.clearTimeout(syncTimerRef.current);
+    }
+    syncTimerRef.current = window.setTimeout(() => {
+      syncTimerRef.current = null;
+      void syncShellState();
+    }, delayMs);
+  }, [syncShellState]);
 
   const applyCompletion = useCallback((completion: string): boolean => {
     const line = lineBufferRef.current;
@@ -222,6 +272,9 @@ export function ClusterShellPanel({
       }
       trackLocalLineBufferRef.current(data);
       sendStdinRef.current(data);
+      if (data.includes('\r') || data.includes('\n')) {
+        scheduleStateSync(90);
+      }
     });
 
     term.onResize(({ cols, rows }) => {
@@ -243,7 +296,7 @@ export function ClusterShellPanel({
       fitAddonRef.current = null;
       pendingOutputRef.current = [];
     };
-  }, [flushPendingOutput, focusAndFit]);
+  }, [flushPendingOutput, focusAndFit, scheduleStateSync]);
 
   // Resize observer for terminal container layout changes.
   useEffect(() => {
@@ -399,7 +452,16 @@ export function ClusterShellPanel({
 
   const handleReconnect = useCallback(() => {
     setReconnectNonce((n) => n + 1);
-  }, []);
+    scheduleStateSync(50);
+  }, [scheduleStateSync]);
+
+  useEffect(() => {
+    if (!open || !connected) return;
+    if (!activeNamespace || activeNamespace === 'all') return;
+    if (shellStatus?.namespace === activeNamespace) return;
+    sendStdin(`kubectl config set-context --current --namespace=${activeNamespace}\r`);
+    scheduleStateSync(90);
+  }, [activeNamespace, connected, open, scheduleStateSync, sendStdin, shellStatus?.namespace]);
 
   const handleCopySelection = useCallback(() => {
     const sel = termRef.current?.getSelection() ?? '';
@@ -413,23 +475,18 @@ export function ClusterShellPanel({
       setShellStatus(null);
       return;
     }
-    let cancelled = false;
-    (async () => {
-      try {
-        const status = await getShellStatus(backendBaseUrl, clusterId);
-        if (!cancelled) {
-          setShellStatus(status);
-        }
-      } catch {
-        if (!cancelled) {
-          setShellStatus(null);
-        }
-      }
-    })();
+    void syncShellState();
+    const id = window.setInterval(() => {
+      void syncShellState();
+    }, SHELL_STATE_SYNC_INTERVAL_MS);
     return () => {
-      cancelled = true;
+      window.clearInterval(id);
+      if (syncTimerRef.current != null) {
+        window.clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
     };
-  }, [backendBaseUrl, clusterId, open]);
+  }, [clusterId, open, syncShellState]);
 
   const effectiveNamespace = shellStatus?.namespace || 'default';
   const openResourcePage = useCallback((resourcePath: string) => {
@@ -523,6 +580,16 @@ export function ClusterShellPanel({
           >
             kcli {shellStatus?.kcliAvailable ? 'Ready' : 'Missing'}
           </span>
+          <span
+            className={cn(
+              'rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider',
+              shellStatus?.kcliShellModeAllowed
+                ? 'border-white/10 bg-white/5 text-white/60'
+                : 'border-amber-400/20 bg-amber-400/10 text-amber-300'
+            )}
+          >
+            shell {shellStatus?.kcliShellModeAllowed ? 'Enabled' : 'Restricted'}
+          </span>
         </div>
 
         <div className="flex items-center gap-1">
@@ -577,6 +644,7 @@ export function ClusterShellPanel({
                   'h-6 px-2 text-[11px] font-semibold',
                   kcliStreamMode === 'shell' ? 'bg-white/15 text-white' : 'text-white/70 hover:text-white'
                 )}
+              disabled={shellStatus?.kcliShellModeAllowed === false}
               onClick={() => setKcliStreamMode('shell')}
               title="Launch classic shell"
               aria-label="Use kcli shell mode"

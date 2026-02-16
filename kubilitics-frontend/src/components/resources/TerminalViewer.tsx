@@ -15,7 +15,7 @@ import { useConnectionStatus } from '@/hooks/useConnectionStatus';
 import { useActiveClusterId } from '@/hooks/useActiveClusterId';
 import { getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
 import { useBackendConfigStore } from '@/stores/backendConfigStore';
-import { getKCLIShellStreamUrl, getKubectlShellStreamUrl, getPodExecWebSocketUrl } from '@/services/backendApiClient';
+import { getKCLIShellStreamUrl, getKubectlShellStreamUrl, getPodExecWebSocketUrl, getShellStatus } from '@/services/backendApiClient';
 import { toast } from 'sonner';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -117,6 +117,7 @@ export function TerminalViewer({
     const saved = typeof window !== 'undefined' ? localStorage.getItem(TERMINAL_KCLI_MODE_STORAGE_KEY) : null;
     return saved === 'shell' ? 'shell' : 'ui';
   });
+  const [kcliShellModeAllowed, setKcliShellModeAllowed] = useState(true);
 
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -142,6 +143,28 @@ export function TerminalViewer({
       localStorage.setItem(TERMINAL_KCLI_MODE_STORAGE_KEY, kcliStreamMode);
     }
   }, [kcliStreamMode]);
+
+  useEffect(() => {
+    if (!clusterId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await getShellStatus(backendBaseUrl, clusterId);
+        if (cancelled) return;
+        setKcliShellModeAllowed(status.kcliShellModeAllowed);
+        if (!status.kcliShellModeAllowed && kcliStreamMode === 'shell') {
+          setKcliStreamMode('ui');
+        }
+      } catch {
+        if (!cancelled) {
+          setKcliShellModeAllowed(true);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [backendBaseUrl, clusterId, kcliStreamMode]);
 
   // Create xterm only when live and container is visible (avoids zero-size / invisible container)
   useEffect(() => {
@@ -600,6 +623,7 @@ export function TerminalViewer({
                   "h-6 px-2 text-[11px] font-semibold",
                   kcliStreamMode === 'shell' ? "bg-white/15 text-white" : "text-white/70 hover:text-white"
                 )}
+                disabled={!kcliShellModeAllowed}
                 onClick={() => setKcliStreamMode('shell')}
                 title="kcli shell mode"
               >

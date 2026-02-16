@@ -7,6 +7,7 @@ import {
   getClusters,
   getTopology,
   getHealth,
+  getKCLITUIState,
   BackendApiError,
   createBackendApiClient,
 } from './backendApiClient';
@@ -142,6 +143,33 @@ describe('backendApiClient', () => {
     });
   });
 
+  describe('getKCLITUIState', () => {
+    it('calls GET /api/v1/clusters/{clusterId}/kcli/tui/state', async () => {
+      const state = {
+        clusterId: 'c1',
+        clusterName: 'prod',
+        context: 'prod-us-east-1',
+        namespace: 'default',
+        kcliAvailable: true,
+        kcliShellModeAllowed: true,
+        aiEnabled: true,
+      };
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+        new Response(JSON.stringify(state), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+      const result = await getKCLITUIState(BASE, 'c1');
+      expect(result).toEqual(state);
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `${BASE}/api/v1/clusters/c1/kcli/tui/state`,
+        expect.objectContaining({ headers: expect.any(Object) })
+      );
+    });
+  });
+
   describe('createBackendApiClient', () => {
     it('returns bound getClusters and getTopology', async () => {
       (globalThis.fetch as ReturnType<typeof vi.fn>)
@@ -168,6 +196,29 @@ describe('backendApiClient', () => {
       );
       expect(globalThis.fetch).toHaveBeenCalledWith(
         `${BASE}/api/v1/clusters/c1/topology`,
+        expect.any(Object)
+      );
+    });
+
+    it('returns bound getKCLITUIState', async () => {
+      const state = {
+        clusterId: 'c1',
+        clusterName: 'prod',
+        context: 'prod-us-east-1',
+        namespace: 'default',
+        kcliAvailable: true,
+        kcliShellModeAllowed: true,
+        aiEnabled: false,
+      };
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+        new Response(JSON.stringify(state), { status: 200 })
+      );
+
+      const client = createBackendApiClient(BASE);
+      const result = await client.getKCLITUIState('c1');
+      expect(result).toEqual(state);
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `${BASE}/api/v1/clusters/c1/kcli/tui/state`,
         expect.any(Object)
       );
     });

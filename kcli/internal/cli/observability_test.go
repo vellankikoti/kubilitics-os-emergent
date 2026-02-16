@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -31,5 +32,65 @@ func TestFilterEventsByRecent(t *testing.T) {
 	}
 	if got[0].Object != "Pod/a" {
 		t.Fatalf("unexpected first record: %+v", got[0])
+	}
+}
+
+func TestFilterEventsByType(t *testing.T) {
+	records := []eventRecord{{Type: "Warning"}, {Type: "Normal"}, {Type: "warning"}}
+	got := filterEventsByType(records, "warning")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 warning records, got %d", len(got))
+	}
+}
+
+func TestBuildRestartRecords(t *testing.T) {
+	now := time.Now().UTC()
+	raw := `{
+  "items": [
+    {
+      "metadata": { "namespace": "default", "name": "api" },
+      "spec": { "nodeName": "n1" },
+      "status": {
+        "phase": "Running",
+        "containerStatuses": [
+          {
+            "name": "c",
+            "restartCount": 3,
+            "lastState": { "terminated": { "finishedAt": "` + now.Format(time.RFC3339) + `" } }
+          }
+        ]
+      }
+    },
+    {
+      "metadata": { "namespace": "default", "name": "worker" },
+      "spec": { "nodeName": "n2" },
+      "status": {
+        "phase": "Running",
+        "containerStatuses": [
+          {
+            "name": "c",
+            "restartCount": 1
+          }
+        ]
+      }
+    }
+  ]
+}`
+	var list k8sPodList
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		t.Fatalf("unmarshal test pod list: %v", err)
+	}
+	got := buildRestartRecords(&list, 2, now.Add(-1*time.Hour))
+	if len(got) != 1 || got[0].Name != "api" {
+		t.Fatalf("unexpected restart records: %+v", got)
+	}
+}
+
+func TestHealthScoreBounds(t *testing.T) {
+	pods := podHealthSummary{CrashLoop: 50, RestartPods: 50}
+	nodes := nodeHealthSummary{Total: 3, NotReady: 3, MemoryPress: 2, DiskPress: 2, PIDPress: 2}
+	score := healthScore(pods, nodes)
+	if score < 0 || score > 100 {
+		t.Fatalf("score out of bounds: %d", score)
 	}
 }

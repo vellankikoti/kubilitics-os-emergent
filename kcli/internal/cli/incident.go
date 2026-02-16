@@ -19,8 +19,12 @@ type k8sPod struct {
 		Namespace string `json:"namespace"`
 		Name      string `json:"name"`
 	} `json:"metadata"`
+	Spec struct {
+		NodeName string `json:"nodeName"`
+	} `json:"spec"`
 	Status struct {
 		Phase             string `json:"phase"`
+		StartTime         string `json:"startTime"`
 		ContainerStatuses []struct {
 			Name         string `json:"name"`
 			RestartCount int    `json:"restartCount"`
@@ -34,7 +38,8 @@ type k8sPod struct {
 			} `json:"state"`
 			LastState struct {
 				Terminated struct {
-					Reason string `json:"reason"`
+					Reason     string `json:"reason"`
+					FinishedAt string `json:"finishedAt"`
 				} `json:"terminated"`
 			} `json:"lastState"`
 		} `json:"containerStatuses"`
@@ -87,46 +92,135 @@ func newIncidentCmd(a *app) *cobra.Command {
 	var recent string
 	var output string
 	var restartThreshold int
+	var watch bool
+	var interval time.Duration
 
 	cmd := &cobra.Command{
 		Use:     "incident",
 		Short:   "Incident mode summary (CrashLoop/OOM/restarts/node pressure/events)",
 		GroupID: "incident",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			window := 2 * time.Hour
-			if strings.TrimSpace(recent) != "" {
-				d, err := time.ParseDuration(strings.TrimSpace(recent))
-				if err != nil {
-					return fmt.Errorf("invalid --recent value %q: %w", recent, err)
+			render := func() error {
+				window := 2 * time.Hour
+				if strings.TrimSpace(recent) != "" {
+					d, err := time.ParseDuration(strings.TrimSpace(recent))
+					if err != nil {
+						return fmt.Errorf("invalid --recent value %q: %w", recent, err)
+					}
+					window = d
 				}
-				window = d
-			}
 
-			report, err := buildIncidentReport(a, window, restartThreshold)
-			if err != nil {
-				return err
-			}
-
-			switch strings.ToLower(strings.TrimSpace(output)) {
-			case "table", "":
-				printIncidentTable(cmd, report)
-				return nil
-			case "json":
-				b, err := json.MarshalIndent(report, "", "  ")
+				report, err := buildIncidentReport(a, window, restartThreshold)
 				if err != nil {
 					return err
 				}
-				fmt.Fprintln(cmd.OutOrStdout(), string(b))
-				return nil
-			default:
-				return fmt.Errorf("unsupported --output %q (supported: table, json)", output)
+
+				switch strings.ToLower(strings.TrimSpace(output)) {
+				case "table", "":
+					printIncidentTable(cmd, report)
+					fmt.Fprintln(cmd.OutOrStdout(), "\nQuick actions:")
+					fmt.Fprintln(cmd.OutOrStdout(), "  kcli incident logs <namespace>/<pod> --tail=200")
+					fmt.Fprintln(cmd.OutOrStdout(), "  kcli incident describe <namespace>/<pod>")
+					fmt.Fprintln(cmd.OutOrStdout(), "  kcli incident restart <namespace>/<pod>")
+					return nil
+				case "json":
+					b, err := json.MarshalIndent(report, "", "  ")
+					if err != nil {
+						return err
+					}
+					fmt.Fprintln(cmd.OutOrStdout(), string(b))
+					return nil
+				default:
+					return fmt.Errorf("unsupported --output %q (supported: table, json)", output)
+				}
+			}
+			if !watch {
+				return render()
+			}
+			if interval <= 0 {
+				interval = 5 * time.Second
+			}
+			for {
+				fmt.Fprint(cmd.OutOrStdout(), "\033[2J\033[H")
+				fmt.Fprintf(cmd.OutOrStdout(), "🚨 Incident Mode (auto-refresh every %s, Ctrl+C to stop)\n\n", interval)
+				if err := render(); err != nil {
+					return err
+				}
+				select {
+				case <-time.After(interval):
+				case <-cmd.Context().Done():
+					return nil
+				}
 			}
 		},
 	}
 	cmd.Flags().StringVar(&recent, "recent", "2h", "duration window for critical events (e.g. 30m, 2h)")
 	cmd.Flags().StringVar(&output, "output", "table", "output format: table|json")
 	cmd.Flags().IntVar(&restartThreshold, "restarts-threshold", 5, "minimum restarts to classify as high-restart pod")
+	cmd.Flags().BoolVar(&watch, "watch", false, "auto-refresh incident summary continuously")
+	cmd.Flags().DurationVar(&interval, "refresh", 5*time.Second, "refresh interval for --watch mode")
+	cmd.AddCommand(newIncidentQuickActionCmd(a).Commands()...)
 	return cmd
+}
+
+func newIncidentQuickActionCmd(a *app) *cobra.Command {
+	root := &cobra.Command{
+		Use:    "actions",
+		Short:  "Incident quick actions",
+		Hidden: true,
+	}
+
+	var tail int
+	logs := &cobra.Command{
+		Use:   "logs <namespace>/<pod>",
+		Short: "Quick action: fetch pod logs",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			ns, pod, err := parseNamespacedPod(args[0])
+			if err != nil {
+				return err
+			}
+			return a.runKubectl([]string{"logs", pod, "-n", ns, fmt.Sprintf("--tail=%d", tail)})
+		},
+	}
+	logs.Flags().IntVar(&tail, "tail", 200, "number of log lines to fetch")
+
+	describe := &cobra.Command{
+		Use:   "describe <namespace>/<pod>",
+		Short: "Quick action: describe pod",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			ns, pod, err := parseNamespacedPod(args[0])
+			if err != nil {
+				return err
+			}
+			return a.runKubectl([]string{"describe", "pod", pod, "-n", ns})
+		},
+	}
+
+	restart := &cobra.Command{
+		Use:   "restart <namespace>/<pod>",
+		Short: "Quick action: restart pod by deleting it (controller-managed pods)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			ns, pod, err := parseNamespacedPod(args[0])
+			if err != nil {
+				return err
+			}
+			return a.runKubectl([]string{"delete", "pod", pod, "-n", ns})
+		},
+	}
+
+	root.AddCommand(logs, describe, restart)
+	return root
+}
+
+func parseNamespacedPod(v string) (namespace, pod string, err error) {
+	parts := strings.SplitN(strings.TrimSpace(v), "/", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", "", fmt.Errorf("expected namespace/pod format, got %q", v)
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }
 
 func buildIncidentReport(a *app, recentWindow time.Duration, restartThreshold int) (*incidentReport, error) {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -11,7 +12,10 @@ import (
 )
 
 type ExecOptions struct {
-	Force bool
+	Force  bool
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 var mutatingVerbs = map[string]struct{}{
@@ -34,9 +38,21 @@ func RunKubectl(args []string, opts ExecOptions) error {
 		}
 	}
 	cmd := exec.Command("kubectl", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	stdin := opts.Stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	stdout := opts.Stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	stderr := opts.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	return cmd.Run()
 }
 
@@ -64,9 +80,49 @@ func shouldConfirm(args []string, force bool) bool {
 	if force || len(args) == 0 {
 		return false
 	}
-	verb := strings.ToLower(strings.TrimSpace(args[0]))
+	words := commandWords(args)
+	if len(words) == 0 {
+		return false
+	}
+	verb := strings.ToLower(strings.TrimSpace(words[0]))
+	if verb == "rollout" && len(words) > 1 {
+		sub := strings.ToLower(strings.TrimSpace(words[1]))
+		if sub == "status" || sub == "history" {
+			return false
+		}
+	}
 	_, ok := mutatingVerbs[verb]
 	return ok
+}
+
+func commandWords(args []string) []string {
+	words := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		tok := strings.TrimSpace(args[i])
+		if tok == "" {
+			continue
+		}
+		if tok == "--context" || tok == "--namespace" || tok == "-n" || tok == "--kubeconfig" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(tok, "--context=") || strings.HasPrefix(tok, "--namespace=") || strings.HasPrefix(tok, "--kubeconfig=") {
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		words = append(words, tok)
+	}
+	return words
+}
+
+func firstVerb(args []string) string {
+	words := commandWords(args)
+	if len(words) == 0 {
+		return ""
+	}
+	return words[0]
 }
 
 func askForConfirmation(args []string) (bool, error) {
@@ -78,6 +134,9 @@ func askForConfirmation(args []string) (bool, error) {
 	r := bufio.NewReader(os.Stdin)
 	line, err := r.ReadString('\n')
 	if err != nil {
+		if err == io.EOF {
+			return false, fmt.Errorf("confirmation required in non-interactive mode; rerun with --force")
+		}
 		return false, err
 	}
 	ans := strings.ToLower(strings.TrimSpace(line))

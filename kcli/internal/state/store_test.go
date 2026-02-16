@@ -56,3 +56,14 @@ func TestContextGroupsSetAddRemoveAndActive(t *testing.T) {
 		t.Fatalf("expected active group cleared, got %q", s.ActiveContextGroup)
 	}
 }
+
+func TestMarkNamespaceSwitched(t *testing.T) {
+	s := &Store{RecentNamespaces: []string{"default", "kube-system"}}
+	s.MarkNamespaceSwitched("default", "dev")
+	if s.LastNamespace != "default" {
+		t.Fatalf("expected LastNamespace=default, got %q", s.LastNamespace)
+	}
+	if len(s.RecentNamespaces) == 0 || s.RecentNamespaces[0] != "dev" {
+		t.Fatalf("expected recent namespaces to start with dev, got %+v", s.RecentNamespaces)
+	}
+}

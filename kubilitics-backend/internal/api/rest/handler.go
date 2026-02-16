@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,7 @@ import (
 	"github.com/kubilitics/kubilitics-backend/internal/pkg/validate"
 	"github.com/kubilitics/kubilitics-backend/internal/service"
 	"github.com/kubilitics/kubilitics-backend/internal/topology"
+	"golang.org/x/time/rate"
 )
 
 // Handler manages HTTP request handlers
@@ -34,6 +36,10 @@ type Handler struct {
 	unifiedMetricsService *service.UnifiedMetricsService
 	projSvc               service.ProjectService
 	cfg                   *config.Config
+	kcliLimiterMu         sync.Mutex
+	kcliLimiters          map[string]*rate.Limiter
+	kcliStreamMu          sync.Mutex
+	kcliStreamActive      map[string]int
 }
 
 // NewHandler creates a new HTTP handler. unifiedMetricsService can be nil; then metrics summary uses legacy per-resource endpoints. projSvc can be nil; then project routes return 501.
@@ -50,6 +56,8 @@ func NewHandler(cs service.ClusterService, ts service.TopologyService, cfg *conf
 		unifiedMetricsService: unifiedMetricsService,
 		projSvc:               projSvc,
 		cfg:                   cfg,
+		kcliLimiters:          map[string]*rate.Limiter{},
+		kcliStreamActive:      map[string]int{},
 	}
 }
 
@@ -167,6 +175,8 @@ func SetupRoutes(router *mux.Router, h *Handler) {
 	router.HandleFunc("/clusters/{clusterId}/kcli/stream", h.GetKCLIStream).Methods("GET")
 	// kcli completion (IDE-style Tab)
 	router.HandleFunc("/clusters/{clusterId}/kcli/complete", h.GetKCLIComplete).Methods("GET")
+	// kcli TUI/session state for frontend sync
+	router.HandleFunc("/clusters/{clusterId}/kcli/tui/state", h.GetKCLITUIState).Methods("GET")
 
 	// Download kubeconfig for a cluster
 	router.HandleFunc("/clusters/{clusterId}/kubeconfig", h.GetKubeconfig).Methods("GET")

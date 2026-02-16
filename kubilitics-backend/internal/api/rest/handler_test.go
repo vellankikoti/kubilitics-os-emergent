@@ -4,10 +4,10 @@ package rest
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,6 +84,79 @@ users:
 		Namespace     string `json:"namespace"`
 		KCLIAvailable bool   `json:"kcliAvailable"`
 		AIEnabled     bool   `json:"aiEnabled"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.ClusterID != clusterID {
+		t.Fatalf("clusterId = %q, want %q", out.ClusterID, clusterID)
+	}
+	if out.Context != "demo-ctx" {
+		t.Fatalf("context = %q, want demo-ctx", out.Context)
+	}
+	if out.Namespace != "kube-system" {
+		t.Fatalf("namespace = %q, want kube-system", out.Namespace)
+	}
+}
+
+func TestAPI_GET_KCLITUIState_ReturnsContextAndNamespace(t *testing.T) {
+	clusterRouteID := "demo-ctx"
+	clusterID := "cluster-kcli-tui-state-id"
+	kubeconfig := `
+apiVersion: v1
+kind: Config
+current-context: demo-ctx
+contexts:
+- name: demo-ctx
+  context:
+    cluster: demo
+    user: demo-user
+    namespace: kube-system
+clusters:
+- name: demo
+  cluster:
+    server: https://127.0.0.1:6443
+users:
+- name: demo-user
+  user:
+    token: fake
+`
+	tmpFile := filepath.Join(t.TempDir(), "kubeconfig.yaml")
+	if err := os.WriteFile(tmpFile, []byte(kubeconfig), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+
+	cluster := &models.Cluster{
+		ID:             clusterID,
+		Name:           "demo",
+		Context:        "demo-ctx",
+		KubeconfigPath: tmpFile,
+	}
+	repo := &mockClusterRepo{
+		list: []*models.Cluster{cluster},
+		get: map[string]*models.Cluster{
+			clusterID: cluster,
+		},
+	}
+	cfg := &config.Config{}
+	cs := service.NewClusterService(repo, cfg)
+	h := NewHandler(cs, nil, cfg, nil, nil, nil, nil, nil)
+
+	router := mux.NewRouter()
+	api := router.PathPrefix("/api/v1").Subrouter()
+	SetupRoutes(api, h)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/"+clusterRouteID+"/kcli/tui/state", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /kcli/tui/state status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		ClusterID string `json:"clusterId"`
+		Context   string `json:"context"`
+		Namespace string `json:"namespace"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -222,7 +295,7 @@ func (m *mockClusterRepo) List(ctx context.Context) ([]*models.Cluster, error) {
 	return m.list, nil
 }
 func (m *mockClusterRepo) Update(ctx context.Context, cluster *models.Cluster) error { return nil }
-func (m *mockClusterRepo) Delete(ctx context.Context, id string) error                 { return nil }
+func (m *mockClusterRepo) Delete(ctx context.Context, id string) error               { return nil }
 
 func TestAPI_GET_Clusters_Returns200AndArray(t *testing.T) {
 	repo := &mockClusterRepo{list: []*models.Cluster{}}
@@ -276,7 +349,7 @@ func TestAPI_POST_Shell_BlockedVerb_Returns400(t *testing.T) {
 			clusterID: {
 				ID:             clusterID,
 				Name:           "test",
-				Context:       "test-ctx",
+				Context:        "test-ctx",
 				KubeconfigPath: "/tmp/kubeconfig",
 			},
 		},
@@ -312,7 +385,7 @@ func TestAPI_POST_Shell_EmptyCommand_Returns200(t *testing.T) {
 			clusterID: {
 				ID:             clusterID,
 				Name:           "test",
-				Context:       "test-ctx",
+				Context:        "test-ctx",
 				KubeconfigPath: "/tmp/kubeconfig",
 			},
 		},

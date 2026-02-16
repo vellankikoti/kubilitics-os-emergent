@@ -38,7 +38,6 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useResourceCounts } from '@/hooks/useResourceCounts';
 import { useMetalLBInstalled } from '@/hooks/useMetalLBInstalled';
-import { useRecentlyVisitedReadOnly } from '@/hooks/useRecentlyVisited';
 
 const SIDEBAR_COLLAPSED_KEY = 'kubilitics-sidebar-collapsed';
 
@@ -553,69 +552,6 @@ function SidebarContent({
 
 const SECTION_ROUTES = ['/workloads', '/topology', ...WORKLOAD_PATHS, ...NETWORKING_PATHS, ...STORAGE_PATHS, ...CLUSTER_PATHS, ...SECURITY_PATHS, ...RESOURCES_PATHS, ...SCALING_PATHS, ...CRD_PATHS, ...ADMISSION_PATHS];
 
-// ─── Recently Viewed (TASK-094) ───────────────────────────────────────────────
-
-/** Map resource kind string to a lucide icon component for the sidebar. */
-function kindToIcon(kind: string): React.ElementType {
-  switch (kind) {
-    case 'pods': return Box;
-    case 'deployments': return Container;
-    case 'replicasets': return Layers;
-    case 'statefulsets': return Layers;
-    case 'daemonsets': return Layers;
-    case 'jobs': return Activity;
-    case 'cronjobs': return Clock;
-    case 'services': return Globe;
-    case 'ingresses': return Route;
-    case 'configmaps': return Settings;
-    case 'secrets': return Key;
-    case 'nodes': return Server;
-    case 'namespaces': return Layers;
-    case 'events': return AlertTriangle;
-    case 'persistentvolumeclaims': return HardDrive;
-    case 'persistentvolumes': return HardDrive;
-    case 'storageclasses': return Database;
-    case 'customresourcedefinitions': return FileCode;
-    case 'topology': return Network;
-    default: return FileText;
-  }
-}
-
-function RecentlyViewedSection() {
-  const visits = useRecentlyVisitedReadOnly();
-
-  if (visits.length === 0) return null;
-
-  return (
-    <div className="shrink-0 px-5 pb-2 pt-2 border-t border-border/60">
-      <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-1 pb-1.5">
-        Recent
-      </div>
-      <div className="space-y-0.5">
-        {visits.map((visit) => {
-          const Icon = kindToIcon(visit.kind);
-          return (
-            <NavLink
-              key={visit.path}
-              to={visit.path}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-all duration-150 group',
-                  isActive
-                    ? 'bg-primary/5 text-primary font-medium'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                )
-              }
-            >
-              <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
-              <span className="truncate flex-1" title={visit.label}>{visit.label}</span>
-            </NavLink>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 export function Sidebar() {
   const { counts, isLoading } = useResourceCounts();
@@ -639,8 +575,6 @@ export function Sidebar() {
       <div className="flex-1 min-h-0 overflow-y-auto px-5 py-6 scrollbar-thin scrollbar-thumb-border/40 hover:scrollbar-thumb-border/80">
         <SidebarContent counts={counts} isLoading={isLoading} metallbInstalled={metallbInstalled} />
       </div>
-      {/* Recently Viewed — TASK-094: last 5 visited resource pages */}
-      <RecentlyViewedSection />
 
       {/* Fixed footer: Settings + Collapse — always visible at bottom */}
       <div className="shrink-0 px-5 pb-4 pt-2 border-t border-border/60 space-y-1.5">

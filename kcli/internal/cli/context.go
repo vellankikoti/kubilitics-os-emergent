@@ -1,18 +1,22 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/kubilitics/kcli/internal/k8sclient"
 	"github.com/kubilitics/kcli/internal/state"
 	"github.com/spf13/cobra"
 )
 
 func newContextCmd(a *app) *cobra.Command {
 	var onlyFavorites bool
+	var pick bool
 
 	ctxCmd := &cobra.Command{
 		Use:     "ctx [name|-]",
@@ -25,6 +29,9 @@ func newContextCmd(a *app) *cobra.Command {
 				return err
 			}
 			if len(args) == 0 {
+				if pick {
+					return pickContextInteractive(a, store, onlyFavorites, cmd)
+				}
 				return printContexts(a, store, onlyFavorites)
 			}
 			target := strings.TrimSpace(args[0])
@@ -47,6 +54,7 @@ func newContextCmd(a *app) *cobra.Command {
 		},
 	}
 	ctxCmd.Flags().BoolVarP(&onlyFavorites, "favorites", "f", false, "show favorite contexts only")
+	ctxCmd.Flags().BoolVar(&pick, "pick", false, "interactive fuzzy-like context picker")
 
 	favCmd := &cobra.Command{Use: "fav", Short: "Manage favorite contexts"}
 	favCmd.AddCommand(
@@ -118,10 +126,9 @@ func newContextCmd(a *app) *cobra.Command {
 
 func newContextGroupCmd(a *app) *cobra.Command {
 	groupCmd := &cobra.Command{
-		Use:     "group [name]",
-		Short:   "Manage named context groups for multi-cluster workflows",
-		Args:    cobra.MaximumNArgs(1),
-		GroupID: "workflow",
+		Use:   "group [name]",
+		Short: "Manage named context groups for multi-cluster workflows",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := state.Load()
 			if err != nil {
@@ -467,26 +474,100 @@ func printContexts(a *app, s *state.Store, onlyFavorites bool) error {
 	return nil
 }
 
-func listContexts(a *app) ([]string, error) {
-	out, err := a.captureKubectl([]string{"config", "get-contexts", "-o", "name"})
-	if err != nil {
-		return nil, err
+func pickContextInteractive(a *app, s *state.Store, onlyFavorites bool, cmd *cobra.Command) error {
+	if !isTerminalSession() {
+		return fmt.Errorf("--pick requires an interactive terminal")
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	result := make([]string, 0, len(lines))
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if l != "" {
-			result = append(result, l)
+	ctxs, err := listContexts(a)
+	if err != nil {
+		return err
+	}
+	current, _ := currentContext(a)
+	favorites := make(map[string]struct{}, len(s.Favorites))
+	for _, v := range s.Favorites {
+		favorites[v] = struct{}{}
+	}
+	sort.Strings(ctxs)
+	candidates := make([]string, 0, len(ctxs))
+	for _, c := range ctxs {
+		if onlyFavorites {
+			if _, ok := favorites[c]; !ok {
+				continue
+			}
+		}
+		candidates = append(candidates, c)
+	}
+	if len(candidates) == 0 {
+		return fmt.Errorf("no contexts available")
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Fprint(cmd.OutOrStdout(), "Filter context (substring, empty=all): ")
+	queryRaw, _ := reader.ReadString('\n')
+	query := strings.ToLower(strings.TrimSpace(queryRaw))
+	filtered := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if query == "" || strings.Contains(strings.ToLower(c), query) {
+			filtered = append(filtered, c)
 		}
 	}
-	return result, nil
+	if len(filtered) == 0 {
+		return fmt.Errorf("no contexts match %q", query)
+	}
+	if len(filtered) == 1 {
+		target := filtered[0]
+		if err := a.runKubectl([]string{"config", "use-context", target}); err != nil {
+			return err
+		}
+		s.MarkContextSwitched(current, target)
+		if err := state.Save(s); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Switched to context %q\n", target)
+		return nil
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Select context:")
+	for i, c := range filtered {
+		marker := " "
+		if c == current {
+			marker = "*"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "  %d) %s %s\n", i+1, marker, c)
+	}
+	fmt.Fprint(cmd.OutOrStdout(), "Choice [1-", len(filtered), "]: ")
+	choiceRaw, _ := reader.ReadString('\n')
+	choiceRaw = strings.TrimSpace(choiceRaw)
+	n, err := strconv.Atoi(choiceRaw)
+	if err != nil || n < 1 || n > len(filtered) {
+		return fmt.Errorf("invalid selection %q", choiceRaw)
+	}
+	target := filtered[n-1]
+	if err := a.runKubectl([]string{"config", "use-context", target}); err != nil {
+		return err
+	}
+	s.MarkContextSwitched(current, target)
+	if err := state.Save(s); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Switched to context %q\n", target)
+	return nil
+}
+
+func isTerminalSession() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func listContexts(a *app) ([]string, error) {
+	return k8sclient.ListContexts(a.kubeconfig)
 }
 
 func currentContext(a *app) (string, error) {
-	out, err := a.captureKubectl([]string{"config", "current-context"})
-	if err != nil {
-		return "", err
+	if strings.TrimSpace(a.context) != "" {
+		return strings.TrimSpace(a.context), nil
 	}
-	return strings.TrimSpace(out), nil
+	return k8sclient.CurrentContext(a.kubeconfig)
 }
