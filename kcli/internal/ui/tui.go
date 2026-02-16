@@ -101,6 +101,7 @@ type model struct {
 	detailCache   map[detailTab]string
 	detailErr     string
 	detailLoading bool
+	detailScrollY int // line offset for scrolling detail content
 
 	xrayMode     bool
 	xrayNodes    []xrayDisplayNode
@@ -118,6 +119,8 @@ type model struct {
 	confirmMode  bool
 	confirmInput textinput.Model
 	pendingBulk  bulkRequest
+
+	showHelp bool // ? toggles shortcut help overlay
 }
 
 type resourcesLoadedMsg struct {
@@ -146,6 +149,8 @@ type bulkResultMsg struct {
 	err     error
 }
 
+type editDoneMsg struct{}
+
 type tickMsg time.Time
 
 type refreshTickMsg time.Time
@@ -170,6 +175,8 @@ var (
 	tabActive    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229")).Background(lipgloss.Color("25")).Padding(0, 1)
 	tabInactive  = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 1)
 	yamlKeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	helpBoxStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("45")).Padding(1, 2)
+	helpTitle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("117"))
 )
 
 var spinnerFrames = []string{"-", "\\", "|", "/"}
@@ -258,6 +265,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 	case tea.KeyMsg:
+		if m.showHelp {
+			if msg.String() == "?" || msg.String() == "esc" {
+				m.showHelp = false
+			}
+			return m, nil
+		}
 		if m.xrayMode {
 			switch msg.String() {
 			case "ctrl+c", "q":
@@ -437,6 +450,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "pgup":
 			m.selected = max(0, m.selected-m.pageSize())
+		case "?":
+			m.showHelp = true
+			return m, nil
 		case "/":
 			m.filtering = true
 			m.filterInput.Focus()
@@ -594,20 +610,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		m.selectedRows = map[string]bool{}
 		return m, loadResourcesCmd(m.opts, m.spec)
+	case editDoneMsg:
+		return m, tea.Quit
 	}
 	return m, nil
 }
 
 func (m model) updateDetailModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "q":
-		return m, tea.Quit
-	case "esc":
-		m.detailMode = false
-		m.detailLoading = false
-		m.detailErr = ""
-		return m, nil
-	case "r":
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "?":
+			m.showHelp = true
+			return m, nil
+		case "esc":
+			m.detailMode = false
+			m.detailLoading = false
+			m.detailErr = ""
+			return m, nil
+		case "r":
 		delete(m.detailCache, m.activeTab)
 		m.detailLoading = true
 		return m, loadDetailTabCmd(m.opts, m.spec, m.detailRow, m.activeTab)
@@ -621,6 +642,37 @@ func (m model) updateDetailModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.switchDetailTab(tabYAML)
 	case "4":
 		return m.switchDetailTab(tabAI)
+	case "e":
+		if m.activeTab == tabYAML {
+			return m, editResourceCmd(m.opts, m.spec, m.detailRow)
+		}
+	case "up", "k":
+		if m.detailScrollY > 0 {
+			m.detailScrollY--
+		}
+		return m, nil
+	case "down", "j":
+		content := m.activeTabContent()
+		lines := strings.Split(content, "\n")
+		totalLines := len(lines)
+		bodyLines := max(12, m.height-4)
+		maxScroll := max(0, totalLines-bodyLines)
+		if m.detailScrollY < maxScroll {
+			m.detailScrollY++
+		}
+		return m, nil
+	case "pgup":
+		bodyLines := max(12, m.height-4)
+		m.detailScrollY = max(0, m.detailScrollY-bodyLines)
+		return m, nil
+	case "pgdown":
+		content := m.activeTabContent()
+		lines := strings.Split(content, "\n")
+		totalLines := len(lines)
+		bodyLines := max(12, m.height-4)
+		maxScroll := max(0, totalLines-bodyLines)
+		m.detailScrollY = min(m.detailScrollY+bodyLines, maxScroll)
+		return m, nil
 	}
 	return m, nil
 }
@@ -630,6 +682,7 @@ func (m model) switchDetailTab(tab detailTab) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.activeTab = tab
+	m.detailScrollY = 0
 	if _, ok := m.detailCache[tab]; ok {
 		m.detailLoading = false
 		m.detailErr = ""
@@ -647,9 +700,13 @@ func (m *model) enterDetailMode(r resourceRow) {
 	m.detailCache = map[detailTab]string{}
 	m.detailErr = ""
 	m.detailLoading = true
+	m.detailScrollY = 0
 }
 
 func (m model) View() string {
+	if m.showHelp {
+		return m.helpView()
+	}
 	if m.xrayMode {
 		return m.xrayView()
 	}
@@ -684,8 +741,21 @@ func (m model) detailModeView() string {
 	}
 	header := headerStyle.Width(max(20, m.width)).Render(fmt.Sprintf("kcli detail | %s %s", m.spec.KubectlType, target))
 	tabBar := navStyle.Width(max(20, m.width)).Render(strings.Join(tabs, " "))
-	body := paneStyle.Width(max(20, m.width)).Height(max(12, m.height-4)).Render(content)
-	footer := footerStyle.Width(max(20, m.width)).Render("1 overview 2 events 3 yaml 4 ai  tab/shift+tab switch  r reload  esc back  q quit")
+	bodyLines := max(12, m.height-4)
+	lines := strings.Split(content, "\n")
+	totalLines := len(lines)
+	start := m.detailScrollY
+	if start > totalLines {
+		start = max(0, totalLines-bodyLines)
+	}
+	end := min(start+bodyLines, totalLines)
+	visibleContent := strings.Join(lines[start:end], "\n")
+	body := paneStyle.Width(max(20, m.width)).Height(bodyLines).Render(visibleContent)
+	footerStr := "? help  1 overview 2 events 3 yaml 4 ai  j/k pgup/pgdown scroll  tab switch  r reload  esc back  q quit"
+	if m.activeTab == tabYAML {
+		footerStr = "? help  1 overview 2 events 3 yaml 4 ai  e edit ($EDITOR)  j/k scroll  tab switch  r reload  esc back  q quit"
+	}
+	footer := footerStyle.Width(max(20, m.width)).Render(footerStr)
 	return lipgloss.JoinVertical(lipgloss.Left, header, tabBar, body, footer)
 }
 
@@ -833,7 +903,29 @@ func (m model) detailView() string {
 
 func (m model) footerView() string {
 	frame := spinnerFrames[m.frame%len(spinnerFrames)]
-	return fmt.Sprintf("[%s] Space select  Ctrl+B bulk  Ctrl+S save  Ctrl+W wide  Ctrl+T theme  Ctrl+A ai-toggle  :<type> switch  :xray/Ctrl+X graph  / filter  j/k move  1-8 sort  Shift+1..8 desc  Enter detail  d/y/l/A actions  r refresh  q quit", frame)
+	return fmt.Sprintf("[%s] ? help  Space select  Ctrl+B bulk  Ctrl+S save  Ctrl+W wide  Ctrl+T theme  Ctrl+A ai-toggle  :<type> switch  :xray/Ctrl+X graph  / filter  j/k move  1-8 sort  Shift+1..8 desc  Enter detail  d/y/l/A actions  r refresh  q quit", frame)
+}
+
+func (m model) helpView() string {
+	listShortcuts := "" +
+		"  j / k, ↑ / ↓     move selection    pgup / pgdown   page\n" +
+		"  Enter            open detail       Esc             (in detail) back\n" +
+		"  /                filter list      Space           select row\n" +
+		"  Ctrl+B           bulk action       Ctrl+S          save snapshot\n" +
+		"  Ctrl+W           wide mode         Ctrl+T          cycle theme\n" +
+		"  Ctrl+A           toggle AI        :pods / :deploy  switch resource type\n" +
+		"  :xray, Ctrl+X    relationship graph  1–8            sort by column\n" +
+		"  Shift+1..8       sort desc         d / y / l       describe / yaml / logs\n" +
+		"  A                AI on selection   r               refresh\n" +
+		"  q / Ctrl+C       quit\n"
+	detailShortcuts := "" +
+		"  1 / 2 / 3 / 4    overview / events / yaml / ai    tab / Shift+Tab   switch tab\n" +
+		"  j / k, pgup / pgdown   scroll content             e                  edit YAML ($EDITOR)\n" +
+		"  r                reload tab         Esc             back to list\n" +
+		"  q / Ctrl+C       quit\n"
+	body := helpTitle.Render("List view") + "\n" + listShortcuts + "\n" + helpTitle.Render("Detail view") + "\n" + detailShortcuts + "\n  " + footerStyle.Render("Press ? or Esc to close")
+	w := min(72, max(50, m.width-4))
+	return helpBoxStyle.Width(w).Render(body)
 }
 
 func (m model) renderRow(cells []string, widths []int, statusIndex, maxWidth int) string {
@@ -1186,6 +1278,34 @@ func runKubectl(opts Options, args []string) (string, error) {
 		return string(out), fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+// editResourceCmd runs kubectl edit for the current detail resource and returns editDoneMsg.
+// It leaves the alternate screen so the editor uses the main buffer, then runs kubectl edit
+// with stdin/stdout/stderr attached (opens $EDITOR). When the editor exits, kcli quits.
+func editResourceCmd(opts Options, spec resourceSpec, row resourceRow) tea.Cmd {
+	return func() tea.Msg {
+		args := []string{"edit", spec.KubectlType, row.Name}
+		if spec.Namespaced && row.Namespace != "" && row.Namespace != "-" {
+			args = append(args, "-n", row.Namespace)
+		}
+		full := make([]string, 0, len(args)+4)
+		if opts.Kubeconfig != "" {
+			full = append(full, "--kubeconfig", opts.Kubeconfig)
+		}
+		if opts.Context != "" {
+			full = append(full, "--context", opts.Context)
+		}
+		full = append(full, args...)
+		cmd := exec.Command("kubectl", full...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		// Leave alternate screen so the editor draws on the main buffer
+		_, _ = os.Stdout.Write([]byte("\033[?1049l"))
+		_ = cmd.Run()
+		return editDoneMsg{}
+	}
 }
 
 func defaultResourceSpec() resourceSpec {

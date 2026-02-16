@@ -14,18 +14,27 @@ export default defineConfig(({ mode }) => ({
     // Use 5173 only; fail if port is in use instead of trying another
     port: 5173,
     strictPort: true,
-    // Proxy API, WebSocket, and health to backend so dev uses same-origin (no cross-origin WS errors)
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:8080',
+    // Proxy API, WebSocket, and health to backend so dev uses same-origin (no cross-origin WS errors).
+    // Backend port: use VITE_BACKEND_PORT (e.g. 8081) if backend runs on a different port; default 8080.
+    proxy: (() => {
+      const port = process.env.VITE_BACKEND_PORT || "8080";
+      const target = `http://127.0.0.1:${port}`;
+      const proxyOptions = (path: string) => ({
+        target,
         changeOrigin: true,
-        ws: true,
-      },
-      '/health': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-    },
+        ...(path === "/api" ? { ws: true } : {}),
+        configure: (proxy: { on: (ev: string, fn: () => void) => void }) => {
+          proxy.on("error", () => {
+            // Suppress proxy error logging (e.g. ECONNREFUSED when backend is down).
+            // Frontend backs off polling when backend is unreachable; start backend with: make restart
+          });
+        },
+      });
+      return {
+        "/api": proxyOptions("/api"),
+        "/health": proxyOptions("/health"),
+      };
+    })(),
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {

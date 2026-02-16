@@ -16,6 +16,8 @@ const INITIAL_HEIGHT_PX = 320;
 const MODE_STORAGE_KEY = 'kubilitics-shell-engine-mode';
 const KCLI_STREAM_MODE_STORAGE_KEY = 'kubilitics-shell-kcli-stream-mode';
 const SHELL_STATE_SYNC_INTERVAL_MS = 2000;
+const SHELL_STATE_SYNC_BACKOFF_MS = 15000; // when backend unreachable, poll less often to avoid log spam
+const SHELL_STATE_SYNC_BACKOFF_MAX_MS = 60000;
 
 export interface ClusterShellPanelProps {
   open: boolean;
@@ -42,6 +44,26 @@ function base64DecodeToUint8Array(b64: string): Uint8Array {
     bytes[i] = bin.charCodeAt(i);
   }
   return bytes;
+}
+
+/** Map a keyboard event to the byte sequence to send to the PTY (so kcli/shell receives it). */
+function keyEventToStdin(e: React.KeyboardEvent): string | null {
+  const key = e.key;
+  if (key === 'Enter') return '\r';
+  if (key === 'Tab') return '\t';
+  if (key === 'Backspace') return '\x7f';
+  if (key === 'Escape') return '\x1b';
+  if (key === 'ArrowUp') return '\x1b[A';
+  if (key === 'ArrowDown') return '\x1b[B';
+  if (key === 'ArrowRight') return '\x1b[C';
+  if (key === 'ArrowLeft') return '\x1b[D';
+  if (e.ctrlKey && key.length === 1) {
+    const c = key.toUpperCase().charCodeAt(0);
+    if (c >= 64 && c <= 95) return String.fromCharCode(c - 64); // Ctrl+A -> \x01, etc.
+  }
+  if (e.altKey && key.length === 1) return '\x1b' + key; // Alt+key
+  if (key.length === 1 && !e.ctrlKey && !e.metaKey) return key; // printable
+  return null;
 }
 
 export function ClusterShellPanel({
@@ -85,6 +107,8 @@ export function ClusterShellPanel({
   const trackLocalLineBufferRef = useRef<(data: string) => void>(() => undefined);
   const sendStdinRef = useRef<(data: string) => void>(() => undefined);
   const syncTimerRef = useRef<number | null>(null);
+  const syncBackoffRef = useRef({ intervalMs: SHELL_STATE_SYNC_INTERVAL_MS, failures: 0 });
+  const syncTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -143,12 +167,18 @@ export function ClusterShellPanel({
     if (!open || !clusterId) return;
     try {
       const status = await getKCLITUIState(backendBaseUrl, clusterId);
+      syncBackoffRef.current = { intervalMs: SHELL_STATE_SYNC_INTERVAL_MS, failures: 0 };
       applyShellState(status);
       if (!status.kcliShellModeAllowed && kcliStreamMode === 'shell') {
         setKcliStreamMode('ui');
       }
     } catch {
-      // no-op: streaming session can continue even if status fetch is temporarily unavailable
+      const b = syncBackoffRef.current;
+      b.failures += 1;
+      b.intervalMs = Math.min(
+        SHELL_STATE_SYNC_BACKOFF_MAX_MS,
+        SHELL_STATE_SYNC_BACKOFF_MS * Math.min(b.failures, 4)
+      );
     }
   }, [applyShellState, backendBaseUrl, clusterId, kcliStreamMode, open]);
 
@@ -325,7 +355,7 @@ export function ClusterShellPanel({
     wsSessionRef.current = sessionId;
 
     const wsUrl = engine === 'kcli'
-      ? getKCLIShellStreamUrl(backendBaseUrl, clusterId, kcliStreamMode)
+      ? getKCLIShellStreamUrl(backendBaseUrl, clusterId, kcliStreamMode, activeNamespace ?? undefined)
       : getKubectlShellStreamUrl(backendBaseUrl, clusterId);
 
     setConnecting(true);
@@ -475,12 +505,19 @@ export function ClusterShellPanel({
       setShellStatus(null);
       return;
     }
-    void syncShellState();
-    const id = window.setInterval(() => {
-      void syncShellState();
-    }, SHELL_STATE_SYNC_INTERVAL_MS);
+    syncBackoffRef.current = { intervalMs: SHELL_STATE_SYNC_INTERVAL_MS, failures: 0 };
+    const scheduleNext = () => {
+      syncTimeoutRef.current = window.setTimeout(() => {
+        syncTimeoutRef.current = null;
+        void syncShellState().finally(scheduleNext);
+      }, syncBackoffRef.current.intervalMs);
+    };
+    void syncShellState().finally(scheduleNext);
     return () => {
-      window.clearInterval(id);
+      if (syncTimeoutRef.current != null) {
+        window.clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
       if (syncTimerRef.current != null) {
         window.clearTimeout(syncTimerRef.current);
         syncTimerRef.current = null;
@@ -496,6 +533,19 @@ export function ClusterShellPanel({
     navigate(`/${resourcePath}${query}`);
   }, [effectiveNamespace, navigate]);
 
+  /** When focus is outside the terminal (e.g. on a header button), forward key to terminal so Enter/j/k work. */
+  const handlePanelKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!open || !connected || !termRef.current || !containerRef.current) return;
+    if (containerRef.current.contains(document.activeElement)) return;
+    const data = keyEventToStdin(e);
+    if (data == null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    termRef.current.focus();
+    sendStdinRef.current(data);
+    if (data.includes('\r') || data.includes('\n')) scheduleStateSync(90);
+  }, [open, connected, scheduleStateSync]);
+
   if (!open) return null;
 
   return (
@@ -505,6 +555,8 @@ export function ClusterShellPanel({
         isMaximized && 'h-[calc(100vh-64px)]'
       )}
       style={isMaximized ? {} : { height: heightPx }}
+      onKeyDown={handlePanelKeyDown}
+      tabIndex={-1}
     >
       {!isMaximized && (
         <div

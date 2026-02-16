@@ -8,6 +8,25 @@ import { adaptTopologyGraph, validateTopologyGraph } from '@/topology-engine';
 
 const API_PREFIX = '/api/v1';
 
+/** Circuit breaker: after a network error (e.g. ECONNREFUSED when backend is down), stop sending requests for this long to avoid filling the terminal with proxy errors. */
+const BACKEND_DOWN_COOLDOWN_MS = 60_000;
+let backendUnavailableUntil = 0;
+
+function isNetworkError(e: unknown): boolean {
+  if (e instanceof TypeError && (e.message === 'Failed to fetch' || e.message?.includes('NetworkError'))) return true;
+  return false;
+}
+
+/** When a request fails due to backend unreachable, open the circuit so we don't hammer the proxy. */
+function markBackendUnavailable(): void {
+  backendUnavailableUntil = Date.now() + BACKEND_DOWN_COOLDOWN_MS;
+}
+
+/** True if we're in cooldown and should skip backend requests (avoids proxy log spam). */
+export function isBackendCircuitOpen(): boolean {
+  return Date.now() < backendUnavailableUntil;
+}
+
 /** Cluster shape returned by GET /api/v1/clusters (matches backend models.Cluster) */
 export interface BackendCluster {
   id: string;
@@ -53,6 +72,13 @@ export async function backendRequest<T>(
   path: string,
   init?: RequestInit
 ): Promise<T> {
+  if (isBackendCircuitOpen()) {
+    throw new BackendApiError(
+      'Backend unreachable (circuit open). Start backend with: make restart',
+      0,
+      undefined
+    );
+  }
   const normalizedBase = baseUrl.replace(/\/+$/, '');
   const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
   const url = `${normalizedBase}${API_PREFIX}/${normalizedPath}`;
@@ -62,10 +88,16 @@ export async function backendRequest<T>(
     ...((init?.headers as Record<string, string>) || {}),
   };
 
-  const response = await fetch(url, {
-    ...init,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers,
+    });
+  } catch (e) {
+    if (isNetworkError(e)) markBackendUnavailable();
+    throw e;
+  }
 
   const requestId = response.headers.get('X-Request-ID') ?? undefined;
   const body = await response.text();
@@ -457,9 +489,18 @@ export async function getTopologyExportDrawio(
 export async function getHealth(
   baseUrl: string
 ): Promise<{ status: string; service?: string; version?: string }> {
+  if (isBackendCircuitOpen()) {
+    throw new BackendApiError('Backend unreachable (circuit open). Start backend with: make restart', 0, undefined);
+  }
   const normalizedBase = baseUrl.replace(/\/+$/, '');
   const url = `${normalizedBase}/health`;
-  const response = await fetch(url);
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (e) {
+    if (isNetworkError(e)) markBackendUnavailable();
+    throw e;
+  }
   const body = await response.text();
   if (!response.ok) {
     throw new BackendApiError(
@@ -1137,11 +1178,13 @@ export function getKubectlShellStreamUrl(baseUrl: string, clusterId: string): st
 /**
  * WebSocket URL for GET /api/v1/clusters/{clusterId}/kcli/stream.
  * mode can be "ui" (default) or "shell".
+ * namespace (optional) starts kcli UI in that namespace (kubens-style).
  */
 export function getKCLIShellStreamUrl(
   baseUrl: string,
   clusterId: string,
-  mode: 'ui' | 'shell' = 'ui'
+  mode: 'ui' | 'shell' = 'ui',
+  namespace?: string
 ): string {
   const normalizedBase = (baseUrl || '').replace(/\/+$/, '');
   let wsBase = normalizedBase.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
@@ -1149,6 +1192,9 @@ export function getKCLIShellStreamUrl(
     wsBase = window.location.origin.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
   }
   const search = new URLSearchParams({ mode });
+  if (namespace && namespace !== 'all') {
+    search.set('namespace', namespace);
+  }
   return `${wsBase}${API_PREFIX}/clusters/${encodeURIComponent(clusterId)}/kcli/stream?${search.toString()}`;
 }
 

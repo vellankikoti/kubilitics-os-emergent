@@ -52,6 +52,7 @@ func (h *Handler) GetKCLIStream(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		mode = "ui"
 	}
+	namespace := strings.TrimSpace(r.URL.Query().Get("namespace"))
 	if mode == "shell" && !h.isKCLIShellModeAllowed() {
 		respondError(w, http.StatusForbidden, "kcli shell mode is disabled by server policy")
 		return
@@ -82,7 +83,7 @@ func (h *Handler) GetKCLIStream(w http.ResponseWriter, r *http.Request) {
 	)
 	audit.LogCommand(requestID, resolvedID, "kcli_stream", "mode="+mode, "success", "connected", 0, time.Since(start))
 
-	cmd, err := h.makeKCLIStreamCommand(r.Context(), cluster.Context, cluster.KubeconfigPath, mode)
+	cmd, err := h.makeKCLIStreamCommand(r.Context(), cluster.Context, cluster.KubeconfigPath, mode, namespace)
 	if err != nil {
 		audit.LogCommand(requestID, resolvedID, "kcli_stream", "mode="+mode, "failure", err.Error(), -1, time.Since(start))
 		_ = conn.WriteJSON(wsOutMessage{T: wsMsgError, D: err.Error()})
@@ -227,7 +228,7 @@ func (h *Handler) GetKCLIStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) makeKCLIStreamCommand(ctx context.Context, clusterContext, kubeconfigPath, mode string) (*exec.Cmd, error) {
+func (h *Handler) makeKCLIStreamCommand(ctx context.Context, clusterContext, kubeconfigPath, mode, namespace string) (*exec.Cmd, error) {
 	env := append(os.Environ(), "KUBECONFIG="+kubeconfigPath)
 	workDir := "/tmp"
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -243,6 +244,9 @@ func (h *Handler) makeKCLIStreamCommand(ctx context.Context, clusterContext, kub
 		args := []string{"ui"}
 		if clusterContext != "" {
 			args = append([]string{"--context", clusterContext}, args...)
+		}
+		if namespace != "" {
+			args = append(args, "--namespace", namespace)
 		}
 		cmd := exec.CommandContext(ctx, kcliBin, args...)
 		cmd.Env = env

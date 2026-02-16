@@ -2,7 +2,7 @@
 # Kill anything on backend/frontend ports, build backend, then start backend + frontend.
 # Backend is always rebuilt so the running process includes latest Go code (e.g. topology for Jobs/CronJobs).
 # If you see "resource topology not implemented for kind Node" (500), do a clean rebuild first: make clean && make backend, then run this script.
-# If you see ECONNREFUSED 127.0.0.1:8080 or "Killed: 9", the backend is not running — run this script again from a single terminal (do not run two copies at once).
+# If you see ECONNREFUSED 127.0.0.1:8080, the backend is not listening — run this script from repo root (./scripts/restart.sh or make restart). Do not run two copies at once.
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -55,7 +55,7 @@ if [ ! -x "$BACKEND_BIN" ]; then
 fi
 
 echo "Starting backend on :$BACKEND_PORT..."
-(cd "$ROOT/kubilitics-backend" && exec ./bin/kubilitics-backend) &
+(cd "$ROOT/kubilitics-backend" && export KUBILITICS_PORT=$BACKEND_PORT && exec ./bin/kubilitics-backend) &
 BACKEND_PID=$!
 trap "kill $BACKEND_PID 2>/dev/null || true" EXIT
 
