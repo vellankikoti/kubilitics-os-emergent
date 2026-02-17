@@ -10,9 +10,7 @@
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-
-const AI_BACKEND_URL =
-  (import.meta.env.VITE_AI_BACKEND_URL as string | undefined) || 'http://localhost:8081';
+import { AI_BASE_URL as AI_BACKEND_URL } from '@/services/aiService';
 
 const POLL_INTERVAL_MS = 5 * 60 * 1_000; // 5 minutes
 const SEEN_KEY = 'kubilitics-ai-notif-seen';

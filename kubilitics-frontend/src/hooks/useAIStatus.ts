@@ -8,9 +8,7 @@
  * 'unavailable'  — backend unreachable or returned error (net error / 5xx)
  */
 import { useEffect, useRef, useState } from 'react';
-
-const AI_BACKEND_URL =
-  (import.meta.env.VITE_AI_BACKEND_URL as string | undefined) || 'http://localhost:8081';
+import { AI_BASE_URL as AI_BACKEND_URL } from '@/services/aiService';
 
 export type AIStatusKind = 'active' | 'unconfigured' | 'unavailable';
 
