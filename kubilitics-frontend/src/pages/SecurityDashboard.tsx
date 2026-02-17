@@ -18,8 +18,10 @@ import { ComplianceReportCard } from '@/components/ComplianceReportCard';
 import { useSecurityScan } from '@/hooks/useSecurityScan';
 import { useSecurityAnalysis } from '@/hooks/useSecurityAnalysis';
 import { useComplianceCheck } from '@/hooks/useComplianceCheck';
+import { AI_BASE_URL } from '@/services/aiService';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080';
+// Security endpoints (/api/v1/security/*) live on the AI backend (port 8081).
+const API_BASE = AI_BASE_URL;
 
 interface SecurityPosture {
   overall_score: number;

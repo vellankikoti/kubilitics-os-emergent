@@ -1,18 +1,15 @@
 /**
- * AnalyticsOverview — B-INT-009: Wire to real multi-source APIs
+ * AnalyticsOverview — B-INT-009 + B-INT-010 fix: Wire to real multi-source APIs
  *
- * Data sources:
- *   Kubilitics AI backend (port 8081):
- *     GET  /health                              → API status (healthy / not_ready)
- *     GET  /info                                → llm_provider, analytics_enabled
- *     GET  /api/v1/security/posture             → security score/grade, critical issues
- *     GET  /api/v1/security/compliance          → CIS compliance score
- *     GET  /api/v1/analytics/anomalies          → 24h anomaly count
- *     GET  /api/v1/analytics/recommendations    → cross-domain insights
- *     GET  /api/v1/analytics/ml/models          → active ML models
- *
- *   Kubilitics backend (port 8080):
- *     GET  /api/v1/cost/overview                → monthly cost, cost trend
+ * All endpoints live on the Kubilitics AI backend (port 8081, AI_BASE_URL):
+ *   GET  /health                              → API status (healthy / not_ready)
+ *   GET  /info                                → llm_provider, analytics_enabled
+ *   GET  /api/v1/security/posture             → security score/grade, critical issues
+ *   GET  /api/v1/security/compliance          → CIS compliance score
+ *   GET  /api/v1/analytics/anomalies          → 24h anomaly count
+ *   GET  /api/v1/analytics/recommendations    → cross-domain insights
+ *   GET  /api/v1/analytics/ml/models          → active ML models
+ *   GET  /api/v1/cost/overview                → monthly cost, cost trend
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -42,14 +39,14 @@ import {
   getAnomalies,
   getRecommendations,
   getMLModels,
+  AI_BASE_URL,
   type AnalyticsRecommendation,
   type AIServerInfo,
 } from '@/services/aiService';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
-
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080';
-const AI_BASE  = import.meta.env.VITE_AI_BACKEND_URL || 'http://localhost:8081';
+// All endpoints (including /api/v1/cost/*) live on the AI backend. One base URL.
+const AI_BASE = AI_BASE_URL;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -114,7 +111,7 @@ export function AnalyticsOverview() {
       fetch(`${AI_BASE}/api/v1/security/compliance`).then(r => r.ok ? r.json() : null),
       getAnomalies(),
       getRecommendations(),
-      fetch(`${API_BASE}/api/v1/cost/overview`).then(r => r.ok ? r.json() : null),
+      fetch(`${AI_BASE}/api/v1/cost/overview`).then(r => r.ok ? r.json() : null),
       getMLModels(),
     ]);
 

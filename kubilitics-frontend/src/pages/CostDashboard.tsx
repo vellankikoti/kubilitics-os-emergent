@@ -1,16 +1,13 @@
 /**
- * CostDashboard — B-INT-006: Wire to real cost API
+ * CostDashboard — B-INT-006 + B-INT-010 fix: Wire to real cost API
  *
- * Data sources:
- *   Kubilitics backend (port 8080):
- *     GET /api/v1/cost/overview     → monthly_cost, daily_cost, forecast, by_namespace, by_resource_type
- *     GET /api/v1/cost/history      → 30-day cost snapshots for trend chart
- *     GET /api/v1/cost/namespaces   → per-namespace cost attribution
- *     GET /api/v1/cost/forecast     → 6-month linear-regression forecast
- *     GET /api/v1/cost/recommendations → ranked optimization recommendations
- *
- *   Kubilitics AI backend (port 8081):
- *     GET /api/v1/analytics/recommendations → AI-powered suggestions with impact/effort scores
+ * All cost endpoints live on the AI backend (port 8081, AI_BASE_URL):
+ *   GET /api/v1/cost/overview        → monthly_cost, daily_cost, forecast, by_namespace, by_resource_type
+ *   GET /api/v1/cost/history         → 30-day cost snapshots for trend chart
+ *   GET /api/v1/cost/namespaces      → per-namespace cost attribution
+ *   GET /api/v1/cost/forecast        → 6-month linear-regression forecast
+ *   GET /api/v1/cost/recommendations → ranked optimization recommendations
+ *   GET /api/v1/analytics/recommendations → AI-powered suggestions with impact/effort scores
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -49,12 +46,14 @@ import {
 } from 'recharts';
 import {
   getRecommendations,
+  AI_BASE_URL,
   type AnalyticsRecommendation
 } from '@/services/aiService';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
-
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080';
+// All /api/v1/cost/* endpoints live on the AI backend (port 8081), not the
+// main backend (port 8080). Use AI_BASE_URL as the single canonical source.
+const API_BASE = AI_BASE_URL;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
