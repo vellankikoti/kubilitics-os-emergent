@@ -1,44 +1,43 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Sparkles } from "lucide-react";
 import { AnomalyList } from "@/components/AnomalyList";
 import { CapacityAlert } from "@/components/CapacityAlert";
-import { useAnomalyDetection, DataPoint } from "@/hooks/useAnomalyDetection";
+import { useAnomalyDetection, type DataPoint } from "@/hooks/useAnomalyDetection";
 import { useTrendAnalysis } from "@/hooks/useTrendAnalysis";
+import { getAnomalies } from "@/services/aiService";
 
-// Mock data generator - in production, this would come from your metrics API
-const generateMockMetricData = (): DataPoint[] => {
-  const now = Date.now();
-  const data: DataPoint[] = [];
-
-  for (let i = 0; i < 30; i++) {
-    const timestamp = new Date(now - (30 - i) * 60000).toISOString(); // Last 30 minutes
-    const baseValue = 45;
-    const noise = Math.random() * 10;
-    const trend = i * 0.5; // Increasing trend
-
-    // Add anomaly spike at index 20
-    const value = i === 20 ? baseValue + 50 : baseValue + noise + trend;
-
-    data.push({
-      timestamp,
-      value
-    });
-  }
-
-  return data;
-};
+// Convert AI analytics anomalies to DataPoints for the analysis hooks.
+// This replaces the previous Math.random() mock generator.
+function aiAnomaliesToDataPoints(anomalies: Awaited<ReturnType<typeof getAnomalies>>): DataPoint[] {
+  const cpuAnomalies = anomalies.filter(a => a.metric.toLowerCase().includes('cpu'));
+  if (cpuAnomalies.length === 0) return [];
+  return cpuAnomalies
+    .map(a => ({ timestamp: a.detected_at, value: a.value }))
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+}
 
 export const SmartInsightsSection = () => {
   const [metricData, setMetricData] = useState<DataPoint[]>([]);
   const [dismissedCapacity, setDismissedCapacity] = useState(false);
 
-  // Initialize mock data
-  useEffect(() => {
-    setMetricData(generateMockMetricData());
+  // Fetch real AI anomaly data on mount (replaces mock generator)
+  const loadMetricData = useCallback(async () => {
+    try {
+      const anomalies = await getAnomalies();
+      const pts = aiAnomaliesToDataPoints(anomalies);
+      if (pts.length > 0) setMetricData(pts);
+      // If no real data yet (backend not connected), leave empty — don't generate fake data
+    } catch {
+      // AI backend not reachable — show nothing rather than fake data
+    }
   }, []);
 
-  // Anomaly detection
+  useEffect(() => {
+    loadMetricData();
+  }, [loadMetricData]);
+
+  // Anomaly detection — calls real API (useAnomalyDetection → POST /api/v1/analytics/anomalies)
   const { anomalies, isLoading: anomaliesLoading } = useAnomalyDetection({
     metricName: 'cluster_cpu_usage',
     metricType: 'cpu',
@@ -59,7 +58,7 @@ export const SmartInsightsSection = () => {
   });
 
   const currentValue = metricData.length > 0 ? metricData[metricData.length - 1].value : 0;
-  const capacity = 100; // 100% capacity
+  const capacity = 100; // 100% CPU capacity
 
   return (
     <div className="space-y-4">
