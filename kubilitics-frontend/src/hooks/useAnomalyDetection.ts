@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { AI_BASE_URL } from '@/services/aiService';
 
-const AI_BACKEND_URL = import.meta.env.VITE_AI_BACKEND_URL || 'http://localhost:8080';
+// Use the canonical AI base URL from aiService (VITE_AI_BACKEND_URL || http://localhost:8081)
+const AI_BACKEND_URL = AI_BASE_URL;
 
 export interface DataPoint {
   timestamp: string;

@@ -378,12 +378,19 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 		mux.HandleFunc("/api/v1/safety/approvals/", s.handleSafetyApprovals)
 	}
 
-	// Analytics endpoints
+	// Analytics endpoints (simple engine-backed)
 	if s.analyticsEngine != nil {
 		mux.HandleFunc("/api/v1/analytics/anomalies", s.handleAnalyticsAnomalies)
 		mux.HandleFunc("/api/v1/analytics/trends", s.handleAnalyticsTrends)
 		mux.HandleFunc("/api/v1/analytics/recommendations", s.handleAnalyticsRecommendations)
 	}
+
+	// ML analytics endpoints (A-CORE-ML) — always available, no engine dependency.
+	// These handlers (ml_handlers.go) implement Isolation Forest anomaly detection
+	// and ARIMA time-series forecasting using only in-process math.
+	mux.HandleFunc("/api/v1/analytics/ml/anomalies", s.handleMLAnomalies)
+	mux.HandleFunc("/api/v1/analytics/ml/models", s.handleMLModels)
+	mux.HandleFunc("/api/v1/analytics/forecast", s.handleForecast)
 
 	// Wizard AI suggestion endpoints (E-PLAT-006)
 	mux.HandleFunc("/api/v1/wizards/", s.handleWizardDispatch)

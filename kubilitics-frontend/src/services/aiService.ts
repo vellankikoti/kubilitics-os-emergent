@@ -253,6 +253,111 @@ export async function getRecommendations(
   );
 }
 
+// ─── ML Analytics (A-CORE-ML) ─────────────────────────────────────────────────
+// These endpoints are handled by ml_handlers.go in the AI backend.
+
+export interface MLAnomalyPoint {
+  timestamp: string;
+  value: number;
+  score: number;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  explanation: string;
+  path_length?: number;
+}
+
+export interface MLModelInfo {
+  algorithm: string;
+  num_trees: number;
+  sample_size: number;
+  threshold: number;
+  total_points: number;
+}
+
+export interface MLAnomalyRequest {
+  time_series: {
+    metric_name: string;
+    metric_type: string;
+    data: Array<{ timestamp: string; value: number }>;
+  };
+  algorithm?: 'isolation_forest' | 'ensemble';
+  sensitivity?: number;
+  num_trees?: number;
+  sample_size?: number;
+}
+
+export interface MLAnomalyResponse {
+  anomalies: MLAnomalyPoint[];
+  model_info: MLModelInfo;
+  total_points: number;
+  anomaly_rate: number;
+}
+
+export async function detectMLAnomalies(
+  req: MLAnomalyRequest
+): Promise<MLAnomalyResponse> {
+  return aiRequest<MLAnomalyResponse>('/api/v1/analytics/ml/anomalies', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+export interface ForecastPoint {
+  timestamp: string;
+  value: number;
+  lower_95: number;
+  upper_95: number;
+}
+
+export interface ForecastModelInfo {
+  order: number[];
+  fitted: boolean;
+  ar_coeffs: number[];
+  ma_coeffs: number[];
+  constant: number;
+  std_error: number;
+  n_residuals: number;
+}
+
+export interface ForecastRequest {
+  time_series: {
+    metric_name: string;
+    metric_type: string;
+    data: Array<{ timestamp: string; value: number }>;
+  };
+  forecast_steps?: number;
+  model?: 'arima' | 'auto';
+  arima_order?: [number, number, number];
+}
+
+export interface ForecastResponse {
+  forecasts: ForecastPoint[];
+  model_info: ForecastModelInfo;
+  std_error: number;
+  metric_name: string;
+  forecast_horizon: number;
+}
+
+export async function forecastTimeSeries(
+  req: ForecastRequest
+): Promise<ForecastResponse> {
+  return aiRequest<ForecastResponse>('/api/v1/analytics/forecast', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+export interface MLModelDescription {
+  name: string;
+  algorithm: string;
+  parameters: Record<string, unknown>;
+  use_cases: string[];
+  output_fields: string[];
+}
+
+export async function getMLModels(): Promise<{ models: MLModelDescription[] }> {
+  return aiRequest<{ models: MLModelDescription[] }>('/api/v1/analytics/ml/models');
+}
+
 // ─── Conversations ────────────────────────────────────────────────────────────
 
 export async function listConversations(): Promise<{
