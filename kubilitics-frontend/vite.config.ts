@@ -14,8 +14,10 @@ export default defineConfig(({ mode }) => ({
     // Use 5173 only; fail if port is in use instead of trying another
     port: 5173,
     strictPort: true,
-    // Proxy API, WebSocket, and health to backend so dev uses same-origin (no cross-origin WS errors).
-    // Backend port: use VITE_BACKEND_PORT (e.g. 8081) if backend runs on a different port; default 8080.
+    // Proxy API, WebSocket, and health to the MAIN backend (port 8080).
+    // The AI backend (port 8081) is called directly via absolute URLs (AI_BASE_URL in aiService.ts)
+    // so no proxy entry is needed for it — that also avoids CORS issues in production.
+    // Override with VITE_BACKEND_PORT env var if main backend runs on a different port.
     proxy: (() => {
       const port = process.env.VITE_BACKEND_PORT || "8080";
       const target = `http://127.0.0.1:${port}`;

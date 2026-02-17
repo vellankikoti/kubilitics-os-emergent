@@ -1,5 +1,7 @@
 // A-CORE-013: Persistence layer hooks — backed by real /api/v1/persistence/* endpoints.
+// Persistence endpoints live on the AI backend (port 8081), not the main backend (port 8080).
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { AI_BASE_URL } from '@/services/aiService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -104,8 +106,10 @@ export interface PersistenceHealth {
 }
 
 // ─── API base ─────────────────────────────────────────────────────────────────
-
-const API_BASE = '/api/v1/persistence';
+// Persistence layer (audit, conversations, anomalies, cost snapshots) lives on
+// the AI backend (port 8081 by default). Use the canonical AI_BASE_URL so the
+// port is consistent across all AI-backend callers.
+const API_BASE = `${AI_BASE_URL}/api/v1/persistence`;
 
 // ─── usePersistenceHealth ─────────────────────────────────────────────────────
 
