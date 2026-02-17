@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { AI_BASE_URL } from '@/services/aiService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -124,7 +125,8 @@ export interface ResourceCost {
 
 // ─── API base ─────────────────────────────────────────────────────────────────
 
-const API_BASE = '/api/v1/cost';
+// Cost intelligence endpoints live on the AI backend (port 8081).
+const API_BASE = `${AI_BASE_URL}/api/v1/cost`;
 
 // ─── useCostOverview — polls cluster-wide cost snapshot ───────────────────────
 

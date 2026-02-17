@@ -1,5 +1,7 @@
 // A-CORE-014: Token budget enforcement hooks — backed by real /api/v1/budget/* endpoints.
+// Budget endpoints live on the AI backend (port 8081).
 import { useState, useEffect, useCallback } from 'react';
+import { AI_BASE_URL } from '@/services/aiService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,7 +52,7 @@ export interface BudgetCheckResult {
 
 // ─── API base ─────────────────────────────────────────────────────────────────
 
-const API_BASE = '/api/v1/budget';
+const API_BASE = `${AI_BASE_URL}/api/v1/budget`;
 
 // ─── useBudgetSummary ─────────────────────────────────────────────────────────
 

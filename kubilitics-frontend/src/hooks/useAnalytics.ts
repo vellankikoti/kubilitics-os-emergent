@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { AI_BASE_URL } from '@/services/aiService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -98,7 +99,8 @@ export interface ForecastRequest {
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
 
-const API_BASE = '/api/v1/analytics/pipeline';
+// Analytics pipeline endpoints live on the AI backend (port 8081).
+const API_BASE = `${AI_BASE_URL}/api/v1/analytics/pipeline`;
 
 /**
  * useAnalyticsAnomalies — polls for recent anomalies.

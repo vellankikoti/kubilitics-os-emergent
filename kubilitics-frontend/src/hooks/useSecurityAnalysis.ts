@@ -1,5 +1,7 @@
 // A-CORE-012: Security Analysis hooks — backed by real /api/v1/security/* endpoints.
+// All security endpoints live on the AI backend (port 8081).
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { AI_BASE_URL } from '@/services/aiService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -137,8 +139,9 @@ export interface SecurityAnalysisResult {
 }
 
 // ─── API base ─────────────────────────────────────────────────────────────────
-
-const API_BASE = '/api/v1/security';
+// Security endpoints live on the AI backend. Use absolute URL to avoid Vite
+// proxy routing them to the main backend (port 8080).
+const API_BASE = `${AI_BASE_URL}/api/v1/security`;
 
 // ─── useSecurityPosture — polls cluster-wide security posture ─────────────────
 

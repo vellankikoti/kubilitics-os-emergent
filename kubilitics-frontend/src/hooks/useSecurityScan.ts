@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { AI_BASE_URL } from '@/services/aiService';
 
 export interface Vulnerability {
   cve_id: string;
@@ -42,7 +43,8 @@ export interface UseSecurityScanResult {
   refresh: () => Promise<void>;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080';
+// Security scan endpoints live on the AI backend (port 8081).
+const API_BASE = AI_BASE_URL;
 
 export function useSecurityScan(options: UseSecurityScanOptions = {}): UseSecurityScanResult {
   const {

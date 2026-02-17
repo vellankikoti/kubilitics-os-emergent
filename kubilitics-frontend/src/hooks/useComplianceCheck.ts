@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { AI_BASE_URL } from '@/services/aiService';
 
 export type ComplianceStandard = 'cis_kubernetes' | 'pod_security_standard' | 'nist' | 'soc2';
 export type ComplianceStatus = 'pass' | 'fail' | 'warning' | 'not_applicable';
@@ -66,7 +67,8 @@ export interface UseComplianceCheckResult {
   refresh: () => Promise<void>;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080';
+// Compliance check endpoints live on the AI backend (port 8081).
+const API_BASE = AI_BASE_URL;
 
 export function useComplianceCheck(
   options: UseComplianceCheckOptions = {}
