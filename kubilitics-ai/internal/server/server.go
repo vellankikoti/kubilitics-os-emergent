@@ -385,6 +385,11 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 		mux.HandleFunc("/api/v1/analytics/recommendations", s.handleAnalyticsRecommendations)
 	}
 
+	// Wizard AI suggestion endpoints (E-PLAT-006)
+	mux.HandleFunc("/api/v1/wizards/", s.handleWizardDispatch)
+	mux.HandleFunc("/api/v1/wizards/suggest", s.handleWizardDispatch)
+	mux.HandleFunc("/api/v1/wizards/validate", s.handleWizardDispatch)
+
 	// WebSocket endpoint for AI chat
 	mux.HandleFunc("/ws/chat", s.handleWebSocket)
 
