@@ -106,42 +106,69 @@ export default function ClusterSelection() {
       ? backendClusters
       : clusters;
 
-  // Initialize clusters (kubeconfig or demo) when NOT using backend
+  // Initialize clusters (kubeconfig or demo) when NOT using backend.
+  // Real health check: try fetching the cluster API server /readyz endpoint.
+  // No Math.random() — status is determined by actual reachability.
   useEffect(() => {
     if (backendBaseUrl) return;
-    if (parsedClusters.length > 0) {
-      const clustersWithHealth: ClusterWithHealth[] = parsedClusters.map((c) => ({
-        ...c,
-        isChecking: true,
-        status: 'unknown',
-      }));
-      setClustersState(clustersWithHealth);
-
-      clustersWithHealth.forEach((cluster, index) => {
-        setTimeout(() => {
-          setClustersState((prev) =>
-            prev.map((c) => {
-              if (c.id === cluster.id) {
-                const statuses: ParsedCluster['status'][] = ['healthy', 'healthy', 'healthy', 'warning', 'error'];
-                const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
-                return {
-                  ...c,
-                  isChecking: false,
-                  status: randomStatus,
-                  lastChecked: new Date(),
-                  version: 'v1.28.4',
-                  nodeCount: Math.floor(Math.random() * 10) + 1,
-                  provider: detectProvider(c.server),
-                };
-              }
-              return c;
-            })
-          );
-        }, 1000 + index * 500);
-      });
-    } else {
+    if (parsedClusters.length === 0) {
       setClustersState([]);
+      return;
     }
+
+    const clustersWithHealth: ClusterWithHealth[] = parsedClusters.map((c) => ({
+      ...c,
+      isChecking: true,
+      status: 'unknown' as ParsedCluster['status'],
+    }));
+    setClustersState(clustersWithHealth);
+
+    clustersWithHealth.forEach((cluster, index) => {
+      // Stagger health checks to avoid thundering-herd
+      setTimeout(async () => {
+        let clusterStatus: ParsedCluster['status'] = 'warning';
+        let version: string | undefined;
+        let nodeCount: number | undefined;
+
+        try {
+          // Try to reach the API server. Most browsers will fail with CORS,
+          // so we treat a network error as unknown/warning rather than error.
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 5000);
+          const res = await fetch(`${cluster.server}/readyz`, {
+            signal: controller.signal,
+            mode: 'no-cors', // avoid CORS preflight; we just need reachability
+          });
+          clearTimeout(timer);
+          // With no-cors the response is opaque — any response means reachable
+          clusterStatus = 'healthy';
+        } catch (err) {
+          if (err instanceof Error && err.name === 'AbortError') {
+            // Timed out — definitely not reachable
+            clusterStatus = 'error';
+          } else {
+            // Network error or CORS — cluster might still be reachable from the
+            // backend process; treat as warning rather than error
+            clusterStatus = 'warning';
+          }
+        }
+
+        setClustersState((prev) =>
+          prev.map((c) => {
+            if (c.id !== cluster.id) return c;
+            return {
+              ...c,
+              isChecking: false,
+              status: clusterStatus,
+              lastChecked: new Date(),
+              version: version ?? c.version,
+              nodeCount: nodeCount ?? c.nodeCount,
+              provider: detectProvider(c.server),
+            };
+          })
+        );
+      }, index * 300); // small stagger, no artificial 1-second delay
+    });
   }, [parsedClusters, backendBaseUrl]);
 
   const detectProvider = (server: string): string => {
