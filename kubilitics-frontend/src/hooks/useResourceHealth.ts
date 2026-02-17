@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
 
-const AI_BACKEND_URL = import.meta.env.VITE_AI_BACKEND_URL || 'http://localhost:8080';
-
 export interface ResourceHealth {
   resourceId: string;
   healthScore: number; // 0-100

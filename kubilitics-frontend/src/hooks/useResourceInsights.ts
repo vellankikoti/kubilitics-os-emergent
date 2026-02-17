@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react';
 import { useAnomalyDetection, DataPoint } from './useAnomalyDetection';
 import { useTrendAnalysis } from './useTrendAnalysis';
 
-const AI_BACKEND_URL = import.meta.env.VITE_AI_BACKEND_URL || 'http://localhost:8080';
-
 export interface ResourceRecommendation {
   type: 'scale_up' | 'scale_down' | 'investigate' | 'optimize' | 'security' | 'cost';
   priority: 'critical' | 'high' | 'medium' | 'low';

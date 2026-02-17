@@ -16,8 +16,7 @@
  */
 
 import { useState, useCallback, useRef } from 'react';
-
-const AI_BASE_URL = import.meta.env.VITE_AI_BACKEND_URL || 'http://localhost:8081';
+import { AI_BASE_URL } from '@/services/aiService';
 
 // ─── Shared graph types ──────────────────────────────────────────────────────
 
