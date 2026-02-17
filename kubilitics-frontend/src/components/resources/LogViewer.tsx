@@ -42,16 +42,9 @@ export interface LogViewerProps {
   tailLines?: number;
 }
 
-const mockLogs: LogEntry[] = [
-  { timestamp: '2025-12-30T09:42:47', level: 'info', message: '🚀 Application started successfully' },
-  { timestamp: '2025-12-30T09:42:47', level: 'info', message: '  Version: v1.0.0' },
-  { timestamp: '2025-12-30T09:42:48', level: 'info', message: "* Serving on port 8080" },
-  { timestamp: '2025-12-30T09:42:48', level: 'debug', message: 'Debug mode: off' },
-  { timestamp: '2025-12-30T09:42:48', level: 'warn', message: 'WARNING: This is a development server.' },
-  { timestamp: '2025-12-30T09:42:48', level: 'info', message: '* Running on http://0.0.0.0:8080' },
-  { timestamp: '2025-12-30T09:42:52', level: 'info', message: 'GET /health HTTP/1.1 200' },
-  { timestamp: '2025-12-30T09:42:57', level: 'info', message: 'GET /health HTTP/1.1 200' },
-];
+// No mock logs — show an empty state when no real data is available.
+// This avoids displaying fabricated timestamps that confuse users.
+const EMPTY_LOGS: LogEntry[] = [];
 
 export function LogViewer({ 
   logs: propLogs,
@@ -91,8 +84,10 @@ export function LogViewer({
     }
   }, [rawLogs]);
 
-  // Determine which logs to display
-  const displayLogs = isConnected && podName && namespace ? localLogs : (propLogs || mockLogs);
+  // Determine which logs to display.
+  // Show real logs when connected with a pod/namespace; prop-provided logs as
+  // a secondary source (e.g. pre-fetched by parent); empty otherwise.
+  const displayLogs = isConnected && podName && namespace ? localLogs : (propLogs ?? EMPTY_LOGS);
 
   // Auto-scroll when streaming
   useEffect(() => {
@@ -143,7 +138,7 @@ export function LogViewer({
           ) : (
             <Badge variant="secondary" className="gap-1.5 text-xs">
               <WifiOff className="h-3 w-3" />
-              Mock Data
+              {!podName || !namespace ? 'No pod selected' : 'Offline'}
             </Badge>
           )}
           
@@ -269,7 +264,13 @@ export function LogViewer({
           <div className="p-4 space-y-0.5">
             {filteredLogs.length === 0 ? (
               <div className="text-muted-foreground text-center py-8">
-                {searchQuery || selectedLevel ? 'No logs match your filters' : 'No logs available'}
+                {searchQuery || selectedLevel
+                  ? 'No logs match your filters'
+                  : !podName || !namespace
+                    ? 'Select a pod to view its logs'
+                    : !isConnected
+                      ? 'Disconnected — reconnect to stream logs'
+                      : 'No logs yet — logs will appear here as they stream in'}
               </div>
             ) : (
               filteredLogs.map((log, i) => (
