@@ -10,6 +10,7 @@ import {
   FileCode, FileImage, FileText, FileJson, Table, Search,
   Layers, ChevronDown, Activity, Thermometer, RefreshCcw,
   Map as MapIcon, Copy, Bomb, Route, Trash2, Edit, X, ScrollText, ExternalLink, ChevronUp, Grid3X3,
+  Brain, GitBranch, AlertCircle, CheckCircle2, Sparkles, Loader2, ShieldAlert, ArrowRight,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { Button } from '@/components/ui/button';
@@ -34,6 +35,13 @@ import { useTopologyLiveUpdates } from '@/hooks/useTopologyLiveUpdates';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { getTopologyExportDrawio } from '@/services/backendApiClient';
 import { useBackendConfigStore, getEffectiveBackendBaseUrl } from '@/stores/backendConfigStore';
+import {
+  useBlastRadiusAnalysis,
+  useCriticalPath,
+  useNodeExplain,
+  type TopologyNodeSummary as AINodeSummary,
+  type TopologyEdgeSummary as AIEdgeSummary,
+} from '@/hooks/useTopologyAI';
 
 // ─── Import from portable topology-engine ─────────────────────
 import {
@@ -217,6 +225,33 @@ export default function Topology() {
   const [hoveredNode, setHoveredNode] = useState<{ node: TopologyNode; position: { x: number; y: number } } | null>(null);
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
   const [snapToGrid, setSnapToGrid] = useState(false);
+  // E-PLAT-001: AI analysis state
+  const [showAIPanel, setShowAIPanel] = useState(false);
+  const [aiPanelTab, setAIPanelTab] = useState<'blast' | 'critical-path'>('blast');
+
+  // E-PLAT-001: AI hooks
+  const { result: aiAnalysis, loading: aiAnalyzing, analyze: analyzeBlastRadius, clear: clearAIAnalysis } = useBlastRadiusAnalysis();
+  const { result: criticalPath, loading: critPathLoading, fetchCriticalPath, clear: clearCriticalPath } = useCriticalPath();
+  const { results: nodeExplains, loadingId: nodeExplainLoadingId, explain: explainNode } = useNodeExplain();
+
+  // Helpers to convert topology graph nodes/edges to AI API format
+  const toAINodes = useCallback((nodes: TopologyNode[]): AINodeSummary[] =>
+    nodes.map(n => ({
+      id: n.id,
+      kind: n.kind,
+      name: n.name,
+      namespace: n.namespace,
+      health: n.computed?.health,
+      replicas: n.computed?.replicas?.ready,
+    })), []);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const toAIEdges = useCallback((edges: Array<{ source: string; target: string; relationshipType: string }>): AIEdgeSummary[] =>
+    edges.map(e => ({
+      source: e.source,
+      target: e.target,
+      relationship_type: e.relationshipType,
+    })), []);
 
   const availableNamespaces = useMemo(() => {
     const ns = new Set<string>();
@@ -380,6 +415,18 @@ export default function Topology() {
       const result = computeBlastRadius(filteredGraph, nodeId);
       setBlastRadius(result);
       toast.success(`Blast radius: ${result.affectedNodes.size} resources affected`);
+      // E-PLAT-001: Also fetch AI analysis
+      clearAIAnalysis();
+      setShowAIPanel(true);
+      setAIPanelTab('blast');
+      analyzeBlastRadius({
+        target_node_id: nodeId,
+        operation: 'delete',
+        nodes: toAINodes(filteredGraph.nodes),
+        edges: toAIEdges(filteredGraph.edges),
+        blast_radius_node_ids: Array.from(result.affectedNodes),
+        total_impact: result.totalImpact,
+      });
     } else if (actionId === 'view-logs' && node) {
       const routeMap: Record<string, string> = {
         Pod: 'pods', Deployment: 'deployments', ReplicaSet: 'replicasets',
@@ -691,6 +738,31 @@ export default function Topology() {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* E-PLAT-001: AI Analysis toggle */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={showAIPanel ? 'default' : 'outline'}
+              size="sm"
+              className="h-9 gap-1.5"
+              onClick={() => {
+                setShowAIPanel(v => !v);
+                if (!showAIPanel && criticalPath === null && !critPathLoading) {
+                  fetchCriticalPath(toAINodes(filteredGraph.nodes), toAIEdges(filteredGraph.edges));
+                }
+              }}
+            >
+              {(aiAnalyzing || critPathLoading) ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Brain className="h-4 w-4" />
+              )}
+              AI Analysis
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Toggle AI-powered blast radius analysis and critical path visualization</TooltipContent>
+        </Tooltip>
 
         {/* Snap to grid (Cytoscape only) */}
         <Tooltip>
@@ -1082,6 +1154,216 @@ export default function Topology() {
           </motion.div>
         )}
 
+        {/* E-PLAT-001: AI Analysis Panel — Critical Path + Blast Radius AI */}
+        {showAIPanel && (
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            className="absolute top-4 right-4 w-80 z-20 flex flex-col gap-2"
+          >
+            <Card className="bg-background/95 backdrop-blur-sm shadow-xl border-purple-500/30">
+              <div className="p-3 border-b border-border flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-purple-500" />
+                  <span className="font-semibold text-sm">AI Topology Analysis</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setAIPanelTab('blast')}
+                    className={`px-2 py-0.5 text-xs rounded font-medium transition-colors ${aiPanelTab === 'blast' ? 'bg-purple-500/20 text-purple-600' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    Impact
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAIPanelTab('critical-path');
+                      if (!criticalPath && !critPathLoading) {
+                        fetchCriticalPath(toAINodes(filteredGraph.nodes), toAIEdges(filteredGraph.edges));
+                      }
+                    }}
+                    className={`px-2 py-0.5 text-xs rounded font-medium transition-colors ${aiPanelTab === 'critical-path' ? 'bg-purple-500/20 text-purple-600' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    Critical Path
+                  </button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 ml-1"
+                    onClick={() => { setShowAIPanel(false); clearAIAnalysis(); clearCriticalPath(); }}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Impact tab */}
+              {aiPanelTab === 'blast' && (
+                <div className="p-3 space-y-3">
+                  {!aiAnalysis && !aiAnalyzing && (
+                    <div className="text-center py-4 space-y-2">
+                      <Bomb className="h-8 w-8 text-muted-foreground mx-auto" />
+                      <p className="text-xs text-muted-foreground">Right-click any resource and select<br /><strong>Compute Blast Radius</strong> for AI analysis</p>
+                    </div>
+                  )}
+                  {aiAnalyzing && (
+                    <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin text-purple-500" />
+                      Analyzing impact with AI…
+                    </div>
+                  )}
+                  {aiAnalysis && (
+                    <div className="space-y-3">
+                      {/* Risk badge */}
+                      <div className="flex items-center gap-2">
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wide ${
+                          aiAnalysis.risk_level === 'critical' ? 'bg-red-500/20 text-red-600' :
+                          aiAnalysis.risk_level === 'high' ? 'bg-orange-500/20 text-orange-600' :
+                          aiAnalysis.risk_level === 'medium' ? 'bg-yellow-500/20 text-yellow-700' :
+                          'bg-green-500/20 text-green-600'
+                        }`}>
+                          {aiAnalysis.risk_level} risk
+                        </span>
+                        {aiAnalysis.can_proceed_safely ? (
+                          <span className="flex items-center gap-1 text-xs text-green-600">
+                            <CheckCircle2 className="h-3.5 w-3.5" /> Safe to proceed
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-xs text-red-600">
+                            <ShieldAlert className="h-3.5 w-3.5" /> Proceed with caution
+                          </span>
+                        )}
+                      </div>
+
+                      {/* AI summary */}
+                      <div className="bg-muted/50 rounded-lg p-2.5">
+                        <div className="flex items-start gap-1.5">
+                          <Sparkles className="h-3.5 w-3.5 text-purple-500 shrink-0 mt-0.5" />
+                          <p className="text-xs leading-relaxed text-foreground">{aiAnalysis.natural_language_summary}</p>
+                        </div>
+                        {aiAnalysis.source === 'llm' && (
+                          <span className="text-[10px] text-muted-foreground mt-1 block">AI-powered analysis</span>
+                        )}
+                      </div>
+
+                      {/* Affected services */}
+                      {aiAnalysis.affected_services.length > 0 && (
+                        <div>
+                          <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">Impacted Services</p>
+                          <div className="flex flex-wrap gap-1">
+                            {aiAnalysis.affected_services.map(svc => (
+                              <span key={svc} className="px-1.5 py-0.5 bg-orange-500/10 text-orange-600 rounded text-xs border border-orange-500/20">{svc}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Recommended actions */}
+                      {aiAnalysis.recommended_actions.length > 0 && (
+                        <div>
+                          <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5">Recommended Actions</p>
+                          <ul className="space-y-1.5">
+                            {aiAnalysis.recommended_actions.map((action, i) => (
+                              <li key={i} className="flex items-start gap-1.5 text-xs">
+                                <ArrowRight className="h-3 w-3 text-purple-400 mt-0.5 shrink-0" />
+                                <span>{action}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Safety message */}
+                      <p className="text-[11px] text-muted-foreground border-t border-border pt-2">{aiAnalysis.safety_check_message}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Critical Path tab */}
+              {aiPanelTab === 'critical-path' && (
+                <div className="p-3 space-y-3">
+                  {critPathLoading && (
+                    <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin text-purple-500" />
+                      Computing critical path…
+                    </div>
+                  )}
+                  {!criticalPath && !critPathLoading && (
+                    <div className="text-center py-4 space-y-2">
+                      <GitBranch className="h-8 w-8 text-muted-foreground mx-auto" />
+                      <p className="text-xs text-muted-foreground">Computing critical user traffic path…</p>
+                    </div>
+                  )}
+                  {criticalPath && (
+                    <div className="space-y-3">
+                      {/* Path visualization */}
+                      <div>
+                        <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                          <GitBranch className="h-3 w-3 inline mr-1" /> User Traffic Path
+                        </p>
+                        <p className="text-xs bg-muted/50 rounded p-2 font-mono leading-relaxed break-words">
+                          {criticalPath.path_description || 'No user-facing path detected'}
+                        </p>
+                      </div>
+
+                      {/* SPOFs */}
+                      {criticalPath.spofs.length > 0 && (
+                        <div>
+                          <p className="text-[11px] font-medium text-red-600 uppercase tracking-wide mb-1.5">
+                            <AlertCircle className="h-3 w-3 inline mr-1" /> Single Points of Failure
+                          </p>
+                          <div className="flex flex-col gap-1">
+                            {criticalPath.spofs.map(spof => (
+                              <span key={spof} className="flex items-center gap-1.5 px-2 py-1 bg-red-500/10 text-red-600 rounded text-xs border border-red-500/20">
+                                <ShieldAlert className="h-3 w-3 shrink-0" />
+                                {spof}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {criticalPath.spofs.length === 0 && (
+                        <div className="flex items-center gap-1.5 text-xs text-green-600">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> No SPOFs detected on critical path
+                        </div>
+                      )}
+
+                      {/* AI explanation */}
+                      {criticalPath.llm_explanation && (
+                        <div className="bg-muted/50 rounded-lg p-2.5">
+                          <div className="flex items-start gap-1.5">
+                            <Sparkles className="h-3.5 w-3.5 text-purple-500 shrink-0 mt-0.5" />
+                            <p className="text-xs leading-relaxed">{criticalPath.llm_explanation}</p>
+                          </div>
+                          {criticalPath.source === 'llm' && (
+                            <span className="text-[10px] text-muted-foreground mt-1 block">AI-powered analysis</span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Refresh */}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full text-xs h-8 gap-1.5"
+                        onClick={() => {
+                          clearCriticalPath();
+                          fetchCriticalPath(toAINodes(filteredGraph.nodes), toAIEdges(filteredGraph.edges));
+                        }}
+                        disabled={critPathLoading}
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        Refresh Analysis
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+          </motion.div>
+        )}
+
         {/* Selected Node Panel - show for Cytoscape and Enterprise tabs */}
         {(activeTab === 'cytoscape' || activeTab === 'enterprise') && selectedNode && (
           <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="absolute top-4 left-4 w-72">
@@ -1129,11 +1411,70 @@ export default function Topology() {
                   </div>
                 )}
               </div>
-              <div className="mt-3 pt-3 border-t border-border flex items-center justify-end">
-                <Button variant="outline" size="sm" className="text-xs" onClick={() => handleNodeDoubleClick(selectedNode)}>
-                  View Details →
-                </Button>
-              </div>
+
+              {/* E-PLAT-001: AI node explanation */}
+              {(() => {
+                const aiNode = nodeExplains.get(selectedNode.id);
+                const isLoadingThis = nodeExplainLoadingId === selectedNode.id;
+                return (
+                  <div className="mt-3 pt-3 border-t border-border space-y-2">
+                    {isLoadingThis && (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Generating AI explanation…
+                      </div>
+                    )}
+                    {aiNode && (
+                      <div className="space-y-1.5">
+                        {/* Role */}
+                        <div className="flex items-start gap-1.5 bg-purple-500/5 border border-purple-500/20 rounded-md p-2">
+                          <Sparkles className="h-3 w-3 text-purple-500 shrink-0 mt-0.5" />
+                          <p className="text-[11px] leading-relaxed text-foreground">{aiNode.role}</p>
+                        </div>
+                        {/* Anomalies */}
+                        {aiNode.anomalies.length > 0 && (
+                          <div className="space-y-1">
+                            {aiNode.anomalies.map((a, i) => (
+                              <div key={i} className="flex items-start gap-1.5 text-[11px] text-amber-700">
+                                <AlertCircle className="h-3 w-3 shrink-0 mt-0.5" />
+                                <span>{a}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!aiNode && !isLoadingThis && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full text-xs h-7 gap-1.5 text-purple-600 hover:text-purple-700 hover:bg-purple-500/10"
+                        onClick={() => {
+                          explainNode(
+                            {
+                              id: selectedNode.id,
+                              kind: selectedNode.kind,
+                              name: selectedNode.name,
+                              namespace: selectedNode.namespace,
+                              health: selectedNode.computed?.health,
+                              replicas: selectedNode.computed?.replicas?.ready,
+                            },
+                            toAINodes(filteredGraph.nodes),
+                            toAIEdges(filteredGraph.edges),
+                          );
+                        }}
+                      >
+                        <Brain className="h-3 w-3" />
+                        AI Explain this resource
+                      </Button>
+                    )}
+                    <div className="flex items-center justify-end">
+                      <Button variant="outline" size="sm" className="text-xs" onClick={() => handleNodeDoubleClick(selectedNode)}>
+                        View Details →
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })()}
             </Card>
           </motion.div>
         )}
