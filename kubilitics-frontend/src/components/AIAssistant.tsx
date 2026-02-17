@@ -2,8 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useLocation } from 'react-router-dom';
 import { MessageCircle, X, Send, Trash2 } from 'lucide-react';
-
-const AI_BACKEND_URL = import.meta.env.VITE_AI_BACKEND_URL || 'ws://localhost:8080';
+import { buildChatWSUrl } from '@/services/aiService';
+// AI WebSocket endpoint (/ws/chat) lives on the AI backend (port 8081).
+// Use buildChatWSUrl() from aiService for consistent URL construction.
 
 export function AIAssistant() {
   const [isOpen, setIsOpen] = useState(false);
@@ -12,7 +13,8 @@ export function AIAssistant() {
   const inputRef = useRef<HTMLInputElement>(null);
   const location = useLocation();
 
-  // WebSocket connection
+  // WebSocket connection — use buildChatWSUrl() so the correct AI backend
+  // port (8081) and any query-string context params are included.
   const {
     messages,
     isConnected,
@@ -20,7 +22,7 @@ export function AIAssistant() {
     sendUserMessage,
     clearMessages,
   } = useWebSocket({
-    url: `${AI_BACKEND_URL}/ws/chat`,
+    url: buildChatWSUrl(),
     autoConnect: false, // Connect only when chat is opened
   });
 
