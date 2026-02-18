@@ -14,7 +14,7 @@ require (
 	// Database
 	github.com/jmoiron/sqlx v1.3.5
 	github.com/lib/pq v1.10.9
-	github.com/mattn/go-sqlite3 v1.14.19
+	github.com/mattn/go-sqlite3 v1.14.34
 	github.com/rs/cors v1.11.0
 
 	// Configuration
