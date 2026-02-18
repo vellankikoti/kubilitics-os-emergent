@@ -172,7 +172,7 @@ jobs:
           ls -lh ./packaged/
 
       - name: Upload chart artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: helm-chart-${{ steps.chart-version.outputs.version }}
           path: deploy/helm/kubilitics/packaged/*.tgz

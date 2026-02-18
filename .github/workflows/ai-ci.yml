@@ -44,7 +44,7 @@ jobs:
             2>&1 | tee $GITHUB_WORKSPACE/test_reports/ai/test.log
 
       - name: Upload test report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: ai-test-report
@@ -127,7 +127,7 @@ jobs:
             ./cmd/server/main.go
 
       - name: Upload artifact (${{ matrix.goos }}-${{ matrix.goarch }})
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kubilitics-ai-${{ matrix.goos }}-${{ matrix.goarch }}
           path: kubilitics-ai/bin/kubilitics-ai-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}

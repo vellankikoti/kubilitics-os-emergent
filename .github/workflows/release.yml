@@ -49,7 +49,7 @@ jobs:
       - name: Make Unix binaries executable
         run: chmod +x kcli-linux-amd64 kcli-linux-arm64 kcli-darwin-amd64 kcli-darwin-arm64 || true
       - name: Upload kcli artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kcli-${{ github.ref_name }}
           path: |
@@ -104,7 +104,7 @@ jobs:
         if: matrix.goos != 'windows'
         run: chmod +x kubilitics-ai/bin/kubilitics-ai-${{ matrix.goos }}-${{ matrix.goarch }} || true
       - name: Upload kubilitics-ai artifact (${{ matrix.goos }}-${{ matrix.goarch }})
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kubilitics-ai-${{ matrix.goos }}-${{ matrix.goarch }}-${{ github.ref_name }}
           path: kubilitics-ai/bin/kubilitics-ai-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -126,7 +126,7 @@ jobs:
         working-directory: kubilitics-backend
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o kubilitics-backend-linux-arm64 ./cmd/server
       - name: Upload backend artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kubilitics-backend-${{ github.ref_name }}
           path: |
@@ -382,14 +382,14 @@ jobs:
         run: cargo tauri build --target x86_64-unknown-linux-gnu --bundles rpm --config '{"build":{"beforeBuildCommand":""}}'
       - name: Upload desktop artifacts (macOS)
         if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kubilitics-desktop-${{ matrix.name }}-${{ github.ref_name }}
           # macOS Tauri universal builds output to universal-apple-darwin, not release/
           path: kubilitics-desktop/src-tauri/target/universal-apple-darwin/release/bundle/
       - name: Upload desktop artifacts (Windows / Linux)
         if: matrix.os != 'macos-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kubilitics-desktop-${{ matrix.name }}-${{ github.ref_name }}
           path: kubilitics-desktop/src-tauri/target/release/bundle/
