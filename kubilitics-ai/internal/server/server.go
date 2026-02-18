@@ -120,6 +120,45 @@ func (s *Server) initializeComponents() error {
 	}
 
 	// 1. Initialize LLM Adapter
+	// Check if a provider was saved to the DB in a previous run (via POST /api/v1/config/provider).
+	// If so, overlay it on top of the YAML/env config so the user never has to re-enter their key.
+	if saved, err := s.store.LoadLLMConfig(context.Background()); err != nil {
+		fmt.Printf("[WARN] Failed to load persisted LLM config from DB: %v — using config file values\n", err)
+	} else if saved != nil && saved.Provider != "" {
+		fmt.Printf("[INFO] Restoring persisted LLM config: provider=%s model=%s\n", saved.Provider, saved.Model)
+		s.config.LLM.Provider = saved.Provider
+		s.config.LLM.Configured = true
+		switch saved.Provider {
+		case "openai":
+			if s.config.LLM.OpenAI == nil {
+				s.config.LLM.OpenAI = make(map[string]interface{})
+			}
+			s.config.LLM.OpenAI["api_key"] = saved.APIKey
+			s.config.LLM.OpenAI["model"] = saved.Model
+		case "anthropic":
+			if s.config.LLM.Anthropic == nil {
+				s.config.LLM.Anthropic = make(map[string]interface{})
+			}
+			s.config.LLM.Anthropic["api_key"] = saved.APIKey
+			s.config.LLM.Anthropic["model"] = saved.Model
+		case "ollama":
+			if s.config.LLM.Ollama == nil {
+				s.config.LLM.Ollama = make(map[string]interface{})
+			}
+			s.config.LLM.Ollama["base_url"] = saved.BaseURL
+			s.config.LLM.Ollama["model"] = saved.Model
+		case "custom":
+			if s.config.LLM.Custom == nil {
+				s.config.LLM.Custom = make(map[string]interface{})
+			}
+			s.config.LLM.Custom["base_url"] = saved.BaseURL
+			s.config.LLM.Custom["model"] = saved.Model
+			if saved.APIKey != "" {
+				s.config.LLM.Custom["api_key"] = saved.APIKey
+			}
+		}
+	}
+
 	var apiKey, model, baseURL string
 	switch s.config.LLM.Provider {
 	case "openai":
@@ -133,6 +172,8 @@ func (s *Server) initializeComponents() error {
 		model, _ = s.config.LLM.Ollama["model"].(string)
 	case "custom":
 		baseURL, _ = s.config.LLM.Custom["base_url"].(string)
+		model, _ = s.config.LLM.Custom["model"].(string)
+		apiKey, _ = s.config.LLM.Custom["api_key"].(string)
 	}
 
 	llmConfig := &adapter.Config{

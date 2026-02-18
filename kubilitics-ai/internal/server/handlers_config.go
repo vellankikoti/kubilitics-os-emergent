@@ -43,12 +43,15 @@ package server
 // Error responses: 400 bad request, 403 forbidden (non-loopback), 405 method not allowed, 500 internal.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/kubilitics/kubilitics-ai/internal/db"
 	"github.com/kubilitics/kubilitics-ai/internal/llm/adapter"
 )
 
@@ -234,6 +237,25 @@ func (s *Server) handlePostConfigProvider(w http.ResponseWriter, r *http.Request
 		}
 	}
 	s.mu.Unlock()
+
+	// ── Persist to SQLite so config survives restarts ─────────────────────────
+	// The api_key is written only to the local SQLite file (app data dir,
+	// readable only by the current OS user). It is never sent over the network.
+	if s.store != nil {
+		cfgRec := &db.LLMConfigRecord{
+			Provider:  req.Provider,
+			Model:     model,
+			APIKey:    req.APIKey,
+			BaseURL:   req.BaseURL,
+			UpdatedAt: time.Now().UTC(),
+		}
+		if saveErr := s.store.SaveLLMConfig(context.Background(), cfgRec); saveErr != nil {
+			// Non-fatal: hot-wire already succeeded; just log the persistence failure.
+			fmt.Printf("[WARN] handlePostConfigProvider: failed to persist config to DB: %v\n", saveErr)
+		} else {
+			fmt.Printf("[INFO] LLM config persisted to DB: provider=%s model=%s\n", req.Provider, model)
+		}
+	}
 
 	// ── Build masked key preview (never echo the full key) ────────────────────
 	keyPreview := maskAPIKey(req.APIKey)

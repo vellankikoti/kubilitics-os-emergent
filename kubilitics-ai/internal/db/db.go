@@ -14,12 +14,38 @@ type Store interface {
 	CostSnapshotStore
 	BudgetStore
 	SafetyPolicyStore
+	LLMConfigStore
 
 	// Close releases database resources.
 	Close() error
 
 	// Ping verifies the connection is alive.
 	Ping(ctx context.Context) error
+}
+
+// ─── LLM Config store ─────────────────────────────────────────────────────────
+
+// LLMConfigRecord holds the persisted LLM provider configuration.
+// The api_key is stored as-is in the local SQLite file (which lives inside the
+// app data directory, readable only by the current OS user on all platforms).
+// It is NEVER sent over the network or echoed in API responses.
+type LLMConfigRecord struct {
+	Provider  string    `json:"provider"`   // openai | anthropic | ollama | custom
+	Model     string    `json:"model"`      // e.g. gpt-4o
+	APIKey    string    `json:"api_key"`    // sensitive — local DB only
+	BaseURL   string    `json:"base_url"`   // for ollama / custom
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// LLMConfigStore persists the active LLM provider configuration so it survives
+// process restarts without requiring the user to re-enter their API key.
+type LLMConfigStore interface {
+	// SaveLLMConfig writes (or overwrites) the singleton LLM config row.
+	SaveLLMConfig(ctx context.Context, rec *LLMConfigRecord) error
+
+	// LoadLLMConfig reads the singleton LLM config row.
+	// Returns nil, nil when no config has been saved yet.
+	LoadLLMConfig(ctx context.Context) (*LLMConfigRecord, error)
 }
 
 // ─── Budget store (AI-006) ────────────────────────────────────────────────────

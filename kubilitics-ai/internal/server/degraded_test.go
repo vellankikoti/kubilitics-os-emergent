@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -113,7 +114,7 @@ func TestLLMAdapterDegradedConfig(t *testing.T) {
 	adapter := srv.GetLLMAdapter()
 
 	// Test Complete
-	_, _, err = adapter.Complete(nil, nil, nil)
+	_, _, err = adapter.Complete(context.TODO(), nil, nil)
 	if err == nil {
 		t.Error("Expected error from Complete() in degraded mode, got nil")
 	} else if !strings.Contains(err.Error(), "LLM provider not configured") {
@@ -121,7 +122,7 @@ func TestLLMAdapterDegradedConfig(t *testing.T) {
 	}
 
 	// Test CountTokens
-	_, err = adapter.CountTokens(nil, nil, nil)
+	_, err = adapter.CountTokens(context.TODO(), nil, nil)
 	if err == nil {
 		t.Error("Expected error from CountTokens() in degraded mode, got nil")
 	}

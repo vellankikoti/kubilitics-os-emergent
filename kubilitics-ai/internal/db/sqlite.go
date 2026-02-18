@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -183,6 +184,21 @@ CREATE INDEX IF NOT EXISTS idx_token_usage_investigation ON token_usage(investig
 CREATE TABLE IF NOT EXISTS safety_policies (
     name TEXT PRIMARY KEY,
     component_config TEXT NOT NULL, -- JSON blob (condition, effect, reason)
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`,
+	},
+	// Migration 7: llm_config — singleton row that persists the active LLM
+	// provider across process restarts (set via POST /api/v1/config/provider).
+	{
+		version: 7,
+		sql: `
+CREATE TABLE IF NOT EXISTS llm_config (
+    id         INTEGER PRIMARY KEY CHECK(id = 1), -- singleton: only row 1 allowed
+    provider   TEXT NOT NULL DEFAULT '',
+    model      TEXT NOT NULL DEFAULT '',
+    api_key    TEXT NOT NULL DEFAULT '',
+    base_url   TEXT NOT NULL DEFAULT '',
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `,
@@ -870,6 +886,44 @@ func (s *sqliteStore) LatestCostSnapshot(ctx context.Context, clusterID string) 
 		return nil, err
 	}
 	rec.RecordedAt, _ = parseTime(ts)
+	return rec, nil
+}
+
+// ─── LLM Config (migration 7) ─────────────────────────────────────────────────
+
+// SaveLLMConfig upserts the singleton LLM config row (id=1).
+// Called after every successful POST /api/v1/config/provider so the config
+// survives kubilitics-ai process restarts.
+func (s *sqliteStore) SaveLLMConfig(ctx context.Context, rec *LLMConfigRecord) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO llm_config(id, provider, model, api_key, base_url, updated_at)
+		VALUES(1, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			provider   = excluded.provider,
+			model      = excluded.model,
+			api_key    = excluded.api_key,
+			base_url   = excluded.base_url,
+			updated_at = excluded.updated_at
+	`, rec.Provider, rec.Model, rec.APIKey, rec.BaseURL, rec.UpdatedAt.UTC())
+	return err
+}
+
+// LoadLLMConfig reads the singleton LLM config row.
+// Returns nil, nil when no config has been saved yet (fresh install).
+func (s *sqliteStore) LoadLLMConfig(ctx context.Context) (*LLMConfigRecord, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT provider, model, api_key, base_url, updated_at FROM llm_config WHERE id = 1`)
+
+	rec := &LLMConfigRecord{}
+	var updatedAt string
+	err := row.Scan(&rec.Provider, &rec.Model, &rec.APIKey, &rec.BaseURL, &updatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil // no config saved yet — fresh install
+		}
+		return nil, fmt.Errorf("load llm_config: %w", err)
+	}
+	rec.UpdatedAt, _ = parseTime(updatedAt)
 	return rec, nil
 }
 
