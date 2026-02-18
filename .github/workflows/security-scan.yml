@@ -29,7 +29,7 @@ jobs:
     name: Trivy Scan - Backend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build Docker image
         # Build from repo root so Dockerfile can COPY both kubilitics-backend/ and kcli/
@@ -47,7 +47,7 @@ jobs:
     name: Trivy Scan - AI Backend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build Docker image
         working-directory: kubilitics-ai
